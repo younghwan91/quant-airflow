@@ -32,9 +32,20 @@ def daily_collection():
     def collect_both() -> None:
         # --prod: 실데이터. 모의서버 기본값은 실제 시세/수급이 아님
         # (kr-quant/README.md 참고).
+        # --daily-days/--sd-days: **쓰는 창을 자른다.** 기본값(일봉 0=전량)은
+        # ka10081 이 주는 ~573봉을 매일 전 종목에 upsert 했다 — 하루 150만 행을
+        # 쓰면서 실제 새 행은 2,626개다. daily_bars 는 청크 515개 중 514개가
+        # 압축 상태라, 그 재기록의 대부분이 압축 세그먼트 해제→갱신→재압축이다
+        # (pg_stat 실측: n_tup_ins 1,696,027 ≈ n_tup_del 1,693,401 = churn).
+        #
+        # 깊은 구멍은 여기서 메우지 않는다 — daily_collection_catchup 이
+        # --update 로 낡은 종목만 골라 전량 재수집한다. 그게 그 DAG 의 존재
+        # 이유이고, 여기서 매일 전 이력을 다시 쓸 이유가 없다.
         run_collector([
             sys.executable, "-m", "collectors.combined",
-            "--market", "all", "--prod", "--rate", "0.9", "--db", timescale_dsn(),
+            "--market", "all", "--prod", "--rate", "0.9",
+            "--daily-days", "15", "--sd-days", "15",
+            "--db", timescale_dsn(),
         ], env=kiwoom_env())
 
     @task(retries=1, retry_delay=timedelta(minutes=10))

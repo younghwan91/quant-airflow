@@ -46,14 +46,24 @@ def kiwoom_env() -> dict[str, str]:
     return env
 
 
+#: collectors.dart_earnings.collect_keys() 가 읽는 이름들과 **한 쌍이다.**
+#: 한쪽에만 키를 추가하면 조용히 도달하지 않는다 — 실제로 그런 상태였다:
+#: docker-compose 는 3개를 Variables 에 시딩하고 collect_keys 는 _4 까지 읽는데,
+#: 여기서 _2 까지만 주입해 **3번 키가 콜렉터에 영원히 닿지 않았다.** 한도가
+#: 60,000/일이 아니라 40,000/일이었고 EARNINGS_PIPELINE_PLAN.md 의 산수와도
+#: 어긋나 있었다.
+_DART_KEY_VARS = ("DART_API_KEY_2", "DART_API_KEY_3", "DART_API_KEY_4")
+
+
 def dart_env() -> dict[str, str]:
     # DART 키는 Fernet 암호화 Variables에만 있음 — 수집 subprocess에만 주입.
-    # 보조키(DART_API_KEY_2)가 있으면 함께 주입 → collector가 일한도(020) 시 로테이션.
+    # 보조키가 있으면 함께 주입 → collector가 일한도(020) 시 다음 키로 로테이션.
     env = os.environ.copy()
     env["DART_API_KEY"] = Variable.get("DART_API_KEY")
-    key2 = Variable.get("DART_API_KEY_2", default_var=None)
-    if key2:
-        env["DART_API_KEY_2"] = key2
+    for name in _DART_KEY_VARS:
+        value = Variable.get(name, default_var=None)
+        if value:
+            env[name] = value
     return env
 
 

@@ -12,11 +12,27 @@ earnings 등 다른 데이터와 SQL로 조인이 안 됐다 — "다른 데이�
 프로젝트 목표(README)에 맞춰 consensus 테이블(PK: code, date)에 직접 upsert.
 sql/init_timescale.sql에 스키마 추가됨.
 
-**--all-codes(전종목) 사용 이유:** 원래 유동성 상위 800종목만 받았으나, DART와
-달리 네이버는 무인증·독립 레이트리밋이라 전종목(daily_bars 기준 ~2,600개)을
-매일 다 훑어도 다른 수집(특히 DART 일한도)과 자원 경합이 없다. 애널리스트
-커버리지가 없는 소형주는 자연히 스킵되어(수집기가 값이 전부 None이면
-행을 안 씀) 커버리지가 실제 애널리스트 커버 종목 수만큼만 쌓인다 — 무해함.
+**유니버스: 평일은 커버리지 종목만, 월요일은 전종목.** 원래는 매일 전종목
+(~2,627개)을 훑었다. "커버리지 없는 소형주는 자연히 스킵되니 무해하다"는
+전제였는데, 실측이 그 전제를 깼다 — 요청은 일 5,254건인데 실제 적재는 하루
+652~660행이다. **~1,930 종목(73%)이 매일 빈 응답을 받고 버려진다.** 무해한 게
+아니라 실행 시간의 대부분이다.
+
+커버리지는 하루아침에 생기지 않으므로 매일 확인할 이유가 없다. 대신 주 1회
+(월요일) 전종목을 훑어 신규 커버리지 편입을 잡는다 — 그 스윕이 없으면 한 번
+빠진 종목을 영원히 놓친다.
+
+**스케줄이 18:00 이 아닌 이유.** 예전 주석은 "장 마감 후 컨센서스 갱신 반영"
+이라고만 적혀 있었고 검증 흔적이 없었다. DB 실측은 정반대다 — `base_date`
+(FnGuide 기준일)가 **항상 전 영업일**이다:
+
+    date        base_date
+    2026-08-24  2026-08-21
+    2026-08-21  2026-08-20
+    2026-08-20  2026-08-19
+
+당일 갱신분이 애초에 없으므로 언제 받든 같은 데이터다. 그래서 daily_collection
+(16:00, 실측 48.7분)이 끝난 뒤로 붙여 스택 가동 시간을 줄인다.
 """
 
 from __future__ import annotations
@@ -33,7 +49,10 @@ from _common import run_collector, timescale_dsn
 
 @dag(
     dag_id="daily_consensus",
-    schedule="0 18 * * 1-5",  # 평일 18:00 KST (장 마감 후 컨센서스 갱신 반영)
+    # 평일 17:00 KST — 네이버 컨센서스는 T-1 기준이라 시각이 데이터에 영향을
+    # 주지 않는다(위 docstring 실측). daily_collection(16:00) 이 중앙 48.7분,
+    # 재시도 경로 최대 58.8분이라 17:00 이면 겹치지 않는다.
+    schedule="0 17 * * 1-5",
     start_date=pendulum.datetime(2026, 7, 10, tz="Asia/Seoul"),
     catchup=False,
     max_active_runs=1,
@@ -43,9 +62,14 @@ def daily_consensus():
 
     @task(retries=1, retry_delay=timedelta(minutes=10))
     def collect_consensus() -> None:
+        # 월요일만 전종목 스윕(신규 커버리지 편입 탐지), 화~금은 최근 90일 안에
+        # 실제로 컨센서스가 잡힌 종목만. 90일인 이유는 분기 실적 시즌을 한 번은
+        # 포함해야 일시적으로 조용했던 종목이 탈락하지 않기 때문이다.
+        is_monday = pendulum.now("Asia/Seoul").weekday() == 0
+        universe = ["--all-codes"] if is_monday else ["--covered-days", "90"]
         run_collector([
             sys.executable, "-m", "collectors.naver_consensus",
-            "--db-table", "--all-codes", "--db", timescale_dsn(),
+            "--db-table", *universe, "--db", timescale_dsn(),
         ])
 
     collect_consensus()

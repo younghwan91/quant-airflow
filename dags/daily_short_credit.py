@@ -32,9 +32,18 @@ def daily_short_credit():
 
     @task(retries=1, retry_delay=timedelta(minutes=10))
     def collect_short_credit() -> None:
+        # --days 10: **쓰는 창을 자른다.** 기본 100 은 매 실행 334,183행을
+        # 썼는데 그중 실제 새 행은 하루치 ~4,600 행 = 98.6% 가 같은 값 재기록이다.
+        # short_selling·credit_balance 는 청크 대부분이 압축 상태라 그 재기록이
+        # 압축 세그먼트 해제→갱신→재압축을 부른다(pg_stat 실측: 압축 청크에서
+        # n_tup_ins ≈ n_tup_del 로 churn 이 그대로 보인다).
+        #
+        # 10일이면 연휴가 낀 주에도 여유가 있고, 런이 하루 실패해도 다음 런의
+        # 창이 그 구멍을 덮는다 — 이 자가치유가 고정 창의 유일한 장점이라
+        # 7일까지 줄이지는 않는다. 깊이는 weekly_history_backfill 의 몫이다.
         run_collector([
             sys.executable, "-m", "collectors.short_credit",
-            "--market", "all", "--prod", "--db", timescale_dsn(),
+            "--market", "all", "--prod", "--days", "10", "--db", timescale_dsn(),
         ], env=kiwoom_env())
 
     collect_short_credit()

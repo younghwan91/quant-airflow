@@ -134,3 +134,33 @@ def test_write_preserves_existing_rows(tmp_path):
     assert rows["2020-01-02"] == 100, "기존 행이 덮였다"
     assert rows["2021-01-02"] == 200
     con.close()
+
+
+def test_targets_skip_codes_already_marked_as_having_no_dart_data(tmp_path):
+    """42종목이 매주 2.2분을 성과 0행으로 태우던 경로 — 한 번 없으면 영원히 없다."""
+    con = connect(tmp_path / "t.db")
+    con.executemany(
+        "INSERT INTO daily_bars(code,date,open,high,low,close,volume,trade_value,source)"
+        " VALUES(?,?,?,?,?,?,?,?,?)",
+        [("A", "2020-01-02", 1, 1, 1, 1, 1, 1, "naver"),
+         ("B", "2020-01-02", 1, 1, 1, 1, 1, 1, "naver")])
+    con.execute("INSERT INTO delisted_stocks(code, dart_checked)"
+                " VALUES('A','2026-08-25')")
+    con.commit()
+
+    assert [r[0] for r in ds._targets(con)] == ["B"]
+    # --refetch 면 마커를 무시하고 다시 훑는다
+    assert [r[0] for r in ds._targets(con, refetch=True)] == ["A", "B"]
+    con.close()
+
+
+def test_codes_with_no_dart_data_get_marked(tmp_path):
+    con = connect(tmp_path / "t.db")
+    con.execute("INSERT INTO delisted_stocks(code) VALUES('A')")
+    con.commit()
+
+    ds._mark_checked(con, ["A"], "2026-08-25")
+
+    got = con.execute("SELECT dart_checked FROM delisted_stocks WHERE code='A'").fetchone()
+    assert got[0] == "2026-08-25"
+    con.close()

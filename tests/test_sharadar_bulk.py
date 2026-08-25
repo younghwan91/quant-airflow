@@ -17,6 +17,8 @@ import pytest
 
 from collectors.sharadar_bulk import (
     DEFAULT_STALE_AFTER,
+    ORPHAN_PART_MAX_AGE,
+    SOCKET_TIMEOUT,
     _display_width,
     SUBSCRIBED_TABLES,
     CorruptDownload,
@@ -30,6 +32,7 @@ from collectors.sharadar_bulk import (
     record_check,
     render_report,
     stale_threshold,
+    sweep_orphan_parts,
     sync,
     verify_zip,
     write_manifest,
@@ -613,3 +616,102 @@ def test_report_columns_line_up_with_the_header():
     assert _display_width(header[: header.index("벤더 modified")]) == _display_width(
         row[: row.index("2026")]
     )
+
+
+# ------------------------------------------------- 실패 격리 · 고아 정리 · 절단
+
+
+def test_one_broken_table_does_not_silence_the_other_thirteen(tmp_path, capsys):
+    """holdings 하나가 죽어도 나머지가 대조되고 상태 표가 남아야 한다.
+
+    예전엔 루프에 격리가 없어, 에러 하나면 뒤따르는 테이블이 확인조차 안 되고
+    표에도 도달을 못 했다 — 즉 **문제가 있는 날에만** 이 모듈의 산출물이
+    사라졌다. 정확히 반대로 동작해야 한다.
+    """
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("data.csv", "ticker,date\nAAPL,2026-08-16\n")
+    payload = buf.getvalue()
+
+    def opener(url, timeout=None):
+        if "/bulk?" in url:
+            items = [
+                {"table": t, "modified": "2026-08-16T03:00:00Z", "history": "full"}
+                for t in SUBSCRIBED_TABLES
+            ]
+            return io.BytesIO(json.dumps({"items": items}).encode())
+        if "/data/holdings?" in url:
+            raise OSError("vendor said 503")
+        return io.BytesIO(payload)
+
+    with pytest.raises(RuntimeError, match="holdings"):
+        sync(tmp_path, api_key="K", now="2026-08-16T17:30:00Z", opener=opener)
+
+    out = capsys.readouterr().out
+    assert "Sharadar 동기화 상태" in out, "실패해도 표는 남아야 한다"
+    assert "❌ 실패" in out
+    for table in SUBSCRIBED_TABLES:
+        if table != "holdings":
+            assert (tmp_path / f"{table}.csv.zip").exists(), f"{table} 가 격리에 막혔다"
+
+
+def test_a_truncated_transfer_is_caught_by_content_length(tmp_path):
+    """sha256 은 받은 바이트로 계산해 그 바이트를 기록하므로 절단을 못 잡는다."""
+    import email.message
+    import io
+
+    class _Resp(io.BytesIO):
+        def __init__(self, data, declared):
+            super().__init__(data)
+            self.headers = email.message.Message()
+            self.headers["Content-Length"] = str(declared)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    payload = _real_zip(tmp_path / "src.zip").read_bytes()
+
+    def fake_opener(url, timeout=None):
+        return _Resp(payload, len(payload) + 4096)  # 벤더는 더 길다고 했다
+
+    dest = tmp_path / "out" / "stocks.csv.zip"
+
+    with pytest.raises(OSError, match="잘렸다"):
+        download("stocks", dest, api_key="K", opener=fake_opener)
+
+    assert not dest.exists()
+    assert not list((tmp_path / "out").glob(".*.part"))
+
+
+def test_orphan_parts_older_than_the_cutoff_are_swept(tmp_path):
+    """SIGKILL 로 죽은 런이 남긴 985MB 짜리를 아무도 안 치우고 있었다."""
+    import os
+    import time
+
+    orphan = tmp_path / ".stocks-dead1234.part"
+    orphan.write_bytes(b"x" * 1024)
+    old = time.time() - ORPHAN_PART_MAX_AGE - 60
+    os.utime(orphan, (old, old))
+
+    assert sweep_orphan_parts(tmp_path) == [orphan.name]
+    assert not orphan.exists()
+
+
+def test_a_part_from_a_live_run_is_never_swept(tmp_path):
+    """나이 조건이 안전장치의 전부다 — 도는 런의 것을 지우면 다운로드가 날아간다."""
+    fresh = tmp_path / ".daily-live5678.part"
+    fresh.write_bytes(b"x" * 1024)
+
+    assert sweep_orphan_parts(tmp_path) == []
+    assert fresh.exists()
+
+
+def test_socket_timeout_is_short_enough_to_fail_fast():
+    """1800 이면 벤더가 멎었을 때 30분 매달렸다 죽고 재시도 10분이 더 붙는다."""
+    assert SOCKET_TIMEOUT <= 300

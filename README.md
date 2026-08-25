@@ -14,7 +14,7 @@
 잰다(생존편향). 이 파이프라인은 폐지 종목의 과거 시세·실적을 별도로 메우고
 (`naver_delisted_bars`, `daily_bars.source`), 매주 새 폐지분을 따라간다.
 
-- **오케스트레이션**: Airflow(LocalExecutor) — 12개 DAG(1개 paused), 한국은 매일 증분 + 주간 깊이 재수집, 미국(Sharadar)은 일일 스냅샷 재구축
+- **오케스트레이션**: Airflow(LocalExecutor) — 12개 DAG, 한국은 매일 증분 + 주간 깊이 재수집, 미국(Sharadar)은 일일 스냅샷 재구축
 - **데이터 소스**: DART(실적) · 키움 REST(시세·수급·공매도·신용·상장주식수) · KRX(상장주식수·상장폐지) · 네이버(컨센서스·폐지종목 시세)
 - **저장소**: TimescaleDB(hypertable + 압축) — LAN에 열어 메인 PC가 읽기 전용으로 질의
 

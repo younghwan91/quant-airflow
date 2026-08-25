@@ -175,6 +175,8 @@ CREATE TABLE IF NOT EXISTS delisted_stocks (
     market          TEXT,
     last_trade_date TEXT,   -- daily_bars 기준 마지막 거래일(상장폐지일 근사), 이력 없으면 NULL
     naver_checked   DATE,   -- 네이버 조회했으나 우리 구간 내 데이터 없던 날(NULL=미확인)
+    dart_checked    DATE,   -- DART 조회했으나 주식수 자료가 없던 날(NULL=미확인)
+    naver_sd_checked DATE,  -- 네이버 수급을 조회했으나 빈 응답이던 날(NULL=미확인)
     PRIMARY KEY (code)
 );
 

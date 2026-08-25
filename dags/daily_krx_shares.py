@@ -42,8 +42,22 @@ from _common import run_collector, timescale_dsn
 
 @dag(
     dag_id="daily_krx_shares",
-    schedule="30 18 * * 1-5",  # 평일 18:30 KST — 장 마감·KRX 시세 확정 후
-    is_paused_upon_creation=True,  # 소스 차단(위 docstring) — 살아나면 해제
+    # ⛔ schedule=None — **수동 트리거 전용이다.**
+    #
+    # 원래는 `"30 18 * * 1-5"` + `is_paused_upon_creation=True` 였는데, 그 플래그는
+    # **DAG 가 메타DB 에 처음 등록될 때만** 적용된다. 이 DAG 는 start_date 2026-07-10
+    # 부터 이미 등록돼 있어 플래그가 통째로 무시됐고, `is_paused=false` 인 채로
+    # 8/17 이후 평일마다 100% 실패했다(6연속). 0.6초짜리 실패 두 번에
+    # retry_delay 10분이 붙어 **평일 스택 종료가 18:40 으로 못박혔다** —
+    # cron_updown.log 의 모든 평일 종료가 18:40:4x 다.
+    #
+    # 소스가 살아나면 여기에 cron 을 되돌린다. 그 전에 반드시 아래 두 가지를
+    # 확인할 것:
+    #   1. `collectors/krx_shares.py` 가 `source="krx"` 로 쓴다(고쳐놨다)
+    #   2. `weekly_listed_shares` 와의 중복 — 둘 다 shares_outstanding_history 의
+    #      같은 (code,date) PK 에 쓴다. KRX 는 요청 2회로 우선주까지 + 과거
+    #      날짜지정이 되는 상위호환이라, 살아나면 키움 쪽(2,628요청/48분)을 끈다.
+    schedule=None,
     start_date=pendulum.datetime(2026, 7, 10, tz="Asia/Seoul"),
     catchup=False,
     max_active_runs=1,

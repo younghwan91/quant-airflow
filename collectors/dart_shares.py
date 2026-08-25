@@ -138,7 +138,27 @@ def shares_series(key: str, corp_code: str, first_year: int, last_year: int,
     return out
 
 
-def _targets(con) -> list[tuple[str, str, str]]:
+def _mark_checked(con, codes: list[str], today: str) -> None:
+    """DART 에서 못 찾은 코드를 기록해 다음 회차부터 건너뛴다.
+
+    `naver_delisted_bars._mark_checked` 와 같은 패턴이다 — 그쪽은 이미 이 방식으로
+    주간 외부 요청을 ~1,750회에서 신규 폐지분 수준으로 떨어뜨렸다.
+    """
+    if not codes:
+        return
+    ph = "%s" if _is_pg(con) else "?"
+    sql = (f"UPDATE delisted_stocks SET dart_checked = {ph} "  # noqa: S608 — 자리표시자만 조립
+           f"WHERE code IN ({','.join([ph] * len(codes))})")
+    params = (today, *codes)
+    if _is_pg(con):
+        with con.cursor() as cur:
+            cur.execute(sql, params)
+    else:
+        con.execute(sql, params)
+    con.commit()
+
+
+def _targets(con, *, refetch: bool = False) -> list[tuple[str, str, str]]:
     """``(code, 첫 거래일, 마지막 거래일)`` — 폐지 시세는 있는데 주식수가 없는 종목.
 
     거래 구간을 함께 돌려주는 이유: 그 구간을 가로지르는 주식수 점들이 있어야
@@ -146,12 +166,23 @@ def _targets(con) -> list[tuple[str, str, str]]:
 
     이미 주식수가 있는 코드는 건너뛴다(재실행 안전). 시세가 없는 폐지 종목은 대상이
     아니다 — 시총을 계산할 가격 자체가 없다.
+
+    **``dart_checked`` 가 찍힌 코드도 건너뛴다.** 그게 없을 때는 "DART 에 자료가
+    없음"(missing)이나 "corp_code 매핑 없음"(no_corp)인 종목이 어디에도 기록되지
+    않아, 주식수가 영원히 안 생기고 따라서 이 쿼리에 영원히 걸렸다 — 실측 42종목이
+    주당 2.2분을 성과 0행으로 태우고 있었다. 상장폐지는 과거 사실이라 한 번
+    자료가 없으면 영원히 없다. 다시 훑으려면 ``--refetch``.
     """
+    checked_filter = "" if refetch else (
+        "  AND NOT EXISTS (SELECT 1 FROM delisted_stocks d "
+        "                  WHERE d.code = b.code AND d.dart_checked IS NOT NULL) "
+    )
     sql = (
         "SELECT b.code, min(b.date), max(b.date) FROM daily_bars b "
         "WHERE b.source = 'naver' "
         "  AND NOT EXISTS (SELECT 1 FROM shares_outstanding_history s "
         "                  WHERE s.code = b.code) "
+        f"{checked_filter}"
         "GROUP BY b.code ORDER BY b.code"
     )
     if _is_pg(con):
@@ -178,6 +209,10 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0, help="상위 N종목만 (0=전체)")
     ap.add_argument("--sleep", type=float, default=0.15, help="DART 호출 간 대기(초)")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument(
+        "--refetch", action="store_true",
+        help="dart_checked 로 제외된 코드까지 전부 다시 조회 (DART 자료가 늘었을 때)",
+    )
     args = ap.parse_args()
 
     from .config import mask_dsn
@@ -189,23 +224,27 @@ def main() -> int:
     corp = load_corp_map_with_rotation(keys)
 
     con = connect(args.db or default_db_path())
-    targets = _targets(con)
+    targets = _targets(con, refetch=args.refetch)
     if args.limit:
         targets = targets[: args.limit]
     print(f"🔌 {mask_dsn(args.db)} | 대상 {len(targets)}종목 | corp_map {len(corp)}"
           f"{' | DRY-RUN' if args.dry_run else ''}", flush=True)
 
     found = no_corp = missing = written = 0
+    # 이번 회차에 "DART 에 자료 없음"으로 판명된 코드 — 끝에 한 번에 마킹한다.
+    exhausted: list[str] = []
     t0 = time.time()
     for i, (code, first, last) in enumerate(targets, 1):
         cc = corp.get(code)
         if not cc:
             no_corp += 1
+            exhausted.append(code)
             continue
         series = shares_series(keys[0], cc, int(first[:4]), int(last[:4]),
                                sleep=args.sleep)
         if not series:
             missing += 1
+            exhausted.append(code)
             continue
         found += 1
         if not args.dry_run:
@@ -218,9 +257,12 @@ def main() -> int:
                   f"기록={written}행 | {rate:.1f}종목/s "
                   f"ETA {(len(targets)-i)/rate/60 if rate else 0:.1f}분", flush=True)
 
+    if not args.dry_run:
+        _mark_checked(con, exhausted, time.strftime("%Y-%m-%d"))
     con.close()
     print(f"DONE targets={len(targets)} 확보={found} corp없음={no_corp} "
-          f"못찾음={missing} 기록={written}")
+          f"못찾음={missing} 기록={written}행 "
+          f"완료표시={len(exhausted) if not args.dry_run else 0}")
     return 0
 
 

@@ -23,6 +23,7 @@ import os
 import time
 import urllib.parse
 import urllib.request
+import sys
 import zipfile
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -268,13 +269,22 @@ def parse_financials_multi(
 def _fetch_multi_with_rotation(
     keys: list[str], ki: list[int], corp_codes: list[str], year: int, quarter: int,
 ) -> dict[str, tuple[float | None, float | None, float | None, float | None, float | None, float | None]]:
-    """``_fetch_with_rotation``'s batch counterpart — same key-rotation-on-020 logic."""
+    """``_fetch_with_rotation``'s batch counterpart — same key-rotation-on-020 logic.
+
+    반환값은 ``(결과, 실패 사유 또는 None)`` 이다. 사유를 돌려주는 이유는 아래
+    :func:`collect_all_financials_batched` 의 주석에 있다 — 요약하면 **"공시가
+    없다"와 "우리가 못 받았다"가 구분되지 않아 실패가 성공으로 보고**됐다.
+    """
     payload = _fetch_multi_payload(keys[ki[0]], corp_codes, year, quarter)
     while payload.get("status") == "020" and ki[0] + 1 < len(keys):
         ki[0] += 1
         print(f"DART 키 일한도(020) 도달 → 키{ki[0] + 1}로 로테이션", flush=True)
         payload = _fetch_multi_payload(keys[ki[0]], corp_codes, year, quarter)
-    return parse_financials_multi(payload, corp_codes)
+    status = payload.get("status")
+    # 013 = "조회된 데이터가 없습니다" — 그 분기에 공시가 없다는 정상 응답이다.
+    # 그 외의 비-000 은 우리 쪽 문제(020 한도소진, 010 키오류, {} 네트워크 실패).
+    failure = None if status in ("000", "013") else (status or "empty")
+    return parse_financials_multi(payload, corp_codes), failure
 
 
 def collect_all_financials_batched(
@@ -287,6 +297,7 @@ def collect_all_financials_batched(
     done_periods: set[tuple[str, str]] | None = None,
     today: str | None = None,
     knowledge_date: str = "today",
+    failures: list[tuple[str, str]] | None = None,
 ) -> "list[tuple[str, str, str, float | None, float | None, float | None, float | None, float | None, float | None]]":
     """Collect every (code, period) via ``fnlttMultiAcnt`` batches of ``batch_size``.
 
@@ -321,6 +332,7 @@ def collect_all_financials_batched(
     stock_codes = list(corp_map.keys())
     ki = [0]
     rows: list[tuple] = []
+    failures = [] if failures is None else failures
     for year, q in periods:
         avail = _available_date(f"{year}-{QUARTER_END[q][:2]}-{QUARTER_END[q][2:]}",
                                is_annual=(q == 4)).strftime("%Y%m%d")
@@ -331,7 +343,9 @@ def collect_all_financials_batched(
         for b0 in range(0, len(pending), batch_size):
             batch_codes = pending[b0:b0 + batch_size]
             corp_codes = [corp_map[sc] for sc in batch_codes]
-            result = _fetch_multi_with_rotation(keys, ki, corp_codes, year, q)
+            result, failure = _fetch_multi_with_rotation(keys, ki, corp_codes, year, q)
+            if failure:
+                failures.append((period, failure))
             for sc, cc in zip(batch_codes, corp_codes):
                 ni, nip, rev, revp, oi, oip = result[cc]
                 if ni is None:
@@ -475,14 +489,31 @@ def main() -> int:
 
     if args.multi_batch:
         corp_universe = {sc: cc for sc, cc in corp.items() if sc in set(codes)}
+        failures: list[tuple[str, str]] = []
         rows = collect_all_financials_batched(
             keys, corp_universe, periods, sleep=args.sleep,
             done_periods=done_periods, today=today,
-            knowledge_date=args.knowledge_date)
+            knowledge_date=args.knowledge_date, failures=failures)
         from .storage import upsert_earnings
         upsert_earnings(con, rows)
         con.close()
         print(f"DONE rows={len(rows)} (multi-batch)", flush=True)
+        if failures:
+            # **실패를 성공으로 보고하지 않는다.** 예전엔 `_get_json` 이 3회
+            # 재시도 뒤 `{}` 를 돌려주고 → `parse_financials_multi` 가 전원
+            # all-None 을 만들고 → `if ni is None: continue` 가 조용히 버려서,
+            # 일한도 소진이든 네트워크 장애든 `DONE rows=...` 로 exit 0 이었다.
+            # Airflow 는 성공으로 기록했고 retries 도 발동하지 않았다.
+            #
+            # (code, period) resume 덕에 빠진 조합은 다음 실행이 메워왔지만,
+            # 그건 "실패해도 티가 안 난다"는 뜻이지 안전하다는 뜻이 아니다.
+            # 수집분은 위에서 이미 커밋했으므로 여기서 죽어도 잃는 게 없다.
+            kinds = ", ".join(sorted({f"{p}:{s}" for p, s in failures})[:8])
+            print(
+                f"❌ DART 배치 {len(failures)}건 실패 (status={kinds})",
+                file=sys.stderr, flush=True,
+            )
+            return 1
         return 0
 
     f = open(args.out, "a", newline="") if args.out else None

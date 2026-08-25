@@ -17,7 +17,7 @@ TODAY = "20260815"
 def _stub_fetch(monkeypatch):
     """DART 호출을 고정 응답으로 대체 — 네트워크·키 불요."""
     def fake(keys, ki, corp_codes, year, q):
-        return {cc: (100.0, 90.0, 1000.0, 900.0, 50.0, 45.0) for cc in corp_codes}
+        return {cc: (100.0, 90.0, 1000.0, 900.0, 50.0, 45.0) for cc in corp_codes}, None
     monkeypatch.setattr(de, "_fetch_multi_with_rotation", fake)
 
 

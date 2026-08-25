@@ -61,10 +61,23 @@ def weekly_history_backfill():
     @task(retries=1, retry_delay=timedelta(minutes=10))
     def backfill_short_credit() -> None:
         # --days 800: 종목당 공매도 ~336일 / 신용 ~100일(키움 한계)까지 깊게 받는다.
-        # daily_short_credit은 기본 --days 100 증분 — 신규 상장 종목의 과거는 이 백필로 채운다.
+        # daily_short_credit은 --days 10 증분 — 신규 상장 종목의 과거는 이 백필로 채운다.
+        #
+        # --resume-depth 330: **이미 깊은 종목은 건너뛴다.** 이게 없을 때
+        # 이 태스크는 6주 연속 49~50분으로 붙박이였다 — 일이 줄지 않는다는 건
+        # 구멍만 메우는 구조가 아니라는 뜻이다. 실측으로 2,545 종목 중
+        # 2,463개(96.8%)가 이미 330일 이전까지 확보돼 있고 실제로 얕은 건
+        # 82종목뿐인데, 매주 5,090 요청을 전부 다시 보내고 ~107만 행을 같은
+        # 값으로 덮어썼다.
+        #
+        # 330 인 이유: 공매도 TR 상한이 ~336일이라 그 언저리가 "받을 수 있는
+        # 만큼 다 받은 상태"다. 800 을 기준으로 삼으면 어떤 종목도 만족할 수
+        # 없어 스킵이 영원히 안 걸린다.
         run_collector([
             sys.executable, "-m", "collectors.short_credit",
-            "--market", "all", "--prod", "--days", "800", "--db", timescale_dsn(),
+            "--market", "all", "--prod", "--days", "800",
+            "--resume-depth", "330",
+            "--db", timescale_dsn(),
         ], env=kiwoom_env())
 
     backfill_sector() >> backfill_short_credit()

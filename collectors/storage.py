@@ -191,6 +191,8 @@ CREATE TABLE IF NOT EXISTS delisted_stocks (
     market          TEXT,
     last_trade_date TEXT,   -- daily_bars 기준 마지막 거래일(상장폐지일 근사), 이력 없으면 NULL
     naver_checked   TEXT,   -- 네이버 조회했으나 우리 구간 내 데이터 없던 날(NULL=미확인)
+    dart_checked    TEXT,   -- DART 조회했으나 주식수 자료가 없던 날(NULL=미확인)
+    naver_sd_checked TEXT,  -- 네이버 수급을 조회했으나 빈 응답이던 날(NULL=미확인)
     PRIMARY KEY (code)
 );
 """
@@ -232,6 +234,28 @@ def init_db(con: sqlite3.Connection) -> None:
 
 def _is_pg(con: Any) -> bool:
     return not isinstance(con, sqlite3.Connection)
+
+
+def fetchone(con: Any, sql: str, params: tuple) -> tuple | None:
+    """sqlite3/psycopg2 양쪽에서 한 행을 읽는다 (``?`` 파라미터로 통일).
+
+    sqlite3 는 ``con.execute()`` 와 ``?`` 를, psycopg2 는 ``con.cursor().execute()``
+    와 ``%s`` 를 쓴다. **이 차이가 이 레포에서 반복해서 사고를 냈다** — 콜렉터마다
+    sqlite 전용 헬퍼를 따로 쓰다가 Postgres 에서 `AttributeError: 'connection'
+    object has no attribute 'execute'` 로 죽는 패턴이다:
+
+    - `daily_bars` 의 `--update` 경로 (2026-07-17, `daily_collection_catchup` 이
+      paused 로 방치돼 있던 원인)
+    - `short_credit._has_recent_ss` / `supply_demand._has_recent_rows` (잠복 —
+      두 DAG 가 `--resume` 을 안 넘겨서 아직 안 터졌다)
+
+    그래서 구현을 여기 하나로 모은다. 새 콜렉터는 이걸 쓴다.
+    """
+    if _is_pg(con):
+        with con.cursor() as cur:
+            cur.execute(sql.replace("?", "%s"), params)
+            return cur.fetchone()
+    return con.execute(sql, params).fetchone()
 
 
 def _upsert(
@@ -362,10 +386,25 @@ def upsert_sector_index(con: Any, records: list[tuple]) -> int:
 
 
 _SHARES_OUTSTANDING_COLS = ["code", "date", "shares_outstanding"]
+_SHARES_OUTSTANDING_COLS_SOURCED = [*_SHARES_OUTSTANDING_COLS, "source"]
 
 
-def upsert_shares_outstanding(con: Any, records: list[tuple]) -> int:
-    """Insert/replace shares_outstanding_history rows."""
+def upsert_shares_outstanding(
+    con: Any, records: list[tuple], *, source: str | None = None
+) -> int:
+    """Insert/replace shares_outstanding_history rows.
+
+    ``source`` 를 주면 4번째 컬럼으로 함께 쓴다. 안 주면 DDL 기본값
+    ``'kiwoom'`` 이 박힌다 — **그래서 KRX 로 받은 행이 kiwoom 으로 기록됐다.**
+    실측: `SELECT source, count(*)` 가 `kiwoom 28,892 / dart 2,013 / krx 0` 인데
+    krx 수집기는 분명히 이 함수를 부르고 있었다. 어느 소스에서 왔는지 모르면
+    소스별 신뢰도·백필 범위를 구분할 수 없다.
+    """
+    if source is not None:
+        return _upsert(
+            con, "shares_outstanding_history", _SHARES_OUTSTANDING_COLS_SOURCED,
+            [(*r, source) for r in records],
+        )
     return _upsert(con, "shares_outstanding_history", _SHARES_OUTSTANDING_COLS, records)
 
 

@@ -103,3 +103,45 @@ def test_db_table_upserts_correct_tuple_shape():
     assert row["target_mean"] == 513958.0
     assert row["recomm_mean"] == 4.04
     assert row["fwd_eps"] == 46664.0
+
+
+# ------------------------------------------------- 유니버스 축소 · sleep 낭비
+
+
+def test_covered_only_universe_reads_the_consensus_table():
+    """전종목 2,627개 중 실제 적재는 하루 660행 — 73%가 매일 헛돈다."""
+    import argparse
+
+    from collectors.naver_consensus import _universe_query
+
+    sql, params = _universe_query(argparse.Namespace(
+        covered_days=90, all_codes=True, top_n=800))
+
+    assert "FROM consensus" in sql
+    assert params == {"d": 90}
+
+
+def test_covered_days_zero_keeps_the_old_behaviour():
+    """기본값이 켜지면 조용히 유니버스가 줄어든다 — 명시할 때만 걸려야 한다."""
+    import argparse
+
+    from collectors.naver_consensus import _universe_query
+
+    sql, _ = _universe_query(argparse.Namespace(
+        covered_days=0, all_codes=True, top_n=800))
+
+    assert "FROM daily_bars" in sql
+
+
+def test_a_work_unit_sleeps_once_not_twice(monkeypatch):
+    """작업 단위 마지막 sleep 은 다음 요청을 늦추지 않고 워커만 놀린다."""
+    import collectors.naver_consensus as nc
+
+    naps = []
+    monkeypatch.setattr(nc.time, "sleep", lambda s: naps.append(s))
+    monkeypatch.setattr(nc, "fetch_consensus", lambda c: (1.0, 2.0, "20260821"))
+    monkeypatch.setattr(nc, "fetch_estimate", lambda c: (3.0, 4.0, "202612"))
+
+    nc._fetch_both("005930", 0.2)
+
+    assert naps == [0.2], "요청 사이 한 번만 자야 한다"

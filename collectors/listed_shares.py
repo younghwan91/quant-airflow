@@ -70,7 +70,7 @@ def collect(
 
     def flush() -> None:
         if buffer:
-            stats["rows"] += upsert_shares_outstanding(con, buffer)
+            stats["rows"] += upsert_shares_outstanding(con, buffer, source="kiwoom")
             buffer.clear()
 
     for i, stock in enumerate(stocks, 1):
