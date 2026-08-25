@@ -21,10 +21,13 @@ x-airflow-common-env: &airflow-common-env
   AIRFLOW__WEBSERVER__WORKER_REFRESH_INTERVAL: "1800"
   # 동시 실행 태스크 상한. 기본값은 32 라, 스택이 며칠 안 뜬 뒤 기동하면
   # catchup=False 여도 DAG 12개가 각각 밀린 런 1개씩을 **한꺼번에** 띄운다 —
-  # 스페어 PC 가 스래싱한다. 정상 운영에서 동시에 도는 건 2~3개뿐이라
-  # (오전: catchup+short_credit+listed_shares) 3 이면 충분하고, 넘치면
-  # 큐에서 기다렸다가 순서대로 돈다.
-  AIRFLOW__CORE__PARALLELISM: "3"
+  # 스페어 PC 가 스래싱한다.
+  #
+  # 5 인 이유: 정상 최대 동시 실행이 3 이다(화요일 오전 = short_credit 10:00 +
+  # catchup 10:05 + listed_shares 10:10). 상한을 그 3 에 딱 맞추면 여유가 0 이라
+  # ExternalTaskSensor 의 poke 하나가 48분짜리 런 뒤에 줄을 선다. 2 만큼 여유를
+  # 두되 32 보다는 훨씬 낮게 잡는다.
+  AIRFLOW__CORE__PARALLELISM: "5"
   KR_QUANT_SQLITE_PATH: ${KR_QUANT_SQLITE_PATH}
   TIMESCALE_HOST: timescaledb
   TIMESCALE_PORT: 5432
