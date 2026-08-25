@@ -52,7 +52,12 @@ SUBSCRIBED_TABLES = (
     "stocks",            # SEP  — 주가. 953MB
     "daily",             # DAILY— 시총/EV. 733MB
     "fundamentals",      # SF1  — 분기 재무. 626MB
-    "funds",             # SFP  — ETF·펀드 가격. 286MB
+    # SFP — ETF·펀드 가격. 286MB, **거래일마다 갱신된다**(실측 vendor_modified).
+    # 빌드(sharadar_build.TABLE_KINDS)가 안 읽으므로 "매일 300MB 를 받아서 안
+    # 쓴다"로 보이지만 **아니다** — opt_portfolio 의 TAA 가 이 zip 을 직접 읽는다
+    # (`taa/data.py: DEFAULT_ZIP = ~/data/sharadar/raw/funds.csv.zip`). 스토어를
+    # 거치지 않는 소비자가 있다는 뜻이고, 여기서 빼면 그쪽이 조용히 낡는다.
+    "funds",
     "insiders",          # SF2  — Form 4. 234MB
     "holdings",          # SF3  — 13F 원자료. 542MB
     "holdings_investor", # SF3B — 13F 투자자별
