@@ -86,9 +86,28 @@ spare PC (Ubuntu, 이 레포)                                  main PC
 배포해도 충돌하지 않는다(기존 리더는 옛 inode를 계속 읽는다). DuckDB는 단일
 라이터라, 직접 upsert하면 연구와 수집이 상시 서로를 막는다.
 
-머신 가동은 cron이 관리한다. 매일 10:00에 스택을 올리고, 그날 예정된 DAG가 모두
-끝나면 `scripts/wait_and_stop.sh`가 스택을 조기 종료한다(22:00 안전장치 포함). 모든
-DAG 스케줄은 이 가동 창 안에 들도록 맞춰져 있다.
+머신 가동은 cron이 관리한다. **하루 두(토요일은 세) 창으로 나눠 띄운다.**
+
+| 창 | 기동 | 대상 |
+|---|---|---|
+| 1 — 오전 수집 | 매일 10:00 (지평선 11:30) | catchup · short_credit · listed_shares · 주간 백필 |
+| 2 — 평일 저녁 | 평일 15:55 | daily_collection(16:00) · consensus(17:00) · sharadar(화~금 17:30) |
+| 3 — 토요일 저녁 | 토 17:20 | sharadar(17:30) 하나 |
+
+각 창은 `scripts/wait_and_stop.sh` 가 "그 지평선까지 예정된 DAG가 전부 끝났는가"를
+Airflow 메타DB에 물어 조기 종료한다(안전장치 포함).
+
+**왜 한 창이 아닌가.** 예전엔 10:00 기동 → 마지막 DAG까지 한 창이었는데, 실측
+가동 521분 중 작업이 138분(27%)이고 **380분(73%)이 오전 수집과 저녁 수집 사이의
+유휴**였다. 오전 DAG는 전날 확정 데이터를 받으므로 미룰 수 없고, 저녁 DAG는 장
+마감(15:30) 이후에만 데이터가 나오므로 앞당길 수 없다 — 스케줄을 붙이는 건
+원리적으로 불가능하고 창을 나누는 게 유일한 답이다.
+
+> ⚠️ `wait_and_stop.sh` 는 **airflow 3종만 내린다.** `timescaledb` 는 이 레포
+> 전용이 아니다 — scalp-it 의 장중 틱 수집이 같은
+> 컨테이너를 쓰고 crontab 의 `db_guard.sh` 가 평일 08:00~15:55 살아 있는지 지킨다.
+> 예전처럼 `docker compose stop` 으로 전부 내리면 오전 창을 11:30에 닫는 순간
+> **장중에 남의 수집 DB를 죽인다.**
 
 ## 빠른 시작
 
@@ -115,22 +134,22 @@ docker compose up -d
 
 | DAG | 스케줄(KST) | 수집 대상 |
 |---|---|---|
-| `daily_collection` | 평일 16:00 | 일봉 + 수급(키움) + 업종지수 |
-| `daily_collection_catchup` | 매일 10:05 | 전날 실패분만 값싸게 재수집 |
-| `daily_short_credit` | 화~토 10:00 | 공매도 + 신용잔고(키움, T+1~2 지연 고려) |
+| `daily_collection` | 평일 16:00 | 일봉 + 수급(키움) + 업종지수. 쓰는 창은 최근 15일 — 깊은 구멍은 catchup 이 메운다 |
+| `daily_collection_catchup` | 평일 10:05 | 전날 실패분만 값싸게 재수집(일봉·수급을 따로 판정, 최신이면 API 호출 0) |
+| `daily_short_credit` | 화~토 10:00 | 공매도 + 신용잔고(키움, T+1~2 지연 고려). 쓰는 창 최근 10일 |
 | `daily_earnings` | 평일 16:00 | DART 실적 증분(당기 + 전분기, `--multi-batch`) |
-| `daily_consensus` | 평일 18:00 | 네이버 애널리스트 컨센서스 |
-| ~~`daily_krx_shares`~~ | ~~평일 18:30~~ | ⛔ **paused (2026-08-15)** — KRX가 MDCSTAT 계열에 로그인을 걸어 OTP가 `LOGOUT`을 반환한다. 22회 실행 내내 `rows=0`이면서 전부 성공으로 기록됐다(조용한 실패). 대체: 상장분은 `weekly_listed_shares`, 폐지분은 `dart_shares` |
+| `daily_consensus` | 평일 17:00 | 네이버 애널리스트 컨센서스. 월요일만 전종목, 화~금은 최근 90일 커버리지 종목만 |
+| ~~`daily_krx_shares`~~ | ~~수동 전용~~ | ⛔ **`schedule=None` (2026-08-25)** — KRX가 MDCSTAT 계열에 로그인을 걸어 OTP가 `LOGOUT`을 반환한다. 원래 `is_paused_upon_creation=True` 를 걸어뒀는데 **그 플래그는 최초 등록 때만 적용돼** 무시됐고, 8/17 이후 평일마다 실패하며 재시도 10분으로 저녁 창을 18:40까지 늘렸다. 대체: 상장분은 `weekly_listed_shares`, 폐지분은 `dart_shares` |
 
 **주간 — 백필/스냅샷**
 
 | DAG | 스케줄(KST) | 수집 대상 |
 |---|---|---|
 | `earnings_backfill` | 일 10:00 | DART 실적 전체 이력 백필(`--multi-batch`, resume) |
-| `weekly_history_backfill` | 일 11:00 | 업종지수·공매도·신용잔고 히스토리 깊이 재수집 |
-| `weekly_listed_shares` | 월 10:10 | 키움 상장주식수 스냅샷 |
+| `weekly_history_backfill` | 일 11:00 | 업종지수·공매도·신용잔고 히스토리 깊이 재수집. `--resume-depth 330` 으로 **이미 깊은 종목은 건너뛴다** |
+| `weekly_listed_shares` | 화 10:10 | 키움 상장주식수 스냅샷. 화요일인 이유는 `daily_short_credit` 과 TR 버킷이 달라 겹쳐 돌려도 서로 안 막기 때문이다 |
 | `weekly_delisted_stocks` | 토 10:05 | KRX 상장폐지종목 마스터 + **과거 일봉**(네이버) + **상장주식수**(DART) 백필 — 생존편향 보정 3층 |
-| `weekly_price_adjust` | 토 10:40 | `daily_bars_adjusted`(액면분할 백조정) 재생성 — delisted 뒤에 돌아야 새 폐지분이 당주에 반영된다 |
+| `weekly_price_adjust` | 토 10:40 | `daily_bars_adjusted`(액면분할 백조정) 재생성. `ExternalTaskSensor` 로 delisted 의 시세 백필 완료를 **직접 확인한 뒤** 시작한다(예전엔 35분 시계 간격이 유일한 보장이었다) |
 
 > **신뢰성** — 모든 DAG 태스크에 재시도를 걸어 두었다. 외부 API·수집 DAG는
 > `retries=1, retry_delay=10분`, 전체 이력 백필은 `retries=2, 30분`이다. 일시적
@@ -143,7 +162,7 @@ docker compose up -d
 
 | DAG | 스케줄(KST) | 하는 일 |
 |---|---|---|
-| `daily_sharadar` | 화~토 17:30 | 벌크 스냅샷 동기화 → 스토어 재구축 → 검증 → 원자적 공개 |
+| `daily_sharadar` | 화~토 17:30 | 벌크 스냅샷 동기화 → 스토어 재구축 → 검증 → 원자적 공개. 테이블별로 실패를 격리해 **한 개가 죽어도 나머지 13개의 상태 표는 남는다** |
 
 한국 파이프라인과 스케줄러·인프라를 공유한다 — 레포가 `quant-airflow`인 이유다.
 설계 근거는
@@ -230,7 +249,7 @@ collectors/            # 수집 로직 자체 보유 (kr_quant 런타임 의존 
   naver_delisted_bars.py  #   폐지 종목 과거 일봉(키움은 빈 응답을 '성공'으로 준다)
   dart_shares.py          #   폐지 종목 상장주식수(KRX MDCSTAT는 로그인 장벽으로 0행)
 scripts/
-  wait_and_stop.sh     # 그날 DAG 전부 끝나면 스택 조기 종료 (22:00 안전장치)
+  wait_and_stop.sh     # 지평선까지 예정 DAG 전부 끝나면 airflow 조기 종료 (--until HH:MM)
   sync_to_timescale.py # sqlite → TimescaleDB 증분 upsert (레거시 경로)
 sql/init_timescale.sql # hypertable 스키마 + 청크/압축 정책 (신규 DB용)
 sql/migrations/        # 기존 DB 변경분 — 001~004, README "스키마 마이그레이션" 참고

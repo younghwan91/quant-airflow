@@ -180,9 +180,16 @@ CREATE TABLE IF NOT EXISTS delisted_stocks (
     PRIMARY KEY (code)
 );
 
--- Recent rows stay row-oriented (frequent upserts); anything older than 7
+-- Recent rows stay row-oriented (frequent upserts); anything older than 30
 -- days is compressed columnar in the background — cuts disk use and speeds
 -- up the long-range scans backtest/screener code does.
+--
+-- **왜 7일이 아니라 30일인가 (2026-08-25).** 수집기가 쓰는 창은 일봉·수급 15일,
+-- 공매도·신용 10일이다. 압축 경계가 7일이면 그 창의 절반 이상이 이미 압축된
+-- 청크를 때려, upsert 마다 세그먼트 압축해제→갱신→재압축이 돈다. pg_stat 에
+-- 그 흔적이 그대로 남아 있었다 — 압축 청크에서 n_tup_ins ≈ n_tup_del 이고
+-- n_live_tup 이 0 이다(해제된 행이 힙에 얹혔다가 재압축될 때까지 남는다).
+-- 경계를 쓰는 창 밖으로 밀면 그 순환이 사라진다.
 ALTER TABLE daily_bars SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
 ALTER TABLE supply_demand SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
 ALTER TABLE short_selling SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
@@ -193,12 +200,19 @@ ALTER TABLE consensus SET (timescaledb.compress, timescaledb.compress_segmentby 
 -- daily_bars_adjusted는 압축 대상에서 제외 — weekly_price_adjust가 매주 전체를
 -- upsert로 재작성하므로, 압축을 걸면 매주 오래된 청크를 압축해제→재압축하는
 -- 순환이 반복돼 이득 없이 CPU/IO만 낭비된다(주간 전체재생성 테이블 특성).
+--
+-- ⚠️ **이 주석은 한동안 거짓이었다.** 라이브 DB 에서 515청크 중 512개가 압축된
+-- 상태였고(정책 없이 수동 압축된 것으로 보인다), 실측 압축률이 739MB → 901MB 로
+-- **음수**였다. 주간 전량 upsert 가 그 청크들을 전부 압축해제해 놓고 재압축할
+-- 정책이 없어 빈 압축청크 껍데기만 남아 있었다. 2026-08-25 에 전량
+-- decompress_chunk + compress=false 로 되돌렸다. 이 파일이 요구하는 상태와
+-- 실제 DB 가 어긋날 수 있다는 게 교훈이다 — init 스크립트는 최초 1회만 돈다.
 
-SELECT add_compression_policy('daily_bars', INTERVAL '7 days');
-SELECT add_compression_policy('supply_demand', INTERVAL '7 days');
-SELECT add_compression_policy('short_selling', INTERVAL '7 days');
-SELECT add_compression_policy('credit_balance', INTERVAL '7 days');
-SELECT add_compression_policy('sector_index', INTERVAL '7 days');
-SELECT add_compression_policy('shares_outstanding_history', INTERVAL '7 days');
-SELECT add_compression_policy('consensus', INTERVAL '7 days');
+SELECT add_compression_policy('daily_bars', INTERVAL '30 days');
+SELECT add_compression_policy('supply_demand', INTERVAL '30 days');
+SELECT add_compression_policy('short_selling', INTERVAL '30 days');
+SELECT add_compression_policy('credit_balance', INTERVAL '30 days');
+SELECT add_compression_policy('sector_index', INTERVAL '30 days');
+SELECT add_compression_policy('shares_outstanding_history', INTERVAL '30 days');
+SELECT add_compression_policy('consensus', INTERVAL '30 days');
 -- earnings는 일반 테이블이라 압축/보존 정책 대상 아님 (위 CREATE TABLE 주석 참고).
