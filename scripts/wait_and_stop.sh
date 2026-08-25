@@ -129,11 +129,14 @@ shutdown() {
     # scalp-it 의 장중 틱 수집이 같은 DB를 쓰고, crontab 의 db_guard.sh 가
     # 평일 08:00~15:55 5분마다 살아 있는지 지킨다. 예전처럼 `docker compose stop`
     # 으로 전부 내리면, 오전 창을 11:30에 닫는 순간 **장중에 남의 수집 DB를
-    # 죽인다.** 종료 대상은 airflow 3종으로 좁힌다.
+    # 죽인다.** 종료 대상은 airflow 4종(스케줄러·웹서버·init·메타DB)으로 좁힌다 —
+    # 메타DB 는 airflow 전용이라 같이 내려도 되고, 실측 확인했다(첫 창 종료 때
+    # 목록에서 빠져 있어 24시간 떠 있었다).
     # webserver 는 `profiles: ["ui"]` 라 안 떠 있을 수 있다 — 그때 이름을 그냥
     # 넘기면 compose 가 에러를 내므로 `--profile ui` 로 인식시킨다(안 떠 있으면
     # 무해한 no-op).
-    docker compose --profile ui stop airflow-scheduler airflow-webserver airflow-init
+    docker compose --profile ui stop \
+        airflow-scheduler airflow-webserver airflow-init airflow-meta-db
     exit 0
 }
 
