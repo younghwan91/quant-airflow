@@ -22,12 +22,15 @@ import argparse
 import sqlite3
 import time
 
+from typing import Any
+
 from kiwoom_rest_api import KiwoomAPI
 from kiwoom_rest_api.base import KiwoomAPIError
 
 from .config import make_api, mask_dsn
 from .storage import (
     connect,
+    fetchone,
     default_db_path,
     to_float,
     to_int,
@@ -38,11 +41,30 @@ from .storage import (
 from .supply_demand import fetch_stock_list, is_common_stock
 
 
-def _has_recent_ss(con: sqlite3.Connection, code: str, cutoff: str) -> bool:
-    cur = con.execute(
-        "SELECT 1 FROM short_selling WHERE code=? AND date>=? LIMIT 1", (code, cutoff)
-    )
-    return cur.fetchone() is not None
+def _has_recent_ss(con: Any, code: str, cutoff: str) -> bool:
+    """이 종목에 ``cutoff`` **이후** 공매도 행이 있나 — 일일 수집의 resume 기준."""
+    return fetchone(
+        con, "SELECT 1 FROM short_selling WHERE code=? AND date>=? LIMIT 1",
+        (code, cutoff),
+    ) is not None
+
+
+def _has_history_back_to(con: Any, code: str, depth_cutoff: str) -> bool:
+    """이 종목의 공매도가 이미 ``depth_cutoff`` **이전**까지 닿아 있나.
+
+    주간 깊이 백필(`weekly_history_backfill`)의 스킵 기준이다. "최근 행이
+    있나"(`_has_recent_ss`)로는 깊이를 판정할 수 없다 — 매일 수집이 최근
+    구간을 채워두므로 전 종목이 항상 참이 되어 스킵이 무의미해진다.
+
+    **왜 깊이로 판정해야 하는가.** 백필은 키움 TR 상한(공매도 ~336일)까지
+    긁는 게 목적인데, 실측 2,545 종목 중 2,463개(96.8%)가 이미 330일 이전까지
+    확보돼 있다. 실제로 얕은 건 82종목뿐인데 매주 5,090 요청(49분)을 전부
+    다시 보내고 ~107만 행을 같은 값으로 덮어썼다.
+    """
+    return fetchone(
+        con, "SELECT 1 FROM short_selling WHERE code=? AND date<=? LIMIT 1",
+        (code, depth_cutoff),
+    ) is not None
 
 
 def _build_ss_records(code: str, resp: dict, cutoff: str) -> list[tuple]:
@@ -99,10 +121,26 @@ def collect(
     *,
     days: int = 100,
     resume: bool = False,
+    resume_depth: int = 0,
     progress_every: int = 50,
 ) -> dict[str, int]:
+    """공매도+신용잔고를 종목별로 수집한다.
+
+    Args:
+        days: 받아서 **쓰는** 창의 길이. 기본 100 은 키움이 주는 전량에 가깝다.
+        resume: `cutoff` 이후 행이 있는 종목을 건너뛴다(중단된 런 재개용).
+        resume_depth: 0 이 아니면 **깊이 기반 스킵**을 켠다 — 이미 `오늘 -
+            resume_depth일` 이전까지 이력이 닿아 있는 종목을 건너뛴다. 주간
+            깊이 백필 전용이다. `resume` 과 달리 "얼마나 과거까지 있나"를 보므로,
+            매일 수집이 최근 구간을 채워둔 상태에서도 의미 있게 걸러진다.
+    """
     today = time.strftime("%Y%m%d")
     cutoff = time.strftime("%Y%m%d", time.localtime(time.time() - days * 86400))
+    depth_cutoff = (
+        time.strftime("%Y%m%d", time.localtime(time.time() - resume_depth * 86400))
+        if resume_depth > 0
+        else ""
+    )
     start_dt = cutoff
     stats = {"done": 0, "skipped": 0, "failed": 0, "ss_rows": 0, "cb_rows": 0}
     started = time.monotonic()
@@ -120,6 +158,9 @@ def collect(
     for i, stock in enumerate(stocks, 1):
         code = stock["code"]
         if resume and _has_recent_ss(con, code, cutoff):
+            stats["skipped"] += 1
+            continue
+        if depth_cutoff and _has_history_back_to(con, code, depth_cutoff):
             stats["skipped"] += 1
             continue
         try:
@@ -167,6 +208,11 @@ def main() -> int:
     parser.add_argument("--db", default=str(default_db_path()))
     parser.add_argument("--resume", action="store_true", help="최근 데이터 있는 종목 건너뜀")
     parser.add_argument(
+        "--resume-depth", type=int, default=0,
+        help="이미 최근 N일 이전까지 이력이 닿아 있는 종목은 건너뜀 "
+             "(주간 깊이 백필용 — 0=끔). 공매도 TR 상한이 ~336일이므로 330 이 실용값이다.",
+    )
+    parser.add_argument(
         "--all-kinds", action="store_true",
         help="ETF/ETN/리츠/우선주 등 모두 포함 (기본: 보통주만)",
     )
@@ -188,7 +234,10 @@ def main() -> int:
     print(f"🔌 {server} | 시장={args.market} | 종목 {len(stocks)}개 | 최근 {args.days}일")
     print(f"💾 {mask_dsn(args.db)}\n")
 
-    stats = collect(api, con, stocks, days=args.days, resume=args.resume)
+    stats = collect(
+        api, con, stocks, days=args.days, resume=args.resume,
+        resume_depth=args.resume_depth,
+    )
 
     api.close()
     con.close()

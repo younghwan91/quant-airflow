@@ -4,15 +4,30 @@ x-airflow-common-env: &airflow-common-env
   AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
   AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
   AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-  # 2 DAG뿐인 개인 서버라 스케줄러/파서 기본 폴링 주기가 과함 (CPU 80~100%
-  # 지속 관측됨). 폴링 간격을 늘려 유휴 CPU/팬 소음을 낮춤.
+  # 개인 서버라 스케줄러/파서 기본 폴링 주기가 과함 (CPU 80~100% 지속 관측됨).
+  # 폴링 간격을 늘려 유휴 CPU/팬 소음을 낮춤.
+  #
+  # MIN_FILE_PROCESS_INTERVAL 이 300 → 1800 인 이유: 5분마다 DAG 파일 12개를
+  # 재파싱하면 파일당 1~2초 × 12 / 300초 ≈ 지속 5~8% CPU 다. DAG 파일은 배포할
+  # 때만 바뀌므로 30분이면 충분하고, 급하면 스케줄러를 재시작하면 된다.
+  # SCHEDULER_IDLE_SLEEP_TIME 은 더 늘리지 말 것 — 지금도 10:00 스케줄이
+  # 10:00:45 에 시작한다.
   AIRFLOW__SCHEDULER__SCHEDULER_HEARTBEAT_SEC: "30"
   AIRFLOW__SCHEDULER__PROCESSOR_POLL_INTERVAL: "30"
   AIRFLOW__SCHEDULER__SCHEDULER_IDLE_SLEEP_TIME: "15"
-  AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "300"
+  AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "1800"
   AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "600"
   AIRFLOW__WEBSERVER__WORKERS: "1"
   AIRFLOW__WEBSERVER__WORKER_REFRESH_INTERVAL: "1800"
+  # 동시 실행 태스크 상한. 기본값은 32 라, 스택이 며칠 안 뜬 뒤 기동하면
+  # catchup=False 여도 DAG 12개가 각각 밀린 런 1개씩을 **한꺼번에** 띄운다 —
+  # 스페어 PC 가 스래싱한다.
+  #
+  # 5 인 이유: 정상 최대 동시 실행이 3 이다(화요일 오전 = short_credit 10:00 +
+  # catchup 10:05 + listed_shares 10:10). 상한을 그 3 에 딱 맞추면 여유가 0 이라
+  # ExternalTaskSensor 의 poke 하나가 48분짜리 런 뒤에 줄을 선다. 2 만큼 여유를
+  # 두되 32 보다는 훨씬 낮게 잡는다.
+  AIRFLOW__CORE__PARALLELISM: "5"
   KR_QUANT_SQLITE_PATH: ${KR_QUANT_SQLITE_PATH}
   TIMESCALE_HOST: timescaledb
   TIMESCALE_PORT: 5432
@@ -108,9 +123,13 @@ services:
         if [ -n "$$DART_API_KEY_2" ]; then airflow variables set DART_API_KEY_2 "$$DART_API_KEY_2"; fi
         if [ -n "$$DART_API_KEY_3" ]; then airflow variables set DART_API_KEY_3 "$$DART_API_KEY_3"; fi
 
+  # UI 는 사람이 볼 때만 띄운다 — 상시 RSS 657MB(실측)를 하루 종일 이고 있을
+  # 이유가 없다. 수집 자체는 스케줄러만으로 돈다.
+  #     docker compose --profile ui up -d airflow-webserver
   airflow-webserver:
     <<: *airflow-common
     command: webserver
+    profiles: ["ui"]
     ports:
       - "8080:8080"
     depends_on:

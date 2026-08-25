@@ -29,9 +29,9 @@ from kiwoom_rest_api.base import KiwoomAPIError
 
 from .config import make_api, mask_dsn
 from .storage import (
-    _is_pg,
     connect,
     default_db_path,
+    fetchone,
     to_int,
     upsert_daily_bars,
     upsert_stocks,
@@ -42,23 +42,27 @@ from .supply_demand import fetch_stock_list, is_common_stock
 _CHART_KEY = "stk_dt_pole_chart_qry"
 
 
-def _fetchone(con: Any, sql: str, params: tuple) -> tuple | None:
-    """sqlite3/psycopg2 양쪽에서 한 행을 읽는다 (``?`` 파라미터로 통일).
-
-    sqlite3는 ``con.execute()``와 ``?``를, psycopg2는 ``con.cursor().execute()``와
-    ``%s``를 쓴다. 이 차이 때문에 ``--update`` 경로가 Postgres에서
-    ``AttributeError: 'connection' object has no attribute 'execute'``로 죽었고,
-    그게 ``daily_collection_catchup``이 paused로 방치돼 있던 원인이다(2026-07-17 실측).
-    """
-    if _is_pg(con):
-        with con.cursor() as cur:
-            cur.execute(sql.replace("?", "%s"), params)
-            return cur.fetchone()
-    return con.execute(sql, params).fetchone()
+#: 구현은 storage.fetchone 하나로 모았다 — 콜렉터마다 sqlite 전용 사본을 두다
+#: Postgres 에서 죽는 사고가 반복됐다. 기존 호출부 호환을 위해 이름만 남긴다.
+_fetchone = fetchone
 
 
 def _has_any_rows(con: Any, code: str) -> bool:
     return _fetchone(con, "SELECT 1 FROM daily_bars WHERE code=? LIMIT 1", (code,)) is not None
+
+
+def _sd_latest_date(con: Any, code: str) -> str | None:
+    """수급(supply_demand)의 최신 저장일. ``_latest_date`` 의 수급 짝이다.
+
+    이게 없어서 `--update` 가 일봉만 건너뛰고 수급은 **매번 전 종목 재수집**
+    했다. 실측: 새 데이터가 존재할 수 없는 일요일 catchup 이 `일봉 0행 수급
+    175,266행` 을 쓰며 48.6분을 태웠다.
+    """
+    row = _fetchone(con, "SELECT MAX(date) FROM supply_demand WHERE code=?", (code,))
+    v = row[0] if row else None
+    if v is None:
+        return None
+    return v.strftime("%Y%m%d") if hasattr(v, "strftime") else str(v)
 
 
 def _latest_date(con: Any, code: str) -> str | None:
@@ -77,19 +81,49 @@ def _latest_date(con: Any, code: str) -> str | None:
 _REF_CODE = "005930"
 
 
-def _market_latest_date(api: KiwoomAPI, base_dt: str, ref_code: str = _REF_CODE) -> str:
-    """Latest available daily-bar date on the server, via a liquid reference.
+#: 장 마감(15:30 KST) 뒤 데이터 확정까지의 여유. 이 시각 전에는 오늘 봉을
+#: **미완성**으로 본다. daily_collection 이 16:00 에 도는 근거와 같은 값이다.
+_SESSION_CLOSE_HHMM = "1540"
 
-    Lets ``--update`` skip stocks already at the newest trading day so same-day
-    re-runs are near-instant. Falls back to ``base_dt`` if the probe fails.
+
+def _market_latest_date(
+    api: KiwoomAPI,
+    base_dt: str,
+    ref_code: str = _REF_CODE,
+    *,
+    now_hhmm: str | None = None,
+) -> str:
+    """서버가 가진 **완료된** 최신 거래일. 진행 중인 오늘 봉은 세지 않는다.
+
+    ``--update`` 가 "이미 최신인 종목"을 건너뛰는 기준점이다.
+
+    **왜 첫 행을 그대로 쓰면 안 되는가.** ka10081 은 장중에도 오늘 봉을
+    첫 행으로 준다 — 09:00 부터 지금까지의 **미완성 캔들**이다. 10:05 에 도는
+    catchup 이 그걸 최신 거래일로 삼으면, 전날 16:00 수집분(어제까지)은 전
+    종목에서 "낡음"으로 판정돼 **스킵이 한 건도 안 걸린다.** 실측: 2026-08-24
+    catchup 이 `done=2626 skip=0 | 일봉 1,503,880행` 으로 16:00 수집을 통째로
+    재실행했고 48.6분을 썼다.
+
+    덤으로 그 미완성 캔들이 확정 일봉과 구분 없이 `daily_bars` 에 upsert 돼,
+    16:00 수집이 덮어쓰기 전까지 이 테이블을 읽는 쪽은 부분 봉을 확정 봉으로
+    읽었다.
+
+    프로브가 실패하면 ``base_dt`` 로 물러난다(예전과 동일 — 모르면 전부 받는다).
     """
+    now_hhmm = now_hhmm or time.strftime("%H%M")
+    today = time.strftime("%Y%m%d")
     try:
         resp = api.chart.stock_daily_chart(
             stk_cd=ref_code, base_dt=base_dt, upd_stkpc_tp="1"
         )
         rows = resp.get(_CHART_KEY) or []
-        if rows:
-            return rows[0].get("dt", base_dt)
+        for row in rows:
+            dt = row.get("dt")
+            if not dt:
+                continue
+            if dt == today and now_hhmm < _SESSION_CLOSE_HHMM:
+                continue  # 진행 중인 캔들 — 완료된 직전 거래일로 내려간다
+            return dt
     except Exception:  # noqa: BLE001 — fall back to today on any probe failure
         pass
     return base_dt

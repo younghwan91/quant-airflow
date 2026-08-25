@@ -35,6 +35,7 @@ from datetime import timedelta
 
 import pendulum
 from airflow.decorators import dag, task
+from airflow.sensors.external_task import ExternalTaskSensor
 
 from _common import run_collector, timescale_dsn
 
@@ -43,9 +44,15 @@ from _common import run_collector, timescale_dsn
     dag_id="weekly_price_adjust",
     # 토요일 10:40 KST — 스택 기동(cron 0 10 * * *) 이후. 기존 05:00은 머신이
     # 꺼져 있는 시간이라(스택 가동 창 10:00~) 제 시각에 돌 수 없었다.
-    # 10:05 -> 10:40 (2026-08-15): weekly_delisted_stocks(10:05)가 새 폐지 종목
-    # 시세를 daily_bars 에 넣은 뒤에 조정가를 재생성해야 한다. 앞서 돌면 새 종목이
-    # daily_bars_adjusted 에 일주일 늦게 반영된다.
+    #
+    # **순서 보장은 이제 시계가 아니라 센서다.** weekly_delisted_stocks(10:05)가
+    # 새 폐지 종목 시세를 daily_bars 에 넣은 뒤에 조정가를 재생성해야 하는데,
+    # 그 보장이 35분 간격뿐이었다. 실측으로 2026-08-15 에 그 DAG 의 한 태스크가
+    # **175.3분** 걸린 적이 있다 — 마침 price_adjust 가 안 기다려도 되는 마지막
+    # 태스크(수급)라 사고가 안 났을 뿐이다. backfill_delisted_bars 가 35분을
+    # 넘기는 날엔 반쯤 채워진 daily_bars 로 조정가가 만들어지고, 조용히 틀린
+    # 결과가 다음 주까지 간다. 생존편향 제거가 핵심 가치인 레포에서 정확히 그
+    # 가치를 갉는 실패 모드다. 아래 ExternalTaskSensor 가 그걸 닫는다.
     schedule="40 10 * * 6",
     start_date=pendulum.datetime(2026, 7, 12, tz="Asia/Seoul"),
     catchup=False,
@@ -53,6 +60,25 @@ from _common import run_collector, timescale_dsn
     tags=["kr-quant", "maintenance", "price-adjust"],
 )
 def weekly_price_adjust():
+
+    # 폐지 종목 시세 백필이 끝났는지 **직접 확인한다.** 두 DAG 는 같은 토요일에
+    # 돌지만 스케줄 시각이 달라(10:05 vs 10:40) 데이터 인터벌이 어긋나므로,
+    # execution_delta 로 그 35분을 명시한다.
+    wait_for_delisted_bars = ExternalTaskSensor(
+        task_id="wait_for_delisted_bars",
+        external_dag_id="weekly_delisted_stocks",
+        external_task_id="backfill_delisted_bars",
+        execution_delta=timedelta(minutes=35),
+        # poke 는 워커 슬롯을 잡고 있으므로 reschedule 로 놓아준다 —
+        # PARALLELISM 이 3 인 서버에서 슬롯 하나를 90분 물고 있으면 안 된다.
+        mode="reschedule",
+        poke_interval=120,
+        timeout=90 * 60,
+        # 센서가 시간 초과하면 조정가를 만들지 **않는다**. 반쯤 채워진
+        # daily_bars 로 만드느니 이번 주를 거르는 게 낫다 — 다음 주 런이 어차피
+        # 전 종목 전 기간을 재계산한다.
+        soft_fail=False,
+    )
 
     @task(retries=1, retry_delay=timedelta(minutes=10))
     def rebuild_adjusted() -> None:
@@ -66,7 +92,7 @@ def weekly_price_adjust():
             cwd="/opt/kr-quant",
         )
 
-    rebuild_adjusted()
+    wait_for_delisted_bars >> rebuild_adjusted()
 
 
 weekly_price_adjust()

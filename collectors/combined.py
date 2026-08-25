@@ -32,7 +32,14 @@ from .storage import (
     upsert_stocks,
     upsert_supply_demand,
 )
-from .daily_bars import _CHART_KEY, _has_any_rows, _latest_date, _market_latest_date, _row_to_record
+from .daily_bars import (
+    _CHART_KEY,
+    _has_any_rows,
+    _latest_date,
+    _market_latest_date,
+    _row_to_record,
+    _sd_latest_date,
+)
 from .supply_demand import (
     _has_recent_rows,
     build_sd_records,
@@ -58,13 +65,17 @@ def collect(
         sd_days: Supply/demand window in days (ka10059 returns ~100 max).
         daily_days: Daily-bar window in days. 0 = everything the call returns.
         resume: Skip stocks that already have both a daily bar and recent SD.
-        update: Skip the daily-bar call for stocks already at the market's
-            latest trading day (self-heals prior-day gaps cheaply — a stock
-            still missing yesterday's bar looks not-current and gets a full
-            re-fetch, one already caught up costs zero API calls). Supply/
-            demand has no cheap "already current" check (ka10059 only
-            returns a rolling ~100-day window, not a single day) so it's
-            always re-fetched regardless of this flag.
+        update: Skip the per-stock calls for stocks already at the market's
+            latest **completed** trading day (self-heals prior-day gaps cheaply
+            — a stock still missing yesterday's bar looks not-current and gets
+            a full re-fetch, one already caught up costs zero API calls).
+            일봉과 수급을 **따로** 판정한다: 한쪽만 낡았으면 그쪽 TR 만 부른다.
+
+            수급 가드가 없던 시절엔 ka10059 가 "롤링 100일 창만 주고 단일일을
+            안 준다"는 이유로 항상 재수집됐다. 그 논리가 틀렸다 — 필요한 건
+            단일일 조회 API 가 아니라 "이 종목의 최신 거래일 행이 DB 에 이미
+            있나" 한 줄이고, 그게 `_sd_latest_date` 다. 그 전까지는 새 데이터가
+            존재할 수 없는 일요일에도 175,266행을 다시 쓰며 48.6분을 태웠다.
     """
     base_dt = time.strftime("%Y%m%d")
     sd_cutoff = time.strftime("%Y%m%d", time.localtime(time.time() - sd_days * 86400))
@@ -85,6 +96,10 @@ def collect(
             stats["skipped"] += 1
             continue
         daily_current = update and (_latest_date(con, code) or "") >= market_latest
+        sd_current = update and (_sd_latest_date(con, code) or "") >= market_latest
+        if daily_current and sd_current:
+            stats["skipped"] += 1
+            continue
         try:
             if not daily_current:
                 # 일봉 (ka10081) — own rate-limit bucket.
@@ -94,17 +109,22 @@ def collect(
                 bars = [
                     _row_to_record(code, r)
                     for r in d_resp.get(_CHART_KEY, []) or []
-                    if r.get("dt") and (not daily_cutoff or r["dt"] >= daily_cutoff)
+                    if r.get("dt")
+                    and (not daily_cutoff or r["dt"] >= daily_cutoff)
+                    # 진행 중인 오늘 캔들을 확정 일봉으로 쓰지 않는다 —
+                    # market_latest 는 완료된 최신 거래일이다.
+                    and r["dt"] <= market_latest
                 ]
                 stats["daily_rows"] += upsert_daily_bars(con, bars)
 
-            # 수급 (ka10059) — separate TR, separate bucket (no extra throttle).
-            s_resp = api.stock_info.investor_institution_by_stock(
-                dt=base_dt, stk_cd=code, amt_qty_tp="2", trde_tp="0", unit_tp="1"
-            )
-            stats["sd_rows"] += upsert_supply_demand(
-                con, build_sd_records(code, s_resp, sd_cutoff)
-            )
+            if not sd_current:
+                # 수급 (ka10059) — separate TR, separate bucket (no extra throttle).
+                s_resp = api.stock_info.investor_institution_by_stock(
+                    dt=base_dt, stk_cd=code, amt_qty_tp="2", trde_tp="0", unit_tp="1"
+                )
+                stats["sd_rows"] += upsert_supply_demand(
+                    con, build_sd_records(code, s_resp, sd_cutoff)
+                )
             stats["done"] += 1
         except KiwoomAPIError as e:
             stats["failed"] += 1

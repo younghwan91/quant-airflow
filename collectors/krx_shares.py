@@ -192,7 +192,9 @@ def main() -> int:
                 rows.append((code, iso, shares))
             time.sleep(args.sleep)
         if rows:
-            total += upsert_shares_outstanding(con, rows)
+            # source="krx" 명시 — 안 주면 DDL 기본값 'kiwoom' 이 박혀
+            # KRX 로 받은 행이 키움 행으로 둔갑한다(실측: krx 소스 행이 0건이었다).
+            total += upsert_shares_outstanding(con, rows, source="krx")
         print(f"[{iso}] codes={len(rows)} total={total}", flush=True)
     con.close()
     print(f"DONE dates={len(dates)} rows={total}", flush=True)

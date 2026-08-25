@@ -117,11 +117,16 @@ def fetch_estimate(code: str) -> tuple[float | None, float | None, str | None]:
 def _fetch_both(
     code: str, sleep: float,
 ) -> tuple[str, float | None, float | None, str | None, float | None, float | None, str | None]:
-    """Both endpoints for one code — the unit of work handed to the thread pool."""
+    """Both endpoints for one code — the unit of work handed to the thread pool.
+
+    sleep 은 **두 요청 사이에만** 둔다. 작업 단위 마지막에 한 번 더 자는 건
+    순수 낭비였다 — 다음 요청은 자기 앞의 sleep 을 이미 갖고 있어서 그 잠이
+    아무것도 늦추지 않고 워커만 놀렸다(2,627종목 × 0.2초 ÷ 4워커 = 131초,
+    전체 실행 시간의 15%).
+    """
     tm, rm, bd = fetch_consensus(code)
     time.sleep(sleep)
     fe, pe, ey = fetch_estimate(code)
-    time.sleep(sleep)
     return code, tm, rm, bd, fe, pe, ey
 
 
@@ -131,7 +136,21 @@ def _universe_query(args: argparse.Namespace) -> tuple[str, dict]:
     ``--all-codes`` uses a plain ``DISTINCT code`` scan with no recency window, so a
     stock that just IPO'd today (and so has only today's row in ``daily_bars``) is
     included from day one — no special-casing needed for newly listed codes.
+
+    ``--covered-days N`` 은 **애널리스트 커버리지가 있는 종목만** 고른다.
+    전종목(2,627개)을 매일 도는 건 요청의 73% 가 헛돈다는 뜻이다 — 실제 적재는
+    하루 652~660행이고 나머지 ~1,930 종목은 세 필드가 전부 None 이라 조용히
+    버려진다. 커버리지는 하루아침에 생기지 않으므로 매일 확인할 이유가 없다.
+    **새로 커버리지가 붙은 종목은 주 1회 전종목 스윕이 잡는다** — 그 스윕이
+    없으면 이 필터는 한 번 빠진 종목을 영원히 놓친다.
     """
+    covered_days = getattr(args, "covered_days", 0)
+    if covered_days:
+        return (
+            "SELECT DISTINCT code FROM consensus "
+            "WHERE date >= CURRENT_DATE - make_interval(days => %(d)s) ORDER BY code",
+            {"d": covered_days},
+        )
     if args.all_codes:
         return "SELECT DISTINCT code FROM daily_bars ORDER BY code", {}
     return (
@@ -146,9 +165,20 @@ def main() -> int:
     ap.add_argument("--out", default=None, help="출력 CSV (일별 append)")
     ap.add_argument("--top-n", type=int, default=800, help="유동성 상위 N종목")
     ap.add_argument("--all-codes", action="store_true", help="유동성 상위 N 대신 daily_bars 전종목 사용")
+    ap.add_argument(
+        "--covered-days", type=int, default=0,
+        help="최근 N일 안에 컨센서스가 실제로 잡힌 종목만 조회 (0=끔). "
+             "전종목의 73%%는 매일 빈 응답이라 헛돈다 — 단 주 1회는 --all-codes 로 "
+             "전종목을 훑어야 신규 커버리지를 놓치지 않는다.",
+    )
     ap.add_argument("--db-table", action="store_true", help="CSV 대신 consensus 테이블에 직접 upsert")
     ap.add_argument("--db", default=None)
     ap.add_argument("--sleep", type=float, default=0.2)
+    ap.add_argument(
+        "--workers", type=int, default=8,
+        help="동시 fetch 스레드 수. 네이버는 무인증·독립 레이트리밋이라 "
+             "4는 과보수적이었다.",
+    )
     args = ap.parse_args()
     if not args.db_table and not args.out:
         ap.error("--out is required unless --db-table is set")
@@ -197,7 +227,7 @@ def main() -> int:
     # ~2,600종목이면 sleep만 수십 분 걸림 — 스레드풀로 종목 단위 fetch를 겹쳐서
     # wall-clock을 줄인다. DB/CSV 쓰기는 메인 스레드에서만(순차) 수행해 커넥션을
     # 스레드 간 공유하지 않는다.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as ex:
         futures = {ex.submit(_fetch_both, code, args.sleep): code for code in pending}
         for i, fut in enumerate(concurrent.futures.as_completed(futures), 1):
             code, tm, rm, bd, fe, pe, ey = fut.result()

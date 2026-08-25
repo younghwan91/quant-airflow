@@ -340,10 +340,12 @@ def test_fetch_multi_rotates_to_next_key_on_daily_limit(monkeypatch):
 
     monkeypatch.setattr(dart_earnings, "_fetch_multi_payload", fake_multi_payload)
     ki = [0]
-    out = dart_earnings._fetch_multi_with_rotation(["k1", "k2"], ki, ["00126380"], 2023, 1)
+    out, failure = dart_earnings._fetch_multi_with_rotation(
+        ["k1", "k2"], ki, ["00126380"], 2023, 1)
     assert ki[0] == 1
     assert calls == ["k1", "k2"]
     assert out["00126380"][:2] == (200.0, 100.0)
+    assert failure is None, "로테이션이 성공했으면 실패로 세면 안 된다"
 
 
 def test_collect_all_financials_batched_chunks_by_batch_size_and_skips_done_periods():
@@ -357,7 +359,7 @@ def test_collect_all_financials_batched_chunks_by_batch_size_and_skips_done_peri
 
     def fake_fetch_multi_with_rotation(keys, ki, corp_codes, year, quarter):
         calls.append(list(corp_codes))
-        return {cc: (100.0, 50.0, None, None, None, None) for cc in corp_codes}
+        return {cc: (100.0, 50.0, None, None, None, None) for cc in corp_codes}, None
 
     import collectors.dart_earnings as mod
     orig = mod._fetch_multi_with_rotation
@@ -378,3 +380,49 @@ def test_collect_all_financials_batched_chunks_by_batch_size_and_skips_done_peri
     row = next(r for r in rows if r[0] == "005930")
     assert row[1] == "2023Q1"
     assert row[4:6] == (100.0, 50.0)              # netinc, netinc_prior
+
+
+def test_a_quota_exhausted_batch_is_reported_not_swallowed():
+    """일한도 소진이 `DONE rows=0` 으로 조용히 성공 보고되던 경로.
+
+    `_get_json` 이 3회 재시도 뒤 `{}` 를 주고 → 파서가 전원 all-None 을 만들고
+    → 호출부의 `if ni is None: continue` 가 버려서, Airflow 는 성공으로 기록하고
+    retries 도 발동하지 않았다.
+    """
+    import collectors.dart_earnings as mod
+
+    def exhausted(api_key, corp_codes, year, quarter):
+        return {"status": "020", "message": "일일 조회 한도 초과"}
+
+    orig = mod._fetch_multi_payload
+    mod._fetch_multi_payload = exhausted
+    try:
+        failures: list[tuple[str, str]] = []
+        rows = mod.collect_all_financials_batched(
+            ["k1"], {"005930": "00126380"}, [(2023, 1)], sleep=0.0,
+            today="20991231", failures=failures)
+    finally:
+        mod._fetch_multi_payload = orig
+
+    assert rows == []
+    assert failures == [("2023Q1", "020")]
+
+
+def test_a_quarter_with_no_filing_is_not_a_failure():
+    """013 = '조회된 데이터가 없습니다' 는 정상이다 — 이걸 실패로 세면 매일 죽는다."""
+    import collectors.dart_earnings as mod
+
+    def no_data(api_key, corp_codes, year, quarter):
+        return {"status": "013", "message": "조회된 데이터가 없습니다"}
+
+    orig = mod._fetch_multi_payload
+    mod._fetch_multi_payload = no_data
+    try:
+        failures: list[tuple[str, str]] = []
+        mod.collect_all_financials_batched(
+            ["k1"], {"005930": "00126380"}, [(2023, 1)], sleep=0.0,
+            today="20991231", failures=failures)
+    finally:
+        mod._fetch_multi_payload = orig
+
+    assert failures == []

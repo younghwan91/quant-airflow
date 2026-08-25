@@ -52,7 +52,12 @@ SUBSCRIBED_TABLES = (
     "stocks",            # SEP  — 주가. 953MB
     "daily",             # DAILY— 시총/EV. 733MB
     "fundamentals",      # SF1  — 분기 재무. 626MB
-    "funds",             # SFP  — ETF·펀드 가격. 286MB
+    # SFP — ETF·펀드 가격. 286MB, **거래일마다 갱신된다**(실측 vendor_modified).
+    # 빌드(sharadar_build.TABLE_KINDS)가 안 읽으므로 "매일 300MB 를 받아서 안
+    # 쓴다"로 보이지만 **아니다** — opt_portfolio 의 TAA 가 이 zip 을 직접 읽는다
+    # (`taa/data.py: DEFAULT_ZIP = ~/data/sharadar/raw/funds.csv.zip`). 스토어를
+    # 거치지 않는 소비자가 있다는 뜻이고, 여기서 빼면 그쪽이 조용히 낡는다.
+    "funds",
     "insiders",          # SF2  — Form 4. 234MB
     "holdings",          # SF3  — 13F 원자료. 542MB
     "holdings_investor", # SF3B — 13F 투자자별
@@ -66,6 +71,20 @@ SUBSCRIBED_TABLES = (
 )
 
 MANIFEST_NAME = "manifest.json"
+
+#: 소켓 연산 하나당 타임아웃(초). **전체 소요가 아니라 read() 한 번의 상한이다.**
+#: 1800 이었을 때, 벤더가 연결을 연 채 멎으면 태스크가 30분 매달렸다가 죽고
+#: 재시도 대기 10분이 더 붙었다 — 정상 전량 다운로드가 17분인데 스톨 한 번에
+#: 1시간을 썼다. 4MiB 블록 하나가 120초 안에 안 오면 죽은 연결로 본다(실측
+#: 최저 속도 1.9MB/s 기준 4MiB 는 2.2초).
+SOCKET_TIMEOUT = 120
+
+#: 고아 `.part` 를 치우는 나이 기준(초). mkstemp 임시 파일은 파이썬 예외에는
+#: `except BaseException` 이 정리하지만 **SIGKILL·컨테이너 정지·OOM 에는 안
+#: 돈다** — 이 서버는 매일 `docker compose stop` 으로 스택을 내리므로 다운로드
+#: 중 강제 종료가 이론적 시나리오가 아니다. 한 번에 최대 985MB 가 0600 으로
+#: 영구 잔존한다. 나이 조건이 필수다 — 지금 도는 런의 것을 지우면 안 된다.
+ORPHAN_PART_MAX_AGE = 6 * 3600
 
 # `modified` 가 몇 번 연속으로 그대로면 눈에 띄게 표시할지. **빌드를 막지
 # 않는다** — 낡음은 벌크가 매번 전체 이력을 주므로 다음 실행에 저절로 채워진다.
@@ -227,6 +246,36 @@ def needs_download(path: Path, vendor_modified: str, *, manifest: dict[str, dict
     return False
 
 
+def sweep_orphan_parts(raw_dir: Path, *, max_age: int = ORPHAN_PART_MAX_AGE) -> list[str]:
+    """죽은 런이 남긴 `.part` 를 치운다. 반환값은 지운 파일 이름들.
+
+    `download()` 의 `except BaseException` 은 파이썬 예외만 잡는다. SIGKILL 로
+    죽으면 최대 985MB 짜리 임시 파일이 그대로 남고 아무도 안 치운다.
+
+    **나이 조건이 안전장치의 전부다** — 지금 도는 런의 `.part` 를 지우면 그
+    다운로드가 통째로 날아간다. 가장 큰 테이블도 10분 안에 끝나므로 6시간이면
+    "이건 확실히 죽은 런의 것" 이다.
+    """
+    raw_dir = Path(raw_dir)
+    if not raw_dir.is_dir():
+        return []
+    cutoff = time.time() - max_age
+    removed = []
+    for part in raw_dir.glob(".*.part"):
+        try:
+            if part.stat().st_mtime >= cutoff:
+                continue
+            size = part.stat().st_size
+            part.unlink()
+        except OSError:
+            # 다른 런이 방금 치웠거나 권한이 없다 — 청소는 부수 작업이므로
+            # 여기서 동기화를 죽이지 않는다.
+            continue
+        removed.append(part.name)
+        print(f"🧹 고아 임시 파일 삭제: {part.name} ({size/1e6:.1f}MB)", flush=True)
+    return removed
+
+
 def download(
     table: str, dest: Path, *, api_key: str, opener=urllib.request.urlopen
 ) -> tuple[int, str]:
@@ -241,13 +290,27 @@ def download(
     fd, tmp = tempfile.mkstemp(dir=dest.parent, prefix=f".{table}-", suffix=".part")
     written = 0
     try:
-        with os.fdopen(fd, "wb") as out, opener(bulk_url(table, api_key=api_key), timeout=1800) as resp:
+        with os.fdopen(fd, "wb") as out, opener(
+            bulk_url(table, api_key=api_key), timeout=SOCKET_TIMEOUT
+        ) as resp:
+            # 헤더가 없는 응답 객체(테스트 더미, 일부 프록시)도 있으므로 방어한다.
+            headers = getattr(resp, "headers", None)
+            declared = headers.get("Content-Length") if headers is not None else None
             while True:
                 block = resp.read(1 << 22)
                 if not block:
                     break
                 out.write(block)
                 written += len(block)
+        # 절단을 여기서 잡는다. 아래 sha256 은 **받은 바이트로 계산해 그 바이트를
+        # 기록하는 자기참조**라 전송 손상을 원리적으로 못 잡는다(그건 받은 뒤
+        # 디스크에서 썩는 것만 잡는다). 벤더가 길이를 알려줄 때는 그게 가장
+        # 이르고 명확한 절단 신호다.
+        if declared is not None and int(declared) != written:
+            raise OSError(
+                f"{table}: 전송이 잘렸다 — Content-Length {int(declared):,}B "
+                f"≠ 받은 {written:,}B"
+            )
         verify_zip(Path(tmp))
         digest = file_sha256(Path(tmp))
         # mkstemp 는 0600 으로 만든다. raw 아카이브는 컨테이너(airflow)가 쓰고
@@ -277,6 +340,7 @@ def render_report(
     missing: tuple[str, ...],
     fetched: set[str],
     now: str,
+    failed: dict[str, str] | None = None,
 ) -> str:
     """14개 전부의 동기화 상태를 한 표로.
 
@@ -289,9 +353,18 @@ def render_report(
         _pad("테이블", 20) + _pad("벤더 modified", 24)
         + _pad("크기", 10, right=True) + _pad("정체", 6, right=True) + "  판정",
     ]
+    failed = failed or {}
     fresh = warn = 0
     for table in SUBSCRIBED_TABLES:
         entry = manifest.get(f"{table}.csv.zip", {})
+        if table in failed:
+            lines.append(
+                _pad(table, 20) + _pad(str(entry.get("vendor_modified", "—")), 24)
+                + _pad("—", 10, right=True) + _pad("—", 6, right=True)
+                + f"  ❌ 실패 ({failed[table][:40]})"
+            )
+            warn += 1
+            continue
         if table in missing:
             lines.append(
                 _pad(table, 20) + _pad("—", 24) + _pad("—", 10, right=True)
@@ -315,7 +388,8 @@ def render_report(
             + f"  {verdict}"
         )
     lines.append(
-        f"{len(SUBSCRIBED_TABLES)}개 중 최신 {fresh} · 주의 {warn} · 누락 {len(missing)}"
+        f"{len(SUBSCRIBED_TABLES)}개 중 최신 {fresh} · 주의 {warn} · "
+        f"누락 {len(missing)} · 실패 {len(failed)}"
     )
     return "\n".join(lines)
 
@@ -335,6 +409,7 @@ def sync(
     """
     raw_dir = Path(raw_dir)
     now = now or time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    sweep_orphan_parts(raw_dir)
     listing = fetch_listing(api_key=api_key, opener=opener)
     plan, missing = plan_sync(listing)
     manifest = read_manifest(raw_dir)
@@ -343,37 +418,54 @@ def sync(
         print(f"⚠️  벤더 목록에 없는 테이블: {', '.join(missing)}", flush=True)
 
     fetched: set[str] = set()
+    failed: dict[str, str] = {}
     total_bytes = 0
     for table, modified in plan.items():
         dest = raw_dir / f"{table}.csv.zip"
-        if needs_download(dest, modified, manifest=manifest):
-            started = time.monotonic()
-            size, digest = download(table, dest, api_key=api_key, opener=opener)
-            elapsed = time.monotonic() - started
-            rate = size / elapsed / 1e6 if elapsed else 0
-            print(
-                f"⬇  {table:18s} {size/1e6:8.1f}MB  {elapsed:6.1f}s  "
-                f"{rate:5.1f}MB/s  ({modified})",
-                flush=True,
-            )
-            manifest[dest.name] = {
-                **manifest.get(dest.name, {}),
-                "modified": modified,
-                "size": size,
-                "sha256": digest,
-            }
-            fetched.add(table)
-            total_bytes += size
-        manifest[dest.name] = record_check(manifest.get(dest.name), modified, now=now)
+        # **테이블마다 격리한다.** 예전엔 holdings 하나가 HTTP 에러를 내면
+        # 뒤따르는 metrics·sp500·tickers·descriptions 가 대조조차 안 됐고,
+        # 더 나쁘게는 아래 상태 표에 도달을 못 해 "매 실행 14개 확인" 이라는
+        # 이 모듈의 핵심 산출물이 **문제가 있는 날에만** 안 남았다.
+        try:
+            if needs_download(dest, modified, manifest=manifest):
+                started = time.monotonic()
+                size, digest = download(table, dest, api_key=api_key, opener=opener)
+                elapsed = time.monotonic() - started
+                rate = size / elapsed / 1e6 if elapsed else 0
+                print(
+                    f"⬇  {table:18s} {size/1e6:8.1f}MB  {elapsed:6.1f}s  "
+                    f"{rate:5.1f}MB/s  ({modified})",
+                    flush=True,
+                )
+                manifest[dest.name] = {
+                    **manifest.get(dest.name, {}),
+                    "modified": modified,
+                    "size": size,
+                    "sha256": digest,
+                }
+                fetched.add(table)
+                total_bytes += size
+            manifest[dest.name] = record_check(manifest.get(dest.name), modified, now=now)
+        except Exception as exc:  # noqa: BLE001 — 표를 찍고 나서 다시 던진다
+            failed[table] = f"{type(exc).__name__}: {exc}"
+            print(f"❌ {table}: {failed[table]}", flush=True)
         # 매 테이블마다 기록한다 — 17분짜리 작업이 중간에 죽어도 여기까지는 남는다.
         write_manifest(raw_dir, manifest)
 
-    print(render_report(manifest, missing=missing, fetched=fetched, now=now), flush=True)
     print(
-        f"✅ 전송 {total_bytes/1e6:.0f}MB · 새로 받음 {len(fetched)}개 · "
-        f"확인만 {len(plan) - len(fetched)}개",
+        render_report(manifest, missing=missing, fetched=fetched, failed=failed, now=now),
         flush=True,
     )
+    print(
+        f"✅ 전송 {total_bytes/1e6:.0f}MB · 새로 받음 {len(fetched)}개 · "
+        f"확인만 {len(plan) - len(fetched) - len(failed)}개 · 실패 {len(failed)}개",
+        flush=True,
+    )
+    if failed:
+        # 표를 남긴 뒤에 죽는다 — Airflow 가 실패로 기록해야 재시도가 걸린다.
+        raise RuntimeError(
+            f"{len(failed)}개 테이블 동기화 실패: {', '.join(sorted(failed))}"
+        )
     return manifest
 
 

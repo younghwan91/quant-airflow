@@ -131,12 +131,44 @@ def _oldest_date(html: str) -> str:
     return min(dates) if dates else ""
 
 
-def _targets(con) -> list[str]:
-    """폐지 시세는 있는데 수급이 없는 종목. 이미 있는 코드는 건너뛴다(재실행 안전)."""
+def _mark_checked(con, codes: list[str], today: str) -> None:
+    """네이버가 빈 응답을 준 코드를 기록해 다음 회차부터 건너뛴다.
+
+    `naver_delisted_bars._mark_checked` / `dart_shares._mark_checked` 와 같은
+    패턴이다. 이게 없으면 빈 응답 코드는 supply_demand 행이 안 생겨 제외 조건에도
+    안 걸리고 **영원히 재조회된다** — `fetch_flow` 가 종목당 최대 120페이지를
+    넘기므로(max_pages) 그런 코드 하나가 매주 수십~120요청을 태운다. 2026-08-15
+    첫 실행이 175.3분 걸린 게 그 페이지 비용의 크기다.
+    """
+    if not codes:
+        return
+    ph = "%s" if _is_pg(con) else "?"
+    sql = (f"UPDATE delisted_stocks SET naver_sd_checked = {ph} "  # noqa: S608 — 자리표시자만 조립
+           f"WHERE code IN ({','.join([ph] * len(codes))})")
+    params = (today, *codes)
+    if _is_pg(con):
+        with con.cursor() as cur:
+            cur.execute(sql, params)
+    else:
+        con.execute(sql, params)
+    con.commit()
+
+
+def _targets(con, *, refetch: bool = False) -> list[str]:
+    """폐지 시세는 있는데 수급이 없는 종목. 이미 있는 코드는 건너뛴다(재실행 안전).
+
+    빈 응답으로 판명돼 ``naver_sd_checked`` 가 찍힌 코드도 제외한다 —
+    :func:`_mark_checked` 주석 참고. ``refetch=True`` 면 그 마커를 무시한다.
+    """
+    checked_filter = "" if refetch else (
+        "  AND NOT EXISTS (SELECT 1 FROM delisted_stocks d "
+        "                  WHERE d.code = b.code AND d.naver_sd_checked IS NOT NULL) "
+    )
     sql = (
         "SELECT DISTINCT b.code FROM daily_bars b "
         "WHERE b.source = 'naver' "
         "  AND NOT EXISTS (SELECT 1 FROM supply_demand s WHERE s.code = b.code) "
+        f"{checked_filter}"
         "ORDER BY b.code"
     )
     if _is_pg(con):
@@ -160,23 +192,29 @@ def main() -> int:
     ap.add_argument("--sleep", type=float, default=0.25, help="페이지 간 대기(초)")
     ap.add_argument("--since", default=HISTORY_START, help="이 날짜 이후만 (YYYY-MM-DD)")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument(
+        "--refetch", action="store_true",
+        help="naver_sd_checked 로 제외된 코드까지 다시 조회",
+    )
     args = ap.parse_args()
 
     from .config import mask_dsn
 
     con = connect(args.db or default_db_path())
-    codes = _targets(con)
+    codes = _targets(con, refetch=args.refetch)
     if args.limit:
         codes = codes[: args.limit]
     print(f"🔌 {mask_dsn(args.db)} | 대상 {len(codes)}종목 | since={args.since}"
           f"{' | DRY-RUN' if args.dry_run else ''}", flush=True)
 
     found = empty = written = 0
+    exhausted: list[str] = []
     t0 = time.time()
     for i, code in enumerate(codes, 1):
         rows = fetch_flow(code, since=args.since, sleep=args.sleep)
         if not rows:
             empty += 1
+            exhausted.append(code)
         else:
             found += 1
             if not args.dry_run:
@@ -188,8 +226,11 @@ def main() -> int:
                   f"| {rate:.1f}종목/s ETA {(len(codes)-i)/rate/60 if rate else 0:.1f}분",
                   flush=True)
 
+    if not args.dry_run:
+        _mark_checked(con, exhausted, time.strftime("%Y-%m-%d"))
     con.close()
-    print(f"DONE targets={len(codes)} 확보={found} 없음={empty} 기록={written}")
+    print(f"DONE targets={len(codes)} 확보={found} 없음={empty} 기록={written} "
+          f"완료표시={len(exhausted) if not args.dry_run else 0}")
     return 0
 
 
