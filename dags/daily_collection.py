@@ -52,14 +52,26 @@ def daily_collection():
     def collect_sector() -> None:
         # 별도 TR(ka20003/ka20006)이라 collect_both와 레이트리밋 버킷이 안
         # 겹침. TimescaleDB는 MVCC라 두 태스크가 동시에 써도 안전(sqlite와
-        # 달리 단일 writer 제약 없음) — 병렬로 둬도 됨.
+        # 달리 단일 writer 제약 없음).
+        #
+        # **그런데 병렬로 두면 안 된다 — 토큰이 겹친다.** 두 태스크가 각각
+        # 별도 프로세스로 `make_api(login=True)` 를 부르는데 앱키가 같아서,
+        # 나중에 로그인한 쪽이 먼저 받은 토큰을 무효화한다:
+        #
+        #     KiwoomAPIError: [3] 인증에 실패했습니다[8005:Token이 유효하지 않습니다]
+        #
+        # 실측 40런 중 4런(10%)이 이렇게 3초 만에 죽고 retry_delay 10분을
+        # 통째로 물었다(2026-07-16, 08-21, 08-25 등). 직렬화하면 로그인이
+        # 겹칠 수가 없다. 비용은 71초뿐이다.
         run_collector([
             sys.executable, "-m", "collectors.sector_index",
             "--prod", "--days", "10", "--db", timescale_dsn(),
         ], env=kiwoom_env())
 
-    collect_both()
-    collect_sector()
+    # 순서가 sector 먼저인 이유: 71초짜리라 자격증명이 깨졌으면 **48분을 태우기
+    # 전에** 알 수 있다. 어차피 저녁 창은 collect_both 가 끝나야 닫히므로 총
+    # 소요는 어느 순서든 같다.
+    collect_sector() >> collect_both()
 
 
 daily_collection()
