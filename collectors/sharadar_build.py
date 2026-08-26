@@ -30,12 +30,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import time
 
 from pathlib import Path
+
+from .proc import stream_subprocess
 
 # 벌크 파일명 → CLI 의 --kind. 이름이 어긋나는 지점이 둘 있다(stocks→prices,
 # holdings_ticker→institutions) — 벤더의 파일명과 스토어의 테이블명이 다르다.
@@ -82,8 +83,6 @@ def build_command(table: str, *, raw: str, store: str) -> list[str]:
 
 def build(raw_dir: Path, out: Path, *, tables: tuple[str, ...] = tuple(TABLE_KINDS)) -> None:
     """raw → 새 스토어. 하나라도 실패하면 예외 — 반쪽 스토어는 공개 후보가 아니다."""
-    from collectors.config import mask_secrets
-
     raw_dir, out = Path(raw_dir), Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.unlink(missing_ok=True)  # 재시도 시 이전 시도의 잔재 위에 쌓지 않는다
@@ -98,20 +97,9 @@ def build(raw_dir: Path, out: Path, *, tables: tuple[str, ...] = tuple(TABLE_KIN
         started = time.monotonic()
         cmd = build_command(table, raw=str(raw), store=str(out))
         print(f"▶ {table} → {TABLE_KINDS[table]}", flush=True)
-        proc = subprocess.Popen(
-            cmd,
-            env={**os.environ, "PYTHONUNBUFFERED": "1"},
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        with proc:
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                print("   " + mask_secrets(line.rstrip()), flush=True)
-        if proc.returncode != 0:
-            raise RuntimeError(f"{table} 빌드 실패 (rc={proc.returncode})")
+        rc = stream_subprocess(cmd, prefix="   ")
+        if rc != 0:
+            raise RuntimeError(f"{table} 빌드 실패 (rc={rc})")
         print(f"   {time.monotonic() - started:.1f}초", flush=True)
 
 
