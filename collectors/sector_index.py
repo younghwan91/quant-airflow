@@ -20,7 +20,7 @@ from kiwoom_rest_api import KiwoomAPI
 from kiwoom_rest_api.base import KiwoomAPIError
 
 from .config import make_api, mask_dsn
-from .storage import connect, default_db_path, to_int, upsert_sector_index
+from .storage import connect, days_ago, default_db_path, to_int, upsert_sector_index
 
 # ka20006 response: list key for daily bars.
 _CHART_KEY = "inds_dt_pole_qry"
@@ -63,11 +63,7 @@ def collect(
 ) -> dict[str, int]:
     """Collect daily index bars for ``sectors`` into the DB. Returns a summary dict."""
     base_dt = time.strftime("%Y%m%d")
-    cutoff = (
-        time.strftime("%Y%m%d", time.localtime(time.time() - days * 86400))
-        if days > 0
-        else ""
-    )
+    cutoff = days_ago(days)
     stats = {"done": 0, "failed": 0, "rows": 0}
     started = time.monotonic()
 

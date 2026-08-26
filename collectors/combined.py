@@ -27,7 +27,10 @@ from kiwoom_rest_api.base import KiwoomAPIError
 from .config import make_api, mask_dsn
 from .storage import (
     connect,
+    date_days_ago,
+    days_ago,
     default_db_path,
+    progress_line,
     upsert_daily_bars,
     upsert_stocks,
     upsert_supply_demand,
@@ -77,12 +80,10 @@ def collect(
             존재할 수 없는 일요일에도 175,266행을 다시 쓰며 48.6분을 태웠다.
     """
     base_dt = time.strftime("%Y%m%d")
-    sd_cutoff = time.strftime("%Y%m%d", time.localtime(time.time() - sd_days * 86400))
-    daily_cutoff = (
-        time.strftime("%Y%m%d", time.localtime(time.time() - daily_days * 86400))
-        if daily_days > 0
-        else ""
-    )
+    # date_days_ago(=항상 날짜): 여기는 원래 days>0 가드가 없었다. daily_cutoff 와
+    # 달리 sd_days=0 은 "창 없음"이 아니라 "오늘"이다.
+    sd_cutoff = date_days_ago(sd_days)
+    daily_cutoff = days_ago(daily_days)
     market_latest = _market_latest_date(api, base_dt) if update else base_dt
     # 최신 여부를 **한 번에** 받아둔다 — 종목별 MAX(date) 는 건당 845ms 라
     # (515개 청크를 가로지른다) 5,256번이면 API 를 안 불러도 16분이다.
@@ -140,14 +141,9 @@ def collect(
             print(f"  💥 {code} {stock['name']}: {type(e).__name__}: {e}")
 
         if i % progress_every == 0 or i == len(stocks):
-            elapsed = time.monotonic() - started
-            rate = i / elapsed if elapsed else 0
-            eta = (len(stocks) - i) / rate / 60 if rate else 0
-            print(
-                f"  [{i}/{len(stocks)}] done={stats['done']} skip={stats['skipped']} "
-                f"fail={stats['failed']} | 일봉 {stats['daily_rows']:,} / "
-                f"수급 {stats['sd_rows']:,} | {rate:.1f} stk/s | ETA {eta:.1f}m"
-            )
+            print(progress_line(
+                i, len(stocks), started, stats,
+                f"일봉 {stats['daily_rows']:,} / 수급 {stats['sd_rows']:,}"))
     return stats
 
 

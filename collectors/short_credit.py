@@ -30,8 +30,11 @@ from kiwoom_rest_api.base import KiwoomAPIError
 from .config import make_api, mask_dsn
 from .storage import (
     connect,
-    fetchone,
+    date_days_ago,
+    days_ago,
     default_db_path,
+    fetchone,
+    progress_line,
     to_float,
     to_int,
     upsert_credit_balance,
@@ -135,12 +138,10 @@ def collect(
             매일 수집이 최근 구간을 채워둔 상태에서도 의미 있게 걸러진다.
     """
     today = time.strftime("%Y%m%d")
-    cutoff = time.strftime("%Y%m%d", time.localtime(time.time() - days * 86400))
-    depth_cutoff = (
-        time.strftime("%Y%m%d", time.localtime(time.time() - resume_depth * 86400))
-        if resume_depth > 0
-        else ""
-    )
+    # date_days_ago(=항상 날짜): 원래 이 자리는 days>0 가드가 없었다. days=0 이면
+    # 오늘이고, 그게 strt_dt 로도 나간다 — 빈 문자열로 바꾸면 창이 풀린다.
+    cutoff = date_days_ago(days)
+    depth_cutoff = days_ago(resume_depth)
     start_dt = cutoff
     stats = {"done": 0, "skipped": 0, "failed": 0, "ss_rows": 0, "cb_rows": 0}
     started = time.monotonic()
@@ -187,14 +188,9 @@ def collect(
             flush()
 
         if i % progress_every == 0 or i == len(stocks):
-            elapsed = time.monotonic() - started
-            rate = i / elapsed if elapsed else 0
-            eta = (len(stocks) - i) / rate / 60 if rate else 0
-            print(
-                f"  [{i}/{len(stocks)}] done={stats['done']} skip={stats['skipped']} "
-                f"fail={stats['failed']} | 공매도 {stats['ss_rows']:,} / "
-                f"신용 {stats['cb_rows']:,} | {rate:.1f} stk/s | ETA {eta:.1f}m"
-            )
+            print(progress_line(
+                i, len(stocks), started, stats,
+                f"공매도 {stats['ss_rows']:,} / 신용 {stats['cb_rows']:,}"))
     flush()
     return stats
 

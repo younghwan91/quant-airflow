@@ -30,9 +30,11 @@ from kiwoom_rest_api.base import KiwoomAPIError
 from .config import make_api, mask_dsn
 from .storage import (
     connect,
+    days_ago,
     default_db_path,
     fetchall,
     fetchone,
+    progress_line,
     to_int,
     upsert_daily_bars,
     upsert_stocks,
@@ -184,11 +186,7 @@ def collect(
             otherwise append only bars newer than the latest stored one
             (still one call/stock; a single call backfills multi-day gaps).
     """
-    cutoff = (
-        time.strftime("%Y%m%d", time.localtime(time.time() - days * 86400))
-        if days > 0
-        else ""
-    )
+    cutoff = days_ago(days)
     base_dt = time.strftime("%Y%m%d")
     # In update mode, learn the newest trading day once so we can skip stocks
     # already current (makes same-day re-runs near-instant).
@@ -250,14 +248,8 @@ def collect(
             print(f"  💥 {code} {stock['name']}: {type(e).__name__}: {e}")
 
         if i % progress_every == 0 or i == len(stocks):
-            elapsed = time.monotonic() - started
-            rate = i / elapsed if elapsed else 0
-            eta = (len(stocks) - i) / rate / 60 if rate else 0
-            print(
-                f"  [{i}/{len(stocks)}] done={stats['done']} skip={stats['skipped']} "
-                f"fail={stats['failed']} | {stats['rows']:,} rows | "
-                f"{rate:.1f} stk/s | ETA {eta:.1f}m"
-            )
+            print(progress_line(
+                i, len(stocks), started, stats, f"{stats['rows']:,} rows"))
     return stats
 
 

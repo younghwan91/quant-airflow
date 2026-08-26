@@ -17,6 +17,8 @@ repos.
 from __future__ import annotations
 
 import sqlite3
+import time
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -427,6 +429,45 @@ def to_float_or_none(s: object) -> float | None:
         return float(text)
     except ValueError:
         return None
+
+
+def date_days_ago(days: int) -> str:
+    """``days`` 일 전 날짜를 ``YYYYMMDD`` 로 — **항상 날짜를 돌려준다**.
+
+    콜렉터 대여섯 곳이 ``time.strftime("%Y%m%d", time.localtime(time.time() -
+    days * 86400))`` 을 각자 썼다. ``date`` 산술로 바꾸면 86400 고정 곱에 있던
+    DST 인접 오차도 사라진다.
+
+    ``days == 0`` 은 오늘이다. "창 없음" 을 빈 문자열로 신호하고 싶으면
+    :func:`days_ago` 를 쓴다 — **두 규약을 섞으면 안 된다.** 원래 호출부 여섯 곳
+    중 넷은 ``if days > 0 else ""`` 로 감싸고 있었고 둘(`short_credit.cutoff`,
+    `combined.sd_cutoff`)은 감싸지 않았다. 그 둘에 빈 문자열 규약을 잘못 적용하면
+    ``--days 0`` 에서 창 필터가 통째로 풀리고, Postgres 는 ``date >= ''`` 를
+    ``invalid input syntax for type date`` 로 거절한다.
+    """
+    return (date.today() - timedelta(days=days)).strftime("%Y%m%d")
+
+
+def days_ago(days: int) -> str:
+    """``days`` 일 전 날짜, 단 ``days <= 0`` 이면 빈 문자열(=창 없음).
+
+    "N일치만 보관" 처럼 0 을 "전량"으로 읽는 호출부용이다. 항상 날짜가 필요하면
+    :func:`date_days_ago` 를 쓴다.
+    """
+    return date_days_ago(days) if days > 0 else ""
+
+
+def progress_line(i: int, total: int, started: float, stats: dict[str, int], detail: str) -> str:
+    """전종목 스윕의 진행 로그 한 줄 — ``[i/n] done= skip= fail= | detail | 속도 | ETA``.
+
+    여섯 콜렉터가 같은 elapsed/rate/ETA 산술을 한 벌씩 들고 있었고 다른 건 가운데
+    ``detail`` 조각뿐이었다. ``started`` 는 ``time.monotonic()`` 기준값이다.
+    """
+    elapsed = time.monotonic() - started
+    rate = i / elapsed if elapsed else 0
+    eta = (total - i) / rate / 60 if rate else 0
+    return (f"  [{i}/{total}] done={stats['done']} skip={stats['skipped']} "
+            f"fail={stats['failed']} | {detail} | {rate:.1f} stk/s | ETA {eta:.1f}m")
 
 
 _STOCKS_COLS = ["code", "name", "market", "sector", "kind"]
