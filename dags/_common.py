@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from datetime import timedelta
 
 from airflow.models import Variable
 
@@ -26,7 +27,15 @@ from airflow.models import Variable
 # 시점)에 필요하므로 import 전에 미리 넣는다.
 sys.path.insert(0, "/opt/airflow")
 
+from collectors.config import DART_KEY_ENV_VARS  # noqa: E402
 from collectors.proc import stream_subprocess  # noqa: E402
+
+
+#: 콜렉터 태스크의 기본 재시도 정책. 12개 DAG 의 @task 18개 중 11개가 이 값을
+#: 글자 그대로 반복하고 있었다 — 공통값을 여기 두면 나머지 7개(sharadar 의
+#: retries=2, earnings_backfill 의 30분, 폐지 백필의 20분)가 "일부러 다른 값"
+#: 으로 눈에 띈다. 반복된 리터럴 사이에서는 그 의도가 안 보인다.
+DEFAULT_TASK_KW = {"retries": 1, "retry_delay": timedelta(minutes=10)}
 
 
 def timescale_dsn() -> str:
@@ -46,20 +55,18 @@ def kiwoom_env() -> dict[str, str]:
     return env
 
 
-#: collectors.dart_earnings.collect_keys() 가 읽는 이름들과 **한 쌍이다.**
-#: 한쪽에만 키를 추가하면 조용히 도달하지 않는다 — 실제로 그런 상태였다:
-#: docker-compose 는 3개를 Variables 에 시딩하고 collect_keys 는 _4 까지 읽는데,
-#: 여기서 _2 까지만 주입해 **3번 키가 콜렉터에 영원히 닿지 않았다.** 한도가
-#: 60,000/일이 아니라 40,000/일이었고 EARNINGS_PIPELINE_PLAN.md 의 산수와도
-#: 어긋나 있었다.
-_DART_KEY_VARS = ("DART_API_KEY_2", "DART_API_KEY_3", "DART_API_KEY_4")
+#: 보조 키 이름들 — 정본은 ``collectors.config.DART_KEY_ENV_VARS`` 하나다.
+#: 여기에 목록을 따로 적어두면 collect_keys 쪽과 갈라지고, 갈라지면 키가 조용히
+#: 도달하지 않는다(그 사고 기록은 정본 쪽 주석에 있다). 첫 항목은 아래에서
+#: 필수 키로 따로 꺼내므로 뺀다.
+_DART_KEY_VARS = DART_KEY_ENV_VARS[1:]
 
 
 def dart_env() -> dict[str, str]:
     # DART 키는 Fernet 암호화 Variables에만 있음 — 수집 subprocess에만 주입.
     # 보조키가 있으면 함께 주입 → collector가 일한도(020) 시 다음 키로 로테이션.
     env = os.environ.copy()
-    env["DART_API_KEY"] = Variable.get("DART_API_KEY")
+    env[DART_KEY_ENV_VARS[0]] = Variable.get(DART_KEY_ENV_VARS[0])
     for name in _DART_KEY_VARS:
         value = Variable.get(name, default_var=None)
         if value:

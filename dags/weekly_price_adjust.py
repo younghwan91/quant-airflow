@@ -37,7 +37,7 @@ import pendulum
 from airflow.decorators import dag, task
 from airflow.sensors.external_task import ExternalTaskSensor
 
-from _common import run_collector, timescale_dsn
+from _common import DEFAULT_TASK_KW, run_collector, timescale_dsn
 
 
 @dag(
@@ -80,7 +80,7 @@ def weekly_price_adjust():
         soft_fail=False,
     )
 
-    @task(retries=1, retry_delay=timedelta(minutes=10))
+    @task(**DEFAULT_TASK_KW)
     def rebuild_adjusted() -> None:
         run_collector(
             [

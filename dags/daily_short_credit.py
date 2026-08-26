@@ -12,12 +12,10 @@ from __future__ import annotations
 
 import sys
 
-from datetime import timedelta
-
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import kiwoom_env, run_collector, timescale_dsn
+from _common import DEFAULT_TASK_KW, kiwoom_env, run_collector, timescale_dsn
 
 
 @dag(
@@ -30,7 +28,7 @@ from _common import kiwoom_env, run_collector, timescale_dsn
 )
 def daily_short_credit():
 
-    @task(retries=1, retry_delay=timedelta(minutes=10))
+    @task(**DEFAULT_TASK_KW)
     def collect_short_credit() -> None:
         # --days 10: **쓰는 창을 자른다.** 기본 100 은 매 실행 334,183행을
         # 썼는데 그중 실제 새 행은 하루치 ~4,600 행 = 98.6% 가 같은 값 재기록이다.

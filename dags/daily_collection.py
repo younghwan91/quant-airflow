@@ -10,12 +10,10 @@ from __future__ import annotations
 
 import sys
 
-from datetime import timedelta
-
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import kiwoom_env, run_collector, timescale_dsn
+from _common import DEFAULT_TASK_KW, kiwoom_env, run_collector, timescale_dsn
 
 
 @dag(
@@ -28,7 +26,7 @@ from _common import kiwoom_env, run_collector, timescale_dsn
 )
 def daily_collection():
 
-    @task(retries=1, retry_delay=timedelta(minutes=10))
+    @task(**DEFAULT_TASK_KW)
     def collect_both() -> None:
         # --prod: 실데이터. 모의서버 기본값은 실제 시세/수급이 아님
         # (kr-quant/README.md 참고).
@@ -48,7 +46,7 @@ def daily_collection():
             "--db", timescale_dsn(),
         ], env=kiwoom_env())
 
-    @task(retries=1, retry_delay=timedelta(minutes=10))
+    @task(**DEFAULT_TASK_KW)
     def collect_sector() -> None:
         # 별도 TR(ka20003/ka20006)이라 collect_both와 레이트리밋 버킷이 안
         # 겹침. TimescaleDB는 MVCC라 두 태스크가 동시에 써도 안전(sqlite와

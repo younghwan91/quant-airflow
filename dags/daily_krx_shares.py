@@ -32,12 +32,10 @@ from __future__ import annotations
 
 import sys
 
-from datetime import timedelta
-
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import run_collector, timescale_dsn
+from _common import DEFAULT_TASK_KW, run_collector, timescale_dsn
 
 
 @dag(
@@ -65,7 +63,7 @@ from _common import run_collector, timescale_dsn
 )
 def daily_krx_shares():
 
-    @task(retries=1, retry_delay=timedelta(minutes=10))
+    @task(**DEFAULT_TASK_KW)
     def collect_krx_shares() -> None:
         # KST 당일(거래일이면 데이터 존재, 휴장일이면 collector가 codes=0로 무해 처리)
         today = pendulum.now("Asia/Seoul").to_date_string()

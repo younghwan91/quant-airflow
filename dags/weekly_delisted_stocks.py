@@ -41,7 +41,7 @@ from datetime import timedelta
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import dart_env, run_collector, timescale_dsn
+from _common import DEFAULT_TASK_KW, dart_env, run_collector, timescale_dsn
 
 
 @dag(
@@ -56,7 +56,7 @@ from _common import dart_env, run_collector, timescale_dsn
 )
 def weekly_delisted_stocks():
 
-    @task(retries=1, retry_delay=timedelta(minutes=10))
+    @task(**DEFAULT_TASK_KW)
     def collect_delisted() -> None:
         run_collector([
             sys.executable, "-m", "collectors.krx_delisted",

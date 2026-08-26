@@ -39,12 +39,10 @@ from __future__ import annotations
 
 import sys
 
-from datetime import timedelta
-
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import run_collector, timescale_dsn
+from _common import DEFAULT_TASK_KW, run_collector, timescale_dsn
 
 
 @dag(
@@ -60,7 +58,7 @@ from _common import run_collector, timescale_dsn
 )
 def daily_consensus():
 
-    @task(retries=1, retry_delay=timedelta(minutes=10))
+    @task(**DEFAULT_TASK_KW)
     def collect_consensus() -> None:
         # 월요일만 전종목 스윕(신규 커버리지 편입 탐지), 화~금은 최근 90일 안에
         # 실제로 컨센서스가 잡힌 종목만. 90일인 이유는 분기 실적 시즌을 한 번은

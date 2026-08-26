@@ -31,6 +31,7 @@ from typing import Any
 
 import pandas as pd
 
+from .config import DART_KEY_ENV_VARS
 from .storage import to_float_or_none, universe_query
 
 BASE = "https://opendart.fss.or.kr/api"
@@ -362,12 +363,7 @@ def collect_keys() -> list[str]:
     Each key has its own 20,000-call/day quota (per-key, not per-IP), so listing
     several lets collection roll over to the next when one hits the daily cap.
     """
-    keys: list[str] = []
-    for name in ("DART_API_KEY", "DART_API_KEY_2", "DART_API_KEY_3", "DART_API_KEY_4"):
-        v = os.environ.get(name)
-        if v:
-            keys.append(v)
-    return keys
+    return [v for v in (os.environ.get(n) for n in DART_KEY_ENV_VARS) if v]
 
 
 def _fetch_with_rotation(

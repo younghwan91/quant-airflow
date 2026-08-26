@@ -29,12 +29,10 @@ from __future__ import annotations
 
 import sys
 
-from datetime import timedelta
-
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import kiwoom_env, run_collector, timescale_dsn
+from _common import DEFAULT_TASK_KW, kiwoom_env, run_collector, timescale_dsn
 
 
 @dag(
@@ -49,7 +47,7 @@ from _common import kiwoom_env, run_collector, timescale_dsn
 )
 def weekly_history_backfill():
 
-    @task(retries=1, retry_delay=timedelta(minutes=10))
+    @task(**DEFAULT_TASK_KW)
     def backfill_sector() -> None:
         # --days 0: 키움 지수 TR이 주는 전체 히스토리(~600거래일)를 upsert.
         # 평일 daily_collection은 --days 10 증분만 받으므로 여기서 깊이를 채운다.
@@ -58,7 +56,7 @@ def weekly_history_backfill():
             "--prod", "--days", "0", "--db", timescale_dsn(),
         ], env=kiwoom_env())
 
-    @task(retries=1, retry_delay=timedelta(minutes=10))
+    @task(**DEFAULT_TASK_KW)
     def backfill_short_credit() -> None:
         # --days 800: 종목당 공매도 ~336일 / 신용 ~100일(키움 한계)까지 깊게 받는다.
         # daily_short_credit은 --days 10 증분 — 신규 상장 종목의 과거는 이 백필로 채운다.

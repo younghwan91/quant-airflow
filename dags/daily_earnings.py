@@ -31,12 +31,10 @@ from __future__ import annotations
 
 import sys
 
-from datetime import timedelta
-
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import dart_env, run_collector, timescale_dsn
+from _common import DEFAULT_TASK_KW, dart_env, run_collector, timescale_dsn
 
 
 @dag(
@@ -49,7 +47,7 @@ from _common import dart_env, run_collector, timescale_dsn
 )
 def daily_earnings():
 
-    @task(retries=1, retry_delay=timedelta(minutes=10))
+    @task(**DEFAULT_TASK_KW)
     def collect_earnings() -> None:
         run_collector(
             [

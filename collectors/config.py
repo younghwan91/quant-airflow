@@ -15,6 +15,19 @@ if TYPE_CHECKING:  # 런타임 import 는 make_api 안에서 — 아래 주석 �
     from kiwoom_rest_api import KiwoomAPI
 
 
+#: DART API 키를 담는 환경변수 이름들 — **우선순위 순서**다.
+#: 키마다 하루 20,000콜 한도가 따로 붙으므로, 앞 키가 020(한도)을 맞으면 다음
+#: 키로 넘어간다. ``collectors.dart_earnings.collect_keys`` 가 subprocess 안에서
+#: 이 이름들을 읽고, ``dags/_common.dart_env`` 가 Airflow Variables 에서 꺼내
+#: 같은 이름으로 주입한다 — **두 쪽이 한 쌍이라 목록이 갈라지면 조용히 도달하지
+#: 않는다.** 실제로 그런 상태였다: 주입 쪽이 _2 까지만 알아서 3번 키가 콜렉터에
+#: 영원히 닿지 않았고, 한도가 60,000/일이 아니라 40,000/일이었다. 그래서 목록은
+#: 여기 하나뿐이다.
+DART_KEY_ENV_VARS: tuple[str, ...] = (
+    "DART_API_KEY", "DART_API_KEY_2", "DART_API_KEY_3", "DART_API_KEY_4",
+)
+
+
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
