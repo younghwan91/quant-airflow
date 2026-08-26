@@ -105,9 +105,8 @@ Airflow 메타DB에 물어 조기 종료한다(안전장치 포함).
 원리적으로 불가능하고 창을 나누는 게 유일한 답이다.
 
 > ⚠️ `wait_and_stop.sh` 는 **airflow 4종(스케줄러·웹서버·init·메타DB)만
-> 내린다.** `timescaledb` 는 이 레포
-> 전용이 아니다 — scalp-it 의 장중 틱 수집이 같은
-> 컨테이너를 쓰고 crontab 의 `db_guard.sh` 가 평일 08:00~15:55 살아 있는지 지킨다.
+> 내린다.** `timescaledb` 는 이 저장소 전용이 아니다 — scalp-it 의 장중 틱 수집이
+> 같은 컨테이너를 쓰고 crontab 의 `db_guard.sh` 가 평일 08:00~15:55 살아 있는지 지킨다.
 > 예전처럼 `docker compose stop` 으로 전부 내리면 오전 창을 11:30에 닫는 순간
 > **장중에 남의 수집 DB를 죽인다.**
 
