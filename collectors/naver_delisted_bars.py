@@ -76,6 +76,18 @@ def parse_sise(body: str, code: str) -> list[tuple]:
     주는데, 키움은 같은 날을 ``OHLC=종가`` 로 저장한다(실측: 거래량 0인 키움 행
     118,072건 중 118,070건이 OHLC=종가). 0을 그대로 넣으면 고가/저가를 읽는 돌파·ATR·
     손절 로직이 한 테이블 안에서 소스에 따라 다른 값을 보게 되므로 키움 규약에 맞춘다.
+
+    정규화는 **필드별**이다. 예전엔 ``o <= 0 and h <= 0 and low <= 0`` 일 때만,
+    즉 "셋 다 0" 인 완전한 정지일 모양에만 걸었다. 그러면 한 필드만 비정상인 행
+    (예: ``low`` 만 음수)이 그 분기를 안 타고, 아래 ``min(low, close)`` 가 음수를
+    그대로 남긴다 — ``daily_bars`` 에 음수 저가가 실린다. 조건을 ``or`` 로 푸는 건
+    답이 아니다: 그러면 한 필드만 나쁜 행에서 **멀쩡한 나머지 둘까지** close 로
+    뭉개 정보를 파괴한다. 필드별로 보면 셋 다 0인 정지일은 셋 다 close 로 떨어져
+    기존과 결과가 완전히 같고(회귀 없음), 부분 오염은 그 필드만 처리된다.
+
+    실측(2026-08-27) 기준 ``daily_bars`` 에 그런 행은 0건이다 — kiwoom 5,262,031 ·
+    naver 459,847 행 전부 ``low``/``open``/``high`` 가 양수다. 즉 이 가드는 이미
+    들어온 오염을 고치는 게 아니라 앞으로의 회귀를 막는 쪽이다.
     """
     out: list[tuple] = []
     for dt, o, h, low, c, v in _ROW_RE.findall(body):
@@ -83,8 +95,10 @@ def parse_sise(body: str, code: str) -> list[tuple]:
         if close <= 0:
             continue
         o, h, low = float(o), float(h), float(low)
-        if o <= 0 and h <= 0 and low <= 0:      # 정지일 — 키움 규약(OHLC=종가)으로
-            o = h = low = close
+        # 값이 없는 필드는 close 로 (키움 규약). 정지일(셋 다 0)이 여기 흡수된다.
+        o = o if o > 0 else close
+        h = h if h > 0 else close
+        low = low if low > 0 else close
         # 소스 자체가 종가를 고가/저가 밖으로 주는 행이 드물게 있다(정리매매 동전주 등).
         # 봉의 정의상 불가능한 값이라 범위만 종가까지 넓힌다(종가는 실제 체결가라 보존).
         h, low = max(h, close), min(low, close)

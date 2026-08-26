@@ -67,6 +67,28 @@ def test_halt_day_ohlc_normalized_to_close():
     assert n["volume"] == 0
 
 
+def test_partially_broken_ohlc_falls_back_per_field():
+    """한 필드만 비정상인 행 — 예전 ``and`` 분기가 못 잡던 구멍.
+
+    정규화가 "셋 다 0" 일 때만 걸리던 시절엔 이 행이 분기를 안 타고, 뒤따르는
+    ``min(low, close)`` 가 음수를 그대로 남겨 **daily_bars 에 음수 저가**가 실렸다.
+    조건을 ``or`` 로 푸는 건 답이 아니다 — 그러면 멀쩡한 시가·고가까지 close 로
+    뭉갠다. 그래서 필드별로 본다: 나쁜 필드만 close 가 되고 나머지는 보존된다.
+    """
+    (row,) = parse_sise('["20210113", 1200, 1300, -5, 1250, 100, 1.0]', "036180")
+    n = dict(zip(DAILY_BAR_SOURCE_COLUMNS, row))
+    assert n["low"] > 0                        # 음수가 그대로 실리지 않는다
+    assert (n["open"], n["high"]) == (1200, 1300)  # 멀쩡한 값은 보존
+    assert n["low"] <= n["close"] <= n["high"]
+
+
+def test_zero_low_alone_does_not_flatten_the_bar():
+    """저가만 0 인 행. ``or`` 로 넓혔다면 시가·고가가 종가로 뭉개졌을 자리."""
+    (row,) = parse_sise('["20210114", 1200, 1300, 0, 1250, 100, 1.0]', "036180")
+    n = dict(zip(DAILY_BAR_SOURCE_COLUMNS, row))
+    assert (n["open"], n["high"]) == (1200, 1300)
+    assert n["low"] == 1250                    # 값이 없으므로 종가로
+
 def test_close_outside_range_widens_the_bar():
     """소스가 종가를 고가 밖으로 주는 행이 있다(정리매매 동전주). 봉 정의상 불가능."""
     (row,) = parse_sise('["20210727", 20, 20, 20, 21, 1709794, 0.04]', "152550")
