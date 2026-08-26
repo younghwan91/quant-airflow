@@ -31,6 +31,8 @@ from typing import Any
 
 import pandas as pd
 
+from .storage import to_float_or_none, universe_query
+
 BASE = "https://opendart.fss.or.kr/api"
 # reprt_code: Q1, half-year(=Q2 cumulative), Q3, annual.
 QUARTER_REPORT = {1: "11013", 2: "11012", 3: "11014", 4: "11011"}
@@ -54,12 +56,9 @@ def _available_date(period_end: pd.Timestamp | str, *, is_annual: bool) -> pd.Ti
     return pd.Timestamp(period_end) + pd.Timedelta(days=lag)
 
 
-def _to_float(s: object) -> float | None:
-    txt = str(s or "").replace(",", "").strip()
-    try:
-        return float(txt)
-    except ValueError:
-        return None
+#: 콤마 섞인 숫자 문자열 → float|None. 정본은 storage 하나다 — 이 6줄이
+#: dart_earnings 와 naver_consensus 에 한 벌씩 있었다.
+_to_float = to_float_or_none
 
 
 def _pick(rows: list[dict], names: tuple[str, ...]) -> tuple[float | None, float | None]:
@@ -422,13 +421,7 @@ def _recent_quarters(n: int, today: datetime | None = None) -> list[tuple[int, i
 
 def _universe_query(args: argparse.Namespace) -> tuple[str, dict]:
     """SQL (+ params) selecting the code universe: all ``daily_bars`` codes or top-N liquid."""
-    if args.all_codes:
-        return "SELECT DISTINCT code FROM daily_bars ORDER BY code", {}
-    return (
-        "SELECT code FROM daily_bars WHERE date >= (SELECT MAX(date) FROM daily_bars) - INTERVAL '90 days' "
-        "GROUP BY code ORDER BY AVG(trade_value) DESC LIMIT %(n)s",
-        {"n": args.top_n},
-    )
+    return universe_query(all_codes=args.all_codes, top_n=args.top_n)
 
 
 def main() -> int:

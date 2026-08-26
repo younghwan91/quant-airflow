@@ -29,9 +29,9 @@ from kiwoom_rest_api.base import KiwoomAPIError
 
 from .config import make_api, mask_dsn
 from .storage import (
-    _is_pg,
     connect,
     default_db_path,
+    fetchall,
     fetchone,
     to_int,
     upsert_daily_bars,
@@ -67,11 +67,7 @@ def codes_current_as_of(con: Any, table: str, market_latest: str) -> set[str]:
     `MAX(date) >= market_latest` 와 의미가 정확히 같다.
     """
     sql = f"SELECT DISTINCT code FROM {table} WHERE date >= ?"  # noqa: S608 — table 은 호출부 리터럴
-    if _is_pg(con):
-        with con.cursor() as cur:
-            cur.execute(sql.replace("?", "%s"), (market_latest,))
-            return {r[0] for r in cur.fetchall()}
-    return {r[0] for r in con.execute(sql, (market_latest,)).fetchall()}
+    return {r[0] for r in fetchall(con, sql, (market_latest,))}
 
 
 def _sd_latest_date(con: Any, code: str) -> str | None:

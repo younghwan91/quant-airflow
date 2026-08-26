@@ -32,7 +32,14 @@ import time
 import urllib.error
 import urllib.request
 
-from .storage import _is_pg, _upsert, connect, default_db_path
+from .storage import (
+    CHECKED_NAVER_FLOW,
+    _upsert,
+    connect,
+    default_db_path,
+    fetchall,
+    mark_checked,
+)
 
 URL = "https://finance.naver.com/item/frgn.naver"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -140,18 +147,7 @@ def _mark_checked(con, codes: list[str], today: str) -> None:
     넘기므로(max_pages) 그런 코드 하나가 매주 수십~120요청을 태운다. 2026-08-15
     첫 실행이 175.3분 걸린 게 그 페이지 비용의 크기다.
     """
-    if not codes:
-        return
-    ph = "%s" if _is_pg(con) else "?"
-    sql = (f"UPDATE delisted_stocks SET naver_sd_checked = {ph} "  # noqa: S608 — 자리표시자만 조립
-           f"WHERE code IN ({','.join([ph] * len(codes))})")
-    params = (today, *codes)
-    if _is_pg(con):
-        with con.cursor() as cur:
-            cur.execute(sql, params)
-    else:
-        con.execute(sql, params)
-    con.commit()
+    mark_checked(con, CHECKED_NAVER_FLOW, codes, today)
 
 
 def _targets(con, *, refetch: bool = False) -> list[str]:
@@ -171,11 +167,7 @@ def _targets(con, *, refetch: bool = False) -> list[str]:
         f"{checked_filter}"
         "ORDER BY b.code"
     )
-    if _is_pg(con):
-        with con.cursor() as cur:
-            cur.execute(sql)
-            return [r[0] for r in cur.fetchall()]
-    return [r[0] for r in con.execute(sql).fetchall()]
+    return [r[0] for r in fetchall(con, sql)]
 
 
 def _write(con, records: list[tuple]) -> int:

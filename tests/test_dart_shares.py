@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import collectors.dart_shares as ds
-from collectors.storage import connect
+from collectors.storage import connect, mark_checked
 
 # 삼성전자 2025 사업보고서 형태(발췌). 합계 행에는 우선주가 섞여 있다.
 PAYLOAD = {
@@ -159,7 +159,7 @@ def test_codes_with_no_dart_data_get_marked(tmp_path):
     con.execute("INSERT INTO delisted_stocks(code) VALUES('A')")
     con.commit()
 
-    ds._mark_checked(con, ["A"], "2026-08-25")
+    mark_checked(con, ds.CHECKED_DART_SHARES, ["A"], "2026-08-25")
 
     got = con.execute("SELECT dart_checked FROM delisted_stocks WHERE code='A'").fetchone()
     assert got[0] == "2026-08-25"

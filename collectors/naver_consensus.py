@@ -23,17 +23,16 @@ import time
 import urllib.request
 from datetime import date
 
+from .storage import to_float_or_none, universe_query
+
 BASE = "https://m.stock.naver.com/api/stock"
 UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) "
       "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148")
 
 
-def _to_float(s: object) -> float | None:
-    txt = str(s or "").replace(",", "").strip()
-    try:
-        return float(txt)
-    except ValueError:
-        return None
+#: 콤마 섞인 숫자 문자열 → float|None. 정본은 storage 하나다 — 이 6줄이
+#: dart_earnings 와 naver_consensus 에 한 벌씩 있었다.
+_to_float = to_float_or_none
 
 
 def parse_consensus(payload: dict) -> tuple[float | None, float | None, str | None]:
@@ -151,13 +150,7 @@ def _universe_query(args: argparse.Namespace) -> tuple[str, dict]:
             "WHERE date >= CURRENT_DATE - make_interval(days => %(d)s) ORDER BY code",
             {"d": covered_days},
         )
-    if args.all_codes:
-        return "SELECT DISTINCT code FROM daily_bars ORDER BY code", {}
-    return (
-        "SELECT code FROM daily_bars WHERE date >= (SELECT MAX(date) FROM daily_bars) - INTERVAL '90 days' "
-        "GROUP BY code ORDER BY AVG(trade_value) DESC LIMIT %(n)s",
-        {"n": args.top_n},
-    )
+    return universe_query(all_codes=args.all_codes, top_n=args.top_n)
 
 
 def main() -> int:

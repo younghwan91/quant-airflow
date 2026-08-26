@@ -258,6 +258,85 @@ def fetchone(con: Any, sql: str, params: tuple) -> tuple | None:
     return con.execute(sql, params).fetchone()
 
 
+def fetchall(con: Any, sql: str, params: tuple = ()) -> list[tuple]:
+    """:func:`fetchone` 의 다행 짝 — 여러 행을 sqlite3/psycopg2 양쪽에서 읽는다.
+
+    ``fetchone`` 만 있던 동안 콜렉터들은 다행 조회를 만날 때마다 ``if _is_pg(con):
+    with con.cursor() ...`` 분기를 손으로 다시 썼다(daily_bars·dart_shares·
+    naver_delisted_bars·naver_supply_demand·krx_delisted). ``krx_shares`` 는 아예
+    **네 번째 백엔드 판정식**(``con.__class__.__module__.startswith("psycopg")``)까지
+    직접 만들었다 — ``fetchone`` 의 docstring 이 막으려던 드리프트가 다행 쪽에서
+    그대로 재발한 것이다. 그래서 여기 하나로 모은다.
+    """
+    if _is_pg(con):
+        with con.cursor() as cur:
+            cur.execute(sql.replace("?", "%s"), params)
+            return cur.fetchall()
+    return con.execute(sql, params).fetchall()
+
+
+def execute(con: Any, sql: str, params: tuple = ()) -> None:
+    """행을 돌려주지 않는 문장을 실행하고 커밋한다 (``?`` 파라미터로 통일)."""
+    if _is_pg(con):
+        with con.cursor() as cur:
+            cur.execute(sql.replace("?", "%s"), params)
+    else:
+        con.execute(sql, params)
+    con.commit()
+
+
+#: ``delisted_stocks`` 의 "이 소스로 이미 조회해봤다" 마커 컬럼들.
+#: 값은 조회한 날짜(YYYY-MM-DD), NULL 은 미확인.
+CHECKED_NAVER_BARS = "naver_checked"
+CHECKED_NAVER_FLOW = "naver_sd_checked"
+CHECKED_DART_SHARES = "dart_checked"
+_CHECKED_COLUMNS = (CHECKED_NAVER_BARS, CHECKED_NAVER_FLOW, CHECKED_DART_SHARES)
+
+
+def mark_checked(con: Any, column: str, codes: list[str], today: str) -> None:
+    """``codes`` 에 "이 소스는 확인했다" 마커를 찍어 다음 회차부터 건너뛰게 한다.
+
+    폐지 종목 백필 세 갈래(네이버 시세·네이버 수급·DART 주식수)가 각자 같은 12줄을
+    들고 있었고 **다른 건 컬럼 이름 하나뿐**이었다. 마커가 없으면 자료가 없는 코드는
+    결과 행이 안 생겨 제외 조건에도 안 걸리고 영원히 재조회된다 — 상장폐지는 과거
+    사실이라 한 번 없으면 영원히 없다.
+    """
+    if column not in _CHECKED_COLUMNS:
+        raise ValueError(f"unknown checked column: {column!r}")
+    if not codes:
+        return
+    ph = "%s" if _is_pg(con) else "?"
+    sql = (f"UPDATE delisted_stocks SET {column} = {ph} "  # noqa: S608 — 컬럼은 위에서 화이트리스트 검증
+           f"WHERE code IN ({','.join([ph] * len(codes))})")
+    params = (today, *codes)
+    if _is_pg(con):
+        with con.cursor() as cur:
+            cur.execute(sql, params)
+    else:
+        con.execute(sql, params)
+    con.commit()
+
+
+def universe_query(*, all_codes: bool, top_n: int) -> tuple[str, dict]:
+    """수집 대상 종목 유니버스를 고르는 SQL(+파라미터).
+
+    ``all_codes`` 는 ``daily_bars`` 전 종목을 되돌린다 — 최근성 창이 없으므로 오늘
+    상장한 종목도 첫날부터 포함된다(신규 상장 특수처리가 필요 없는 이유).
+    아니면 최근 90일 평균 거래대금 상위 ``top_n``.
+
+    ``dart_earnings`` 와 ``naver_consensus`` 가 이 문자열을 각자 한 벌씩 들고 있었다.
+    유동성 창(90일)과 ADV 정의는 연구 결정이라 한 군데에만 있어야 한다.
+    """
+    if all_codes:
+        return "SELECT DISTINCT code FROM daily_bars ORDER BY code", {}
+    return (
+        "SELECT code FROM daily_bars "
+        "WHERE date >= (SELECT MAX(date) FROM daily_bars) - INTERVAL '90 days' "
+        "GROUP BY code ORDER BY AVG(trade_value) DESC LIMIT %(n)s",
+        {"n": top_n},
+    )
+
+
 def _upsert(
     con: Any,
     table: str,
@@ -333,6 +412,21 @@ def to_float(s: object) -> float:
         return float(text)
     except ValueError:
         return 0.0
+
+
+def to_float_or_none(s: object) -> float | None:
+    """콤마 섞인 숫자 문자열 → float, 파싱 불가면 ``None``.
+
+    :func:`to_float` 와 달리 실패를 ``0.0`` 이 아니라 ``None`` 으로 돌려준다 —
+    "값이 0" 과 "값이 없음" 이 다른 재무·컨센서스 필드용이다(0.0 으로 뭉개면
+    커버리지 없는 종목이 목표주가 0원으로 보인다). dart_earnings 와
+    naver_consensus 가 같은 6줄을 한 벌씩 들고 있었다.
+    """
+    text = str(s or "").replace(",", "").strip()
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 _STOCKS_COLS = ["code", "name", "market", "sector", "kind"]

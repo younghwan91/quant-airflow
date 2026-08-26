@@ -35,7 +35,16 @@ import time
 import urllib.error
 import urllib.request
 
-from .storage import DAILY_BAR_COLUMNS, _is_pg, _upsert, connect, default_db_path
+from .storage import (
+    CHECKED_NAVER_BARS,
+    DAILY_BAR_COLUMNS,
+    _is_pg,
+    _upsert,
+    connect,
+    default_db_path,
+    fetchall,
+    mark_checked,
+)
 
 SISE_URL = "https://api.finance.naver.com/siseJson.naver"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -138,13 +147,7 @@ def _delisted_codes(con, *, refetch: bool = False) -> list[str]:
         where.append("code NOT IN (SELECT DISTINCT code FROM daily_bars WHERE source = 'naver')")
         where.append("naver_checked IS NULL")
     sql = f"SELECT code FROM delisted_stocks WHERE {' AND '.join(where)} ORDER BY code"  # noqa: S608 — 조건은 전부 모듈 상수
-    if _is_pg(con):
-        with con.cursor() as cur:
-            cur.execute(sql)
-            rows = cur.fetchall()
-    else:
-        rows = con.execute(sql).fetchall()
-    return [r[0] for r in rows]
+    return [r[0] for r in fetchall(con, sql)]
 
 
 def _mark_checked(con, codes: list[str], today: str) -> None:
@@ -154,18 +157,7 @@ def _mark_checked(con, codes: list[str], today: str) -> None:
     겹쳐 새로 쌓을 게 없음. (2)를 빼먹으면 그 코드는 ``source='naver'`` 행이 생기지
     않아 제외 조건에도 안 걸리고 영원히 재조회된다(실측 7건).
     """
-    if not codes:
-        return
-    ph = "%s" if _is_pg(con) else "?"
-    sql = (f"UPDATE delisted_stocks SET naver_checked = {ph} "  # noqa: S608 — 자리표시자만 조립
-           f"WHERE code IN ({','.join([ph] * len(codes))})")
-    params = (today, *codes)
-    if _is_pg(con):
-        with con.cursor() as cur:
-            cur.execute(sql, params)
-    else:
-        con.execute(sql, params)
-    con.commit()
+    mark_checked(con, CHECKED_NAVER_BARS, codes, today)
 
 
 def _insert_bars(con, records: list[tuple]) -> int:

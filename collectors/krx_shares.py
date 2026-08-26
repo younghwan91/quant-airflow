@@ -28,6 +28,8 @@ import time
 import urllib.parse
 import urllib.request
 
+from .storage import fetchall
+
 OTP_URL = "http://data.krx.co.kr/comm/fileDn/GenerateOTP/generate.cmd"
 DOWNLOAD_URL = "http://data.krx.co.kr/comm/fileDn/download_csv/download.cmd"
 REFERER = "http://data.krx.co.kr/contents/MDC/MDI/mdiLoader"
@@ -145,20 +147,15 @@ def fetch_snapshot(mkt_id: str, trd_dd: str) -> list[tuple[str, int]]:
 
 
 def _trading_dates(con: object, start: str | None, end: str | None) -> list[str]:
-    ph_start = start or "1900-01-01"
-    ph_end = end or "2999-12-31"
-    is_pg = con.__class__.__module__.startswith("psycopg")
-    ph = "%s" if is_pg else "?"
-    cur = con.cursor()
-    cur.execute(
-        f"SELECT DISTINCT date FROM daily_bars WHERE date >= {ph} AND date <= {ph} "
-        f"ORDER BY date",
-        (ph_start, ph_end),
-    )
     # Postgres returns native `date` objects (not str) for a DATE column —
     # str() gives the same 'YYYY-MM-DD' either way, so downstream `.replace("-", "")`
     # always hits the str method instead of accidentally calling date.replace().
-    return [str(r[0]) for r in cur.fetchall()]
+    rows = fetchall(
+        con,
+        "SELECT DISTINCT date FROM daily_bars WHERE date >= ? AND date <= ? ORDER BY date",
+        (start or "1900-01-01", end or "2999-12-31"),
+    )
+    return [str(r[0]) for r in rows]
 
 
 def main() -> int:

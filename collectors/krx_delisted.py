@@ -33,6 +33,8 @@ import json
 import urllib.parse
 import urllib.request
 
+from .storage import fetchall
+
 FINDER_URL = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
 REFERER = "https://data.krx.co.kr/contents/MDC/MDI/outerLoader/index.cmd"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -88,11 +90,11 @@ def main() -> int:
     # 상폐 리스트(수천 건)를 통째로 IN(...) 파라미터로 넘기면 대형 파라미터 목록이
     # 플래너에 부담을 준다(실측: 공유메모리 부족 에러) — daily_bars는 종목 수(~2,600)만큼만
     # 있으니 전체를 한 번에 집계해서 파이썬 dict로 조회하는 편이 훨씬 가볍다.
-    import pandas as pd
-    all_last_dates = pd.read_sql_query(
-        "SELECT code, MAX(date) AS last_date FROM daily_bars GROUP BY code", con)
-    last_dates: dict[str, str] = dict(
-        zip(all_last_dates["code"], all_last_dates["last_date"].astype(str)))
+    last_dates: dict[str, str] = {
+        code: str(last)
+        for code, last in fetchall(
+            con, "SELECT code, MAX(date) FROM daily_bars GROUP BY code")
+    }
 
     records = [
         (code, name, market, last_dates.get(code))

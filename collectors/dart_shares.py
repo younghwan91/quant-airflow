@@ -47,7 +47,7 @@ import time
 import urllib.parse
 import urllib.request
 
-from .storage import _is_pg, connect, default_db_path
+from .storage import CHECKED_DART_SHARES, connect, default_db_path, fetchall, mark_checked
 
 API = "https://opendart.fss.or.kr/api/stockTotqySttus.json"
 
@@ -138,26 +138,6 @@ def shares_series(key: str, corp_code: str, first_year: int, last_year: int,
     return out
 
 
-def _mark_checked(con, codes: list[str], today: str) -> None:
-    """DART 에서 못 찾은 코드를 기록해 다음 회차부터 건너뛴다.
-
-    `naver_delisted_bars._mark_checked` 와 같은 패턴이다 — 그쪽은 이미 이 방식으로
-    주간 외부 요청을 ~1,750회에서 신규 폐지분 수준으로 떨어뜨렸다.
-    """
-    if not codes:
-        return
-    ph = "%s" if _is_pg(con) else "?"
-    sql = (f"UPDATE delisted_stocks SET dart_checked = {ph} "  # noqa: S608 — 자리표시자만 조립
-           f"WHERE code IN ({','.join([ph] * len(codes))})")
-    params = (today, *codes)
-    if _is_pg(con):
-        with con.cursor() as cur:
-            cur.execute(sql, params)
-    else:
-        con.execute(sql, params)
-    con.commit()
-
-
 def _targets(con, *, refetch: bool = False) -> list[tuple[str, str, str]]:
     """``(code, 첫 거래일, 마지막 거래일)`` — 폐지 시세는 있는데 주식수가 없는 종목.
 
@@ -185,13 +165,7 @@ def _targets(con, *, refetch: bool = False) -> list[tuple[str, str, str]]:
         f"{checked_filter}"
         "GROUP BY b.code ORDER BY b.code"
     )
-    if _is_pg(con):
-        with con.cursor() as cur:
-            cur.execute(sql)
-            rows = cur.fetchall()
-    else:
-        rows = con.execute(sql).fetchall()
-    return [(r[0], str(r[1]), str(r[2])) for r in rows]
+    return [(r[0], str(r[1]), str(r[2])) for r in fetchall(con, sql)]
 
 
 def _write(con, records: list[tuple]) -> int:
@@ -258,7 +232,7 @@ def main() -> int:
                   f"ETA {(len(targets)-i)/rate/60 if rate else 0:.1f}분", flush=True)
 
     if not args.dry_run:
-        _mark_checked(con, exhausted, time.strftime("%Y-%m-%d"))
+        mark_checked(con, CHECKED_DART_SHARES, exhausted, time.strftime("%Y-%m-%d"))
     con.close()
     print(f"DONE targets={len(targets)} 확보={found} corp없음={no_corp} "
           f"못찾음={missing} 기록={written}행 "
