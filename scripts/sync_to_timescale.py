@@ -2,9 +2,14 @@
 
 Collectors (kr-quant) stay sqlite-only; this pushes a recent window of rows
 into the LAN-exposed TimescaleDB so another host can query current data
-without touching the sqlite file directly. Column lists are duplicated from
-kr_quant/storage.py rather than imported, so this repo doesn't break if
-kr-quant's internals change shape.
+without touching the sqlite file directly.
+
+Column lists and the upsert itself come from ``collectors.storage`` — the
+schema's single source of truth. They used to be re-declared here, justified as
+insulation from *kr-quant*'s internals; that reason went stale once
+``collectors/storage.py`` moved into this repo, and what was left was six lists
+silently drifting from the DDL they mirror (an insert is positional, so a drift
+puts values in the wrong column rather than erroring).
 
 Usage:
     python sync_to_timescale.py --sqlite /path/to/kr_quant.db --days 7
@@ -16,35 +21,25 @@ from __future__ import annotations
 import argparse
 import os
 import sqlite3
+import sys
 import time
 from datetime import date, timedelta
+from pathlib import Path
 
 import psycopg2
 import psycopg2.extras
 
-STOCKS_COLS = ["code", "name", "market", "sector", "kind"]
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-DAILY_BAR_COLS = ["code", "date", "open", "high", "low", "close", "volume", "trade_value"]
-
-SUPPLY_DEMAND_COLS = [
-    "code", "date", "close", "flu_rt", "acc_trde_qty",
-    "individual", "foreign_", "institution", "fnnc_invt", "insrnc",
-    "invtrt", "bank", "penfnd_etc", "samo_fund", "natn", "etc_corp",
-]
-
-SHORT_SELLING_COLS = [
-    "code", "date", "close", "volume",
-    "short_qty", "short_balance", "short_ratio", "short_avg_price", "short_value",
-]
-
-CREDIT_BALANCE_COLS = [
-    "code", "date", "close",
-    "new_qty", "repay_qty", "balance_qty", "balance_amt", "balance_rt", "credit_rt",
-]
-
-SECTOR_INDEX_COLS = [
-    "code", "name", "date", "open", "high", "low", "close", "volume", "trade_value",
-]
+from collectors.storage import (  # noqa: E402
+    DAILY_BAR_COLUMNS as DAILY_BAR_COLS,
+    SUPPLY_DEMAND_COLUMNS as SUPPLY_DEMAND_COLS,
+    _CREDIT_BALANCE_COLS as CREDIT_BALANCE_COLS,
+    _SECTOR_INDEX_COLS as SECTOR_INDEX_COLS,
+    _SHORT_SELLING_COLS as SHORT_SELLING_COLS,
+    _STOCKS_COLS as STOCKS_COLS,
+    _upsert,
+)
 
 TABLES: dict[str, list[str]] = {
     "daily_bars": DAILY_BAR_COLS,
@@ -68,46 +63,36 @@ def _to_date(value: str) -> date:
     return date(int(value[:4]), int(value[4:6]), int(value[6:8]))
 
 
-def sync_stocks(sq: sqlite3.Connection, pg: psycopg2.extensions.connection) -> int:
-    rows = sq.execute(f"SELECT {','.join(STOCKS_COLS)} FROM stocks").fetchall()
-    if not rows:
-        return 0
-    update_cols = [c for c in STOCKS_COLS if c != "code"]
-    with pg.cursor() as cur:
-        psycopg2.extras.execute_values(
-            cur,
-            f"INSERT INTO stocks({','.join(STOCKS_COLS)}) VALUES %s "
-            f"ON CONFLICT (code) DO UPDATE SET " + ",".join(f"{c}=EXCLUDED.{c}" for c in update_cols),
-            rows,
-        )
-    pg.commit()
-    return len(rows)
-
-
 def sync_table(
     sq: sqlite3.Connection,
     pg: psycopg2.extensions.connection,
     table: str,
     cols: list[str],
-    cutoff: str,
+    cutoff: str | None,
+    *,
+    pk_cols: tuple[str, ...] = ("code", "date"),
 ) -> int:
-    rows = sq.execute(f"SELECT {','.join(cols)} FROM {table} WHERE date >= ?", (cutoff,)).fetchall()
+    """Copy one table's rows into Postgres, upserting on its natural key.
+
+    ``cutoff`` is a ``YYYYMMDD`` lower bound on ``date``; ``None`` reads the whole
+    table (used for ``stocks``, which has no date column — that case used to be a
+    second near-identical function).
+    """
+    select = f"SELECT {','.join(cols)} FROM {table}"  # noqa: S608 — cols/table 은 모듈 상수
+    rows = (sq.execute(select).fetchall() if cutoff is None
+            else sq.execute(f"{select} WHERE date >= ?", (cutoff,)).fetchall())
     if not rows:
         return 0
+    # sqlite stores dates as 'YYYYMMDD' text; the TimescaleDB columns are DATE.
     converted = [
         tuple(_to_date(v) if c == "date" else v for c, v in zip(cols, row))
         for row in rows
     ]
-    update_cols = [c for c in cols if c not in ("code", "date")]
-    with pg.cursor() as cur:
-        psycopg2.extras.execute_values(
-            cur,
-            f"INSERT INTO {table}({','.join(cols)}) VALUES %s "
-            f"ON CONFLICT (code, date) DO UPDATE SET " + ",".join(f"{c}=EXCLUDED.{c}" for c in update_cols),
-            converted,
-        )
-    pg.commit()
-    return len(converted)
+    # storage._upsert builds the same ON CONFLICT statement this file used to
+    # hand-roll — plus the page_size fix (so rowcount reflects every batch) and
+    # the rollback-on-failure that keeps one bad row from aborting the whole
+    # transaction for every later table.
+    return _upsert(pg, table, cols, converted, pk_cols=pk_cols)
 
 
 def main() -> int:
@@ -129,7 +114,7 @@ def main() -> int:
     pg = psycopg2.connect(pg_dsn())
     started = time.monotonic()
     try:
-        n_stocks = sync_stocks(sq, pg)
+        n_stocks = sync_table(sq, pg, "stocks", STOCKS_COLS, None, pk_cols=("code",))
         totals = {table: sync_table(sq, pg, table, cols, cutoff) for table, cols in TABLES.items()}
     finally:
         sq.close()
