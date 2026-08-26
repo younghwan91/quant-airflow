@@ -45,6 +45,14 @@ from .supply_demand import (
 )
 
 
+# 종목별 즉시 upsert(~2,600회×2 라운드트립) 대신 CHUNK_SIZE개 종목마다 배치 upsert.
+# `_upsert` 는 문장마다 `con.commit()` 하므로 종목별 호출은 Postgres fsync 를
+# 실행당 ~5,250번 부른다 — short_credit·listed_shares 는 이미 이 청크 패턴을 쓰고
+# 있었고, 종목 루프를 도는 콜렉터 중 여기만 남아 있었다. 루프 종료 후 1회
+# (메가배치)로 미루지 않는 이유도 그 둘과 같다: 크래시 손실을 최대 1청크로 제한한다.
+_CHUNK_SIZE = 100
+
+
 def collect(
     api: KiwoomAPI,
     con: sqlite3.Connection,
@@ -91,6 +99,16 @@ def collect(
         )
     stats = {"done": 0, "skipped": 0, "failed": 0, "daily_rows": 0, "sd_rows": 0}
     started = time.monotonic()
+    daily_buffer: list[tuple] = []
+    sd_buffer: list[tuple] = []
+
+    def flush() -> None:
+        if daily_buffer:
+            stats["daily_rows"] += upsert_daily_bars(con, daily_buffer)
+            daily_buffer.clear()
+        if sd_buffer:
+            stats["sd_rows"] += upsert_supply_demand(con, sd_buffer)
+            sd_buffer.clear()
 
     for i, stock in enumerate(stocks, 1):
         code = stock["code"]
@@ -117,16 +135,14 @@ def collect(
                     # market_latest 는 완료된 최신 거래일이다.
                     and r["dt"] <= market_latest
                 ]
-                stats["daily_rows"] += upsert_daily_bars(con, bars)
+                daily_buffer.extend(bars)
 
             if not sd_current:
                 # 수급 (ka10059) — separate TR, separate bucket (no extra throttle).
                 s_resp = api.stock_info.investor_institution_by_stock(
                     dt=base_dt, stk_cd=code, amt_qty_tp="2", trde_tp="0", unit_tp="1"
                 )
-                stats["sd_rows"] += upsert_supply_demand(
-                    con, build_sd_records(code, s_resp, sd_cutoff)
-                )
+                sd_buffer.extend(build_sd_records(code, s_resp, sd_cutoff))
             stats["done"] += 1
         except KiwoomAPIError as e:
             stats["failed"] += 1
@@ -135,10 +151,14 @@ def collect(
             stats["failed"] += 1
             print(f"  💥 {code} {stock['name']}: {type(e).__name__}: {e}")
 
+        if stats["done"] % _CHUNK_SIZE == 0:
+            flush()
+
         if i % progress_every == 0 or i == len(stocks):
             print(progress_line(
                 i, len(stocks), started, stats,
                 f"일봉 {stats['daily_rows']:,} / 수급 {stats['sd_rows']:,}"))
+    flush()
     return stats
 
 

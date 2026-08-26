@@ -289,6 +289,9 @@ def download(
     dest.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=dest.parent, prefix=f".{table}-", suffix=".part")
     written = 0
+    # 쓰면서 같이 해시한다. 다 쓴 뒤 file_sha256 으로 다시 읽으면 방금 쓴 최대
+    # 985MB 를 디스크에서 한 번 더 통과하는 셈이고, 그 바이트는 이미 손에 있었다.
+    digest_acc = hashlib.sha256()
     try:
         with os.fdopen(fd, "wb") as out, opener(
             bulk_url(table, api_key=api_key), timeout=SOCKET_TIMEOUT
@@ -301,6 +304,7 @@ def download(
                 if not block:
                     break
                 out.write(block)
+                digest_acc.update(block)
                 written += len(block)
         # 절단을 여기서 잡는다. 아래 sha256 은 **받은 바이트로 계산해 그 바이트를
         # 기록하는 자기참조**라 전송 손상을 원리적으로 못 잡는다(그건 받은 뒤
@@ -312,7 +316,7 @@ def download(
                 f"≠ 받은 {written:,}B"
             )
         verify_zip(Path(tmp))
-        digest = file_sha256(Path(tmp))
+        digest = digest_acc.hexdigest()
         # mkstemp 는 0600 으로 만든다. raw 아카이브는 컨테이너(airflow)가 쓰고
         # 호스트의 연구 도구가 읽으므로, 읽기는 열어둔다.
         os.chmod(tmp, 0o644)

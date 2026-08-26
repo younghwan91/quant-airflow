@@ -339,6 +339,11 @@ def universe_query(*, all_codes: bool, top_n: int) -> tuple[str, dict]:
     )
 
 
+#: 한 INSERT 문에 담을 최대 행 수. execute_values 는 페이지 하나를 통째로 하나의
+#: SQL 문자열로 mogrify 하므로, 이 값이 곧 클라이언트 메모리의 상한이다.
+_UPSERT_PAGE_SIZE = 1000
+
+
 def _upsert(
     con: Any,
     table: str,
@@ -375,11 +380,18 @@ def _upsert(
         )
         try:
             with con.cursor() as cur:
-                # page_size 를 전체 길이로 — 기본값(100)이면 여러 문장으로 쪼개져
-                # cur.rowcount 가 마지막 배치만 반영한다.
-                psycopg2.extras.execute_values(
-                    cur, sql, records, page_size=max(len(records), 100))
-                affected = cur.rowcount
+                # 페이지마다 rowcount 를 **누적**한다. execute_values 에 전체를 한
+                # 문장으로 넘기면(page_size=len(records)) rowcount 는 정확하지만
+                # 클라이언트가 records 전체를 하나의 SQL 문자열로 mogrify 하므로,
+                # 큰 백필(예: sync_to_timescale --days 3650)에서 수 GB 짜리 문장이
+                # 만들어진다. 페이지를 두되 각 페이지의 rowcount 를 더하면 둘 다
+                # 지킨다 — 기본값(100)에 그냥 맡기면 마지막 배치만 반영돼
+                # "13,316행 기록"이라 보고해놓고 실제로는 0행인 일이 생긴다(실측).
+                affected = 0
+                for start in range(0, len(records), _UPSERT_PAGE_SIZE):
+                    page = records[start:start + _UPSERT_PAGE_SIZE]
+                    psycopg2.extras.execute_values(cur, sql, page, page_size=len(page))
+                    affected += cur.rowcount
         except Exception:
             # A failed statement leaves the whole Postgres transaction aborted
             # until rolled back — without this, every later upsert on this

@@ -454,9 +454,27 @@ def main() -> int:
     con = connect(args.db or str(default_db_path()))
     q_sql, q_params = _universe_query(args)
     top = pd.read_sql_query(q_sql, con, params=q_params)
+
+    today = datetime.now().strftime("%Y%m%d")
+    if args.recent_quarters is not None:
+        periods = _recent_quarters(args.recent_quarters)
+    else:
+        periods = [(year, q) for year in range(args.from_year, args.to_year + 1) for q in (1, 2, 3, 4)]
+
     done_periods: set[tuple[str, str]] = set()
-    if args.db_table:
-        existing = pd.read_sql_query("SELECT code, period FROM earnings", con)
+    # periods 가 비면(--recent-quarters 0, 또는 --from-year > --to-year) 받을 게
+    # 없다. 그대로 두면 아래 IN 목록이 비어 `IN ()` 이라는 문법 오류를 만든다.
+    if args.db_table and periods:
+        # DISTINCT + 이번 실행이 실제로 볼 분기로 제한한다. 예전엔 `SELECT code,
+        # period FROM earnings` 로 **테이블 전체**를 pandas 로 끌어와 파이썬에서
+        # 중복을 버렸다 — 키가 (code, period, knowledge_date) 라 정정공시 버전까지
+        # 전부 딸려오고, 2016년부터 ~2,600종목×~40분기면 10만 행이 넘는다.
+        # daily_earnings 는 그중 두 분기만 쓴다(≈5,200행).
+        want = sorted({f"{year}Q{q}" for year, q in periods})
+        ph = ",".join(["%%(p%d)s" % i for i in range(len(want))])
+        existing = pd.read_sql_query(
+            f"SELECT DISTINCT code, period FROM earnings WHERE period IN ({ph})",  # noqa: S608 — 자리표시자만 조립
+            con, params={f"p{i}": v for i, v in enumerate(want)})
         done_periods = set(zip(existing["code"], existing["period"]))
     else:
         con.close()
@@ -469,12 +487,6 @@ def main() -> int:
                 done.add(r[0])
     corp = load_corp_map_with_rotation(keys)
     print(f"corp_map {len(corp)} | universe {len(codes)} | keys {len(keys)} | already done {len(done)}", flush=True)
-
-    today = datetime.now().strftime("%Y%m%d")
-    if args.recent_quarters is not None:
-        periods = _recent_quarters(args.recent_quarters)
-    else:
-        periods = [(year, q) for year in range(args.from_year, args.to_year + 1) for q in (1, 2, 3, 4)]
 
     if args.multi_batch:
         corp_universe = {sc: cc for sc, cc in corp.items() if sc in set(codes)}

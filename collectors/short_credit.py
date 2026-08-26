@@ -31,6 +31,7 @@ from .kiwoom_cli import add_common_args, build_universe, open_session, print_ban
 from .storage import (
     date_days_ago,
     days_ago,
+    fetchall,
     fetchone,
     progress_line,
     to_float,
@@ -60,10 +61,25 @@ def _has_history_back_to(con: Any, code: str, depth_cutoff: str) -> bool:
     확보돼 있다. 실제로 얕은 건 82종목뿐인데 매주 5,090 요청(49분)을 전부
     다시 보내고 ~107만 행을 같은 값으로 덮어썼다.
     """
-    return fetchone(
-        con, "SELECT 1 FROM short_selling WHERE code=? AND date<=? LIMIT 1",
-        (code, depth_cutoff),
-    ) is not None
+    return code in codes_with_history_back_to(con, depth_cutoff)
+
+
+def codes_with_history_back_to(con: Any, depth_cutoff: str) -> set[str]:
+    """``depth_cutoff`` 이전 공매도 행이 있는 코드 집합 — 깊이 스킵의 **대량** 판정.
+
+    종목마다 EXISTS 를 부르면 2,545 왕복인데, 이 조건은 **오래된** 청크를 봐야 해서
+    하이퍼테이블 대부분을 가로지른다 — `daily_bars.codes_current_as_of` 가 실측한
+    건당 845ms 짜리 모양 그대로다. 그러면 API 를 한 번도 안 불러도 스킵 판정에만
+    ~35분이 든다. 실제로 얕은 건 82종목뿐인데. 집합 하나면 왕복이 1회다.
+    """
+    return {r[0] for r in fetchall(
+        con, "SELECT DISTINCT code FROM short_selling WHERE date<=?", (depth_cutoff,))}
+
+
+def codes_with_rows_since(con: Any, cutoff: str) -> set[str]:
+    """``cutoff`` 이후 공매도 행이 있는 코드 집합 — ``--resume`` 의 대량 판정."""
+    return {r[0] for r in fetchall(
+        con, "SELECT DISTINCT code FROM short_selling WHERE date>=?", (cutoff,))}
 
 
 def _build_ss_records(code: str, resp: dict, cutoff: str) -> list[tuple]:
@@ -139,6 +155,10 @@ def collect(
     cutoff = date_days_ago(days)
     depth_cutoff = days_ago(resume_depth)
     start_dt = cutoff
+    # 스킵 판정을 **한 번에** 받아둔다 — 종목별 EXISTS 는 건당 왕복이고, 특히 깊이
+    # 조건은 오래된 청크를 가로질러 건당 ~845ms 다(codes_with_history_back_to 참고).
+    resume_codes = codes_with_rows_since(con, cutoff) if resume else set()
+    deep_codes = codes_with_history_back_to(con, depth_cutoff) if depth_cutoff else set()
     stats = {"done": 0, "skipped": 0, "failed": 0, "ss_rows": 0, "cb_rows": 0}
     started = time.monotonic()
     ss_buffer: list[tuple] = []
@@ -154,10 +174,7 @@ def collect(
 
     for i, stock in enumerate(stocks, 1):
         code = stock["code"]
-        if resume and _has_recent_ss(con, code, cutoff):
-            stats["skipped"] += 1
-            continue
-        if depth_cutoff and _has_history_back_to(con, code, depth_cutoff):
+        if code in resume_codes or code in deep_codes:
             stats["skipped"] += 1
             continue
         try:
