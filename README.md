@@ -86,7 +86,8 @@ spare PC (Ubuntu, 이 레포)                                  main PC
 배포해도 충돌하지 않는다(기존 리더는 옛 inode를 계속 읽는다). DuckDB는 단일
 라이터라, 직접 upsert하면 연구와 수집이 상시 서로를 막는다.
 
-머신 가동은 cron이 관리한다. **하루 두(토요일은 세) 창으로 나눠 띄운다.**
+머신 가동은 cron이 관리한다. **창 셋으로 나눠 띄운다** — 오전 창은 매일,
+저녁 창은 평일용과 토요일용이 따로 있어 하루에 최대 두 창이 뜬다.
 
 | 창 | 기동 | 대상 |
 |---|---|---|
@@ -103,7 +104,8 @@ Airflow 메타DB에 물어 조기 종료한다(안전장치 포함).
 마감(15:30) 이후에만 데이터가 나오므로 앞당길 수 없다 — 스케줄을 붙이는 건
 원리적으로 불가능하고 창을 나누는 게 유일한 답이다.
 
-> ⚠️ `wait_and_stop.sh` 는 **airflow 3종만 내린다.** `timescaledb` 는 이 레포
+> ⚠️ `wait_and_stop.sh` 는 **airflow 4종(스케줄러·웹서버·init·메타DB)만
+> 내린다.** `timescaledb` 는 이 레포
 > 전용이 아니다 — scalp-it 의 장중 틱 수집이 같은
 > 컨테이너를 쓰고 crontab 의 `db_guard.sh` 가 평일 08:00~15:55 살아 있는지 지킨다.
 > 예전처럼 `docker compose stop` 으로 전부 내리면 오전 창을 11:30에 닫는 순간
@@ -118,10 +120,12 @@ git clone https://github.com/younghwan91/kr-quant.git ../kr-quant   # sibling �
 cd quant-airflow
 
 cp .env.example .env   # KIWOOM_APP_KEY/SECRET, DART_API_KEY(_2/_3), TIMESCALE_*, AIRFLOW_* 채우기
-docker compose up -d
+docker compose up -d                 # 스케줄러 + Airflow 메타DB + TimescaleDB
+docker compose --profile ui up -d    # 웹 UI 까지 필요할 때만
 ```
 
-- **Airflow 웹서버**: `http://<spare-pc-ip>:8080`
+- **Airflow 웹서버**: `http://<spare-pc-ip>:8080` — `profiles: ["ui"]` 라 기본
+  기동에서는 뜨지 않는다. 볼 일이 있을 때 `--profile ui` 로 올린다
 - **TimescaleDB**: `<spare-pc-ip>:5432` (LAN 오픈, 메인 PC가 질의)
 
 ## DAG 목록
@@ -202,10 +206,12 @@ docker compose up -d
   01:39, insiders 09:48, daily 12:56, **stocks(주가) 16:40**, fundamentals 16:49,
   funds 16:54. 가장 늦은 16:54 뒤로 여유를 둔 값이다. 화~토인 건 미국 장이
   없는 날엔 새로 받을 게 없어서다(금요일 세션은 토요일 드롭에 실려 온다).
-  ⚠️ 토요일은 이 DAG 때문에 스택이 10:40 대신 18:15까지 뜬다.
-- **실측 소요**: 다운로드 3.0GB를 7분 42초(실측 7.2MB/s) — `modified` 스킵으로
-  평시엔 훨씬 적다. 빌드는 전체 약 45분(실측: SEP 4,626만 행 10.6분, DAILY 4,007만 행 28.7분). `wait_and_stop.sh`가
-  실행 중인 런을 기다리므로 잘리지 않는다(22:00 안전장치).
+  ⚠️ 토요일은 이 DAG 하나 때문에 오전 창(11:30 종료)과 6시간 떨어진 저녁 창을
+  따로 띄운다(17:20 기동) — 예전엔 이것 하나 때문에 스택이 18:15까지 통째로 떠 있었다.
+- **실측 소요(2026-08-25 정기 런)**: DAG 전체 31.6분 — 다운로드 3,307MB 약 9분
+  (14개 중 `새로 받음 10 · 확인만 4`, `modified` 스킵이 실제로 걸린다), 빌드·검증·공개
+  22.2분. 9일 공백을 메운 날은 14개를 전부 받아 3,565MB / 15.3분이었다.
+  `wait_and_stop.sh`가 실행 중인 런을 기다리므로 잘리지 않는다.
 - **아직 스토어에 안 들어가는 것**: funds(SFP)·holdings(SF3)·holdings_investor
   (SF3B)·events. 구독분이라 raw 아카이브에는 받아두지만, `opt_portfolio`에 테이블이
   없어 적재는 못 한다. `metrics`는 종목당 1행 최신 스냅샷뿐이라(히스토리 없음)
@@ -222,7 +228,7 @@ TimescaleDB hypertable(PK `(code, date)`)이고, 그 외는 일반 테이블이�
 |---|---|
 | `daily_bars` | 일봉 OHLCV + 거래대금. `source`='kiwoom'(상장 종목) / 'naver'(폐지 종목 백필 — 거래대금은 close×volume 근사) |
 | `daily_bars_adjusted` | 액면분할 백조정 일봉(`weekly_price_adjust`가 매주 재생성). `source`는 `daily_bars`에서 전파 |
-| `supply_demand` | 투자자별 순매수(개인·외국인·기관 + 기관 세부 8종) |
+| `supply_demand` | 투자자별 순매수(개인·외국인·기관 + 기관 세부 8종). `source`='kiwoom'(전체 항목) / 'naver'(폐지 종목 부분 백필 — 기관·외국인만, 나머지는 NULL) |
 | `short_selling` | 공매도 추이(수량·잔고·비율·평균가) |
 | `credit_balance` | 신용잔고(신규·상환·잔고·비율) |
 | `sector_index` | 업종지수 OHLCV |
@@ -252,9 +258,9 @@ scripts/
   wait_and_stop.sh     # 지평선까지 예정 DAG 전부 끝나면 airflow 조기 종료 (--until HH:MM)
   sync_to_timescale.py # sqlite → TimescaleDB 증분 upsert (레거시 경로)
 sql/init_timescale.sql # hypertable 스키마 + 청크/압축 정책 (신규 DB용)
-sql/migrations/        # 기존 DB 변경분 — 001~004, README "스키마 마이그레이션" 참고
+sql/migrations/        # 기존 DB 변경분 — 001~008, README "스키마 마이그레이션" 참고
 docker/Dockerfile      # collectors/ 의존성만 설치 (kr-quant editable install 없음)
-docker-compose.yml     # Airflow(web/scheduler) + Airflow 메타 Postgres + TimescaleDB
+docker-compose.yml     # Airflow(scheduler + 웹은 `profiles: ["ui"]`) + Airflow 메타 Postgres + TimescaleDB
 ```
 
 **`dags/_common.py`** — DAG마다 중복되던 DSN·자격증명 헬퍼를 한곳에 모았다.
@@ -274,9 +280,12 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 |---|---|---|
 | `001_earnings_knowledge_date` | 2026-08-13 | `earnings` PK를 `(code, period, knowledge_date)`로 확장 — 정정공시가 덮어쓰지 않고 새 버전으로 쌓인다. 기존 83,996행은 최초 보고치이므로 `knowledge_date = avail_date`로 백필 |
 | `002_daily_bars_source` | 2026-08-15 | `daily_bars.source` 추가 — 폐지 종목 시세를 네이버에서 받으면서 행별 출처를 남긴다(거래대금이 실측/근사로 갈림) |
-| `005_shares_source_knowledge` | 2026-08-15 | `shares_outstanding_history`에 `source`·`knowledge_date` 추가 — 폐지 종목 주식수를 DART에서 받으면서 출처와 "언제 알 수 있었나"를 남긴다(기준일 ≠ 공시일) |
-| `004_delisted_naver_checked` | 2026-08-15 | `delisted_stocks.naver_checked` 추가 — 네이버에 구간 내 데이터가 없거나 이미 다 받은 코드를 표시해 주간 재조회를 막는다(실측 주간 1,758회 → 0회) |
 | `003_daily_bars_adjusted_source` | 2026-08-15 | `daily_bars_adjusted.source` 추가 — 002 의 짝. 백테스트가 읽는 건 조정가 테이블이라 거기까지 전파돼야 근사 거래대금을 식별할 수 있다. **적용 후 `python -m kr_quant.price_adjust --rebuild-db` 로 재생성해야 기존 행이 채워진다** |
+| `004_delisted_naver_checked` | 2026-08-15 | `delisted_stocks.naver_checked` 추가 — 네이버에 구간 내 데이터가 없거나 이미 다 받은 코드를 표시해 주간 재조회를 막는다(실측 주간 1,758회 → 0회) |
+| `005_shares_source_knowledge` | 2026-08-15 | `shares_outstanding_history`에 `source`·`knowledge_date` 추가 — 폐지 종목 주식수를 DART에서 받으면서 출처와 "언제 알 수 있었나"를 남긴다(기준일 ≠ 공시일) |
+| `006_supply_demand_source` | 2026-08-15 | `supply_demand.source` 추가 — 폐지 종목 수급은 네이버에서만 받히는데 항목이 일부뿐이고(기관·외국인) '외국인'의 정의도 키움과 다르다. 출처를 남겨 읽는 쪽이 NULL(모름)과 0(순매매 없음)을 구분하게 한다 |
+| `007_delisted_backfill_markers` | 2026-08-25 | `delisted_stocks.dart_checked`·`naver_sd_checked` 추가 — 004 와 같은 병. DART/네이버가 "자료 없음"을 준 폐지 종목이 어디에도 기록되지 않아 매주 다시 조회됐다(실측 42종목, 주당 2.2분). 다시 훑으려면 컬럼을 NULL 로 되돌리거나 수집기에 `--refetch` |
+| `008_compression_and_lookahead_cleanup` | 2026-08-25 | ① 압축 경계 7일 → 30일(수집기가 쓰는 창이 15일/10일이라 매 upsert 가 압축해제→재압축을 돌렸다) ② `daily_bars_adjusted` 압축 영구 해제(실측 739MB → 901MB 로 음수 압축) ③ `shares_outstanding_history` 에서 오늘 스냅샷을 과거 3개 날짜로 복사해 둔 `source='kiwoom'` 행 삭제 — `market_cap_asof` 에 lookahead 가 살아 있었다 |
 
 > ⚠️ 001은 코드(`collectors/storage.py`)가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이
 > `daily_earnings`가 초록불이었던 건 비수기라 `rows=0`이어서 DB를 건드리기 전에 빠져나갔기
@@ -287,11 +296,17 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 - **청크 크기** — 모든 hypertable이 `chunk_time_interval = 1년`을 쓴다. 기본 7일 청크는
   이 데이터 볼륨(~2,600종목 × 250거래일/년 ≈ 65만 행/년)에 비해 지나치게 잘게 쪼개져
   청크 메타데이터 오버헤드가 커지고, 여러 해에 걸친 스캔이 느려진다.
-- **압축** — 시세·수급·컨센서스 hypertable은 7일이 지난 청크를 컬럼형으로 자동 압축한다
+- **압축** — 시세·수급·컨센서스 hypertable은 30일이 지난 청크를 컬럼형으로 자동 압축한다
   (`compress_segmentby = 'code'`). 최근 데이터는 행 기반으로 남겨 잦은 upsert를 빠르게 처리한다.
+  **7일이 아니라 30일인 이유**(2026-08-25, `sql/migrations/008`): 수집기가 매일 쓰는 창이
+  일봉·수급 15일, 공매도·신용 10일이라 경계가 7일이면 그 창의 절반 이상이 이미 압축된
+  청크를 때린다 — upsert 마다 세그먼트 압축해제→갱신→재압축이 돌았다(pg_stat 실측:
+  압축 청크에서 `n_tup_ins ≈ n_tup_del`, `n_live_tup = 0`).
 - **`daily_bars_adjusted`는 압축 제외** — `weekly_price_adjust`가 매주 테이블 전체를
   upsert로 재작성하므로, 압축을 걸면 오래된 청크를 매주 압축 해제했다가 다시 압축하는
-  순환만 반복된다.
+  순환만 반복된다. 라이브 DB 는 이 주석과 달리 515청크 중 512개가 압축돼 있었고(정책 없이
+  수동 압축된 것으로 보인다) 실측 압축률이 739MB → 901MB 로 음수였다 — 008 에서 전량
+  `decompress_chunk` + `compress = false` 로 영구 해제했다.
 - **DB 쓰기** — 수집기는 `psycopg2.extras.execute_values`로 배치 upsert하고, 긴 전수
   수집은 청크 단위(100종목)로 중간 커밋해 크래시 시 손실을 제한한다.
 
