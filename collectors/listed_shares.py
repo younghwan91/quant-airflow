@@ -76,7 +76,24 @@ def collect(
         code = stock["code"]
         try:
             resp = api.stock_info.basic_stock_info(stk_cd=code)
-            shares = to_int(resp.get(_SHARES_FIELD)) * _SHARES_UNIT_MULTIPLIER
+            raw_shares = resp.get(_SHARES_FIELD)
+            shares = to_int(raw_shares) * _SHARES_UNIT_MULTIPLIER
+            if shares <= 0:
+                # **0 을 적재하면 안 된다.** `to_int` 는 파싱 실패(필드 누락, 빈
+                # 문자열, 쓰레기값)를 0 으로 돌려주므로, 그대로 쓰면 파서가 만들어낸
+                # 0 이 진짜 주식수와 구분되지 않는 행으로 들어간다. 게다가 그 행은
+                # **오늘 날짜**라, 시총 조회(kr-quant `storage.market_cap_asof`)의
+                # backward as-of(`date <= 조회일 ORDER BY date DESC LIMIT 1`)가
+                # 집어가는 최신 점이 된다 — 그 종목 시총이 그날부터 `close * 0 = 0`
+                # 으로 고정된다. 그쪽 가드는 `None` 만 걸러서 0 은 통과시키고,
+                # 시총을 분모로 쓰는 계산(순부채/시총 등)은 거기서 inf 가 된다.
+                #
+                # 값이 없는 것과 "주식수가 0" 은 다르다. 없으면 안 쓰는 게 맞다 —
+                # 이 종목은 직전 스냅샷이 as-of 로 계속 쓰이고, 그게 0 보다 낫다.
+                stats["failed"] += 1
+                print(f"  ⚠️ {code} {stock['name']}: 상장주식수 없음 "
+                      f"({_SHARES_FIELD}={raw_shares!r}) — 적재 안 함")
+                continue
             buffer.append((code, today, shares))
             stats["done"] += 1
         except KiwoomAPIError as e:
