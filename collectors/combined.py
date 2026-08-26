@@ -24,15 +24,12 @@ import time
 from kiwoom_rest_api import KiwoomAPI
 from kiwoom_rest_api.base import KiwoomAPIError
 
-from .config import make_api, mask_dsn
+from .kiwoom_cli import add_common_args, build_universe, open_session, print_banner
 from .storage import (
-    connect,
     date_days_ago,
     days_ago,
-    default_db_path,
     progress_line,
     upsert_daily_bars,
-    upsert_stocks,
     upsert_supply_demand,
 )
 from .daily_bars import (
@@ -45,8 +42,6 @@ from .daily_bars import (
 from .supply_demand import (
     _has_recent_rows,
     build_sd_records,
-    fetch_stock_list,
-    is_common_stock,
 )
 
 
@@ -148,9 +143,8 @@ def collect(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="키움 일봉+수급 통합 SQLite 수집기")
-    parser.add_argument("--prod", action="store_true", help="실서버 사용 (기본: 모의)")
-    parser.add_argument("--market", choices=["kospi", "kosdaq", "all"], default="all")
+    parser = add_common_args(
+        argparse.ArgumentParser(description="키움 일봉+수급 통합 SQLite 수집기"))
     parser.add_argument(
         "--sd-days", type=int, default=100, help="수급 최근 N일 (ka10059 최대 ~100)"
     )
@@ -158,8 +152,6 @@ def main() -> int:
         "--daily-days", type=int, default=0,
         help="일봉 최근 N일만 저장 (0=콜이 주는 전체 ~2.5년, 기본 0)",
     )
-    parser.add_argument("--limit", type=int, default=0, help="앞에서 N종목만 (테스트)")
-    parser.add_argument("--db", default=str(default_db_path()))
     parser.add_argument(
         "--resume", action="store_true", help="일봉+최근수급 둘 다 있는 종목 건너뜀"
     )
@@ -167,34 +159,12 @@ def main() -> int:
         "--update", action="store_true",
         help="일봉: 이미 시장 최신 거래일이면 API 호출 스킵 (수급은 매번 재수집)",
     )
-    parser.add_argument(
-        "--all-kinds", action="store_true",
-        help="ETF/ETN/리츠/우선주 등 모두 포함 (기본: 보통주만)",
-    )
-    parser.add_argument(
-        "--rate", type=float, default=0.9,
-        help="TR당 요청 속도(req/s). 긴 전수 수집의 429 방지를 위해 기본 0.9",
-    )
     args = parser.parse_args()
 
-    con = connect(args.db)
-    api = make_api(is_mock=not args.prod, rate_limit=args.rate, max_retries=5)
-
-    markets = ["kospi", "kosdaq"] if args.market == "all" else [args.market]
-    stocks = fetch_stock_list(api, markets)
-    if not args.all_kinds:
-        stocks = [s for s in stocks if is_common_stock(s)]
-    if args.limit:
-        stocks = stocks[: args.limit]
-
-    upsert_stocks(con, stocks)
-    server = "모의" if not args.prod else "실서버"
+    con, api = open_session(args)
+    stocks = build_universe(api, con, args)
     daily_win = "전체(~2.5년)" if args.daily_days == 0 else f"최근 {args.daily_days}일"
-    print(
-        f"🔌 {server} | 시장={args.market} | 종목 {len(stocks)}개 | "
-        f"일봉 {daily_win} + 수급 최근 {args.sd_days}일"
-    )
-    print(f"💾 {mask_dsn(args.db)}\n")
+    print_banner(args, stocks, f"일봉 {daily_win} + 수급 최근 {args.sd_days}일")
 
     stats = collect(
         api, con, stocks,

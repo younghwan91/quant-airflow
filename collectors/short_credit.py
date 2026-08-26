@@ -27,21 +27,17 @@ from typing import Any
 from kiwoom_rest_api import KiwoomAPI
 from kiwoom_rest_api.base import KiwoomAPIError
 
-from .config import make_api, mask_dsn
+from .kiwoom_cli import add_common_args, build_universe, open_session, print_banner
 from .storage import (
-    connect,
     date_days_ago,
     days_ago,
-    default_db_path,
     fetchone,
     progress_line,
     to_float,
     to_int,
     upsert_credit_balance,
     upsert_short_selling,
-    upsert_stocks,
 )
-from .supply_demand import fetch_stock_list, is_common_stock
 
 
 def _has_recent_ss(con: Any, code: str, cutoff: str) -> bool:
@@ -196,39 +192,20 @@ def collect(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="키움 공매도+신용잔고 SQLite 수집기")
-    parser.add_argument("--prod", action="store_true", help="실서버 사용 (기본: 모의)")
-    parser.add_argument("--market", choices=["kospi", "kosdaq", "all"], default="all")
+    parser = add_common_args(
+        argparse.ArgumentParser(description="키움 공매도+신용잔고 SQLite 수집기"))
     parser.add_argument("--days", type=int, default=100, help="최근 N일 (기본 100)")
-    parser.add_argument("--limit", type=int, default=0, help="앞에서 N종목만 (테스트)")
-    parser.add_argument("--db", default=str(default_db_path()))
     parser.add_argument("--resume", action="store_true", help="최근 데이터 있는 종목 건너뜀")
     parser.add_argument(
         "--resume-depth", type=int, default=0,
         help="이미 최근 N일 이전까지 이력이 닿아 있는 종목은 건너뜀 "
              "(주간 깊이 백필용 — 0=끔). 공매도 TR 상한이 ~336일이므로 330 이 실용값이다.",
     )
-    parser.add_argument(
-        "--all-kinds", action="store_true",
-        help="ETF/ETN/리츠/우선주 등 모두 포함 (기본: 보통주만)",
-    )
-    parser.add_argument("--rate", type=float, default=0.9, help="TR당 요청 속도(req/s)")
     args = parser.parse_args()
 
-    con = connect(args.db)
-    api = make_api(is_mock=not args.prod, rate_limit=args.rate, max_retries=5)
-
-    markets = ["kospi", "kosdaq"] if args.market == "all" else [args.market]
-    stocks = fetch_stock_list(api, markets)
-    if not args.all_kinds:
-        stocks = [s for s in stocks if is_common_stock(s)]
-    if args.limit:
-        stocks = stocks[: args.limit]
-
-    upsert_stocks(con, stocks)
-    server = "모의" if not args.prod else "실서버"
-    print(f"🔌 {server} | 시장={args.market} | 종목 {len(stocks)}개 | 최근 {args.days}일")
-    print(f"💾 {mask_dsn(args.db)}\n")
+    con, api = open_session(args)
+    stocks = build_universe(api, con, args)
+    print_banner(args, stocks, f"최근 {args.days}일")
 
     stats = collect(
         api, con, stocks, days=args.days, resume=args.resume,

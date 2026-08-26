@@ -39,9 +39,8 @@ import time
 from kiwoom_rest_api import KiwoomAPI
 from kiwoom_rest_api.base import KiwoomAPIError
 
-from .config import make_api, mask_dsn
-from .storage import connect, default_db_path, to_int, upsert_shares_outstanding, upsert_stocks
-from .supply_demand import fetch_stock_list, is_common_stock
+from .kiwoom_cli import add_common_args, build_universe, open_session, print_banner
+from .storage import to_int, upsert_shares_outstanding
 
 # ka10001 response field holding 상장주식수, in thousands of shares — verified
 # 2026-07-09 against a real API response (005930), see module docstring.
@@ -103,30 +102,16 @@ def collect(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="키움 상장주식수 SQLite 수집기")
-    parser.add_argument("--prod", action="store_true", help="실서버 사용 (기본: 모의)")
-    parser.add_argument("--market", choices=["kospi", "kosdaq", "all"], default="all")
-    parser.add_argument("--limit", type=int, default=0, help="앞에서 N종목만 (테스트)")
-    parser.add_argument("--db", default=str(default_db_path()))
-    parser.add_argument(
-        "--rate", type=float, default=0.9,
-        help="TR당 요청 속도(req/s). 긴 전수 수집의 429 방지를 위해 기본 0.9",
-    )
+    # all_kinds=False: ka10001 은 보통주만 받는다 — 플래그가 없으므로
+    # build_universe 가 보통주 필터를 항상 적용한다.
+    parser = add_common_args(
+        argparse.ArgumentParser(description="키움 상장주식수 SQLite 수집기"),
+        all_kinds=False)
     args = parser.parse_args()
 
-    con = connect(args.db)
-    api = make_api(is_mock=not args.prod, rate_limit=args.rate, max_retries=5)
-
-    markets = ["kospi", "kosdaq"] if args.market == "all" else [args.market]
-    stocks = fetch_stock_list(api, markets)
-    stocks = [s for s in stocks if is_common_stock(s)]
-    if args.limit:
-        stocks = stocks[: args.limit]
-
-    upsert_stocks(con, stocks)
-    server = "모의" if not args.prod else "실서버"
-    print(f"🔌 {server} | 시장={args.market} | 종목 {len(stocks)}개")
-    print(f"💾 {mask_dsn(args.db)}\n")
+    con, api = open_session(args)
+    stocks = build_universe(api, con, args)
+    print_banner(args, stocks)
 
     stats = collect(api, con, stocks)
 
