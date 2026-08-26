@@ -29,6 +29,7 @@ from kiwoom_rest_api.base import KiwoomAPIError
 
 from .config import make_api, mask_dsn
 from .storage import (
+    _is_pg,
     connect,
     default_db_path,
     fetchone,
@@ -49,6 +50,28 @@ _fetchone = fetchone
 
 def _has_any_rows(con: Any, code: str) -> bool:
     return _fetchone(con, "SELECT 1 FROM daily_bars WHERE code=? LIMIT 1", (code,)) is not None
+
+
+def codes_current_as_of(con: Any, table: str, market_latest: str) -> set[str]:
+    """``market_latest`` 이후 행이 있는 코드 집합 — `--update` 의 대량 판정.
+
+    **종목별 ``MAX(date)`` 조회를 대체한다.** 그 방식은 종목당 한 번씩
+    515개 청크를 가로질러야 해서 **건당 845ms** 다(실측). 2,628종목 × 2테이블
+    = 5,256번이면 API 를 한 번도 안 불러도 16분이 걸린다 — 실제로 2026-08-26
+    catchup 이 `done=0 skip=2628` 로 API 호출이 0이었는데도 16분을 썼다.
+
+    같은 판정을 집합 하나로 받으면 **전체 47ms** 다. 날짜 조건이 최신 청크
+    하나만 타기 때문이다.
+
+    반환 집합에 없는 코드는 정의상 낡은 것이다(그 날짜 이후 행이 없다) —
+    `MAX(date) >= market_latest` 와 의미가 정확히 같다.
+    """
+    sql = f"SELECT DISTINCT code FROM {table} WHERE date >= ?"  # noqa: S608 — table 은 호출부 리터럴
+    if _is_pg(con):
+        with con.cursor() as cur:
+            cur.execute(sql.replace("?", "%s"), (market_latest,))
+            return {r[0] for r in cur.fetchall()}
+    return {r[0] for r in con.execute(sql, (market_latest,)).fetchall()}
 
 
 def _sd_latest_date(con: Any, code: str) -> str | None:

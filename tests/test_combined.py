@@ -172,3 +172,39 @@ def test_an_unfinished_candle_never_reaches_daily_bars(con, monkeypatch):
     stored = [r[0] for r in con.execute("SELECT date FROM daily_bars").fetchall()]
     assert "20260824" not in stored, "진행 중 캔들이 적재됐다"
     assert "20260821" in stored
+
+
+def test_currency_check_costs_two_queries_not_two_per_stock(con, monkeypatch):
+    """종목별 MAX(date) 는 건당 845ms 다 — 청크 515개를 가로지른다.
+
+    실측 2026-08-26 catchup: `done=0 skip=2628` 로 API 호출이 0이었는데도
+    16분이 걸렸다. 그 16분이 전부 이 조회였다. 집합 두 개로 받으면 47ms 다.
+    """
+    import collectors.combined as cb
+
+    stocks = [{"code": f"{i:06d}", "name": f"종목{i}"} for i in range(300)]
+    for s in stocks:
+        con.execute("INSERT INTO daily_bars VALUES (?,'20260821',1,1,1,1,1,1)", (s["code"],))
+        con.execute("INSERT INTO supply_demand VALUES (?,'20260821')", (s["code"],))
+    con.commit()
+
+    # 프록시로 감싸면 `_is_pg` 가 sqlite 를 Postgres 로 오인한다(isinstance 판정).
+    # sqlite3 의 trace 콜백으로 실제 실행된 SQL 만 센다.
+    seen: list[str] = []
+    con.set_trace_callback(seen.append)
+    monkeypatch.setattr(cb, "_market_latest_date", lambda *a, **k: "20260821")
+
+    class _StockInfo:
+        def investor_institution_by_stock(self, **kw):
+            raise AssertionError("최신인데 API 를 불렀다")
+
+    api = _FakeApi(_FakeChart(_rows("20260821")))
+    api.stock_info = _StockInfo()
+
+    stats = cb.collect(api, con, stocks, update=True)
+    con.set_trace_callback(None)
+
+    assert stats["skipped"] == 300
+    lookups = [q for q in seen if "SELECT DISTINCT code" in q]
+    assert len(lookups) == 2, f"종목 수와 무관하게 2회여야 한다 (실제 {len(lookups)}회)"
+    assert not [q for q in seen if "MAX(date)" in q], "종목별 MAX(date) 가 남아 있다"

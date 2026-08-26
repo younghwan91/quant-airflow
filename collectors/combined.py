@@ -35,10 +35,9 @@ from .storage import (
 from .daily_bars import (
     _CHART_KEY,
     _has_any_rows,
-    _latest_date,
     _market_latest_date,
     _row_to_record,
-    _sd_latest_date,
+    codes_current_as_of,
 )
 from .supply_demand import (
     _has_recent_rows,
@@ -85,8 +84,15 @@ def collect(
         else ""
     )
     market_latest = _market_latest_date(api, base_dt) if update else base_dt
+    # 최신 여부를 **한 번에** 받아둔다 — 종목별 MAX(date) 는 건당 845ms 라
+    # (515개 청크를 가로지른다) 5,256번이면 API 를 안 불러도 16분이다.
+    daily_current_codes = codes_current_as_of(con, "daily_bars", market_latest) if update else set()
+    sd_current_codes = codes_current_as_of(con, "supply_demand", market_latest) if update else set()
     if update:
-        print(f"📅 시장 최신 거래일: {market_latest}")
+        print(
+            f"📅 시장 최신 거래일: {market_latest} "
+            f"(이미 최신: 일봉 {len(daily_current_codes):,} · 수급 {len(sd_current_codes):,})"
+        )
     stats = {"done": 0, "skipped": 0, "failed": 0, "daily_rows": 0, "sd_rows": 0}
     started = time.monotonic()
 
@@ -95,8 +101,8 @@ def collect(
         if resume and _has_any_rows(con, code) and _has_recent_rows(con, code, sd_cutoff):
             stats["skipped"] += 1
             continue
-        daily_current = update and (_latest_date(con, code) or "") >= market_latest
-        sd_current = update and (_sd_latest_date(con, code) or "") >= market_latest
+        daily_current = code in daily_current_codes
+        sd_current = code in sd_current_codes
         if daily_current and sd_current:
             stats["skipped"] += 1
             continue
