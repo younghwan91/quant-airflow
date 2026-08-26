@@ -248,8 +248,9 @@ def fetchone(con: Any, sql: str, params: tuple) -> tuple | None:
 
     - `daily_bars` 의 `--update` 경로 (2026-07-17, `daily_collection_catchup` 이
       paused 로 방치돼 있던 원인)
-    - `short_credit._has_recent_ss` / `supply_demand._has_recent_rows` (잠복 —
-      두 DAG 가 `--resume` 을 안 넘겨서 아직 안 터졌다)
+    - `supply_demand._has_recent_rows` (잠복이었다 — 두 DAG 가 `--resume` 을 안
+      넘겨서 안 터졌을 뿐이고, `combined --resume` 은 Postgres 로 이걸 부른다.
+      지금은 이 함수를 쓴다)
 
     그래서 구현을 여기 하나로 모은다. 새 콜렉터는 이걸 쓴다.
     """

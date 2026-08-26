@@ -93,7 +93,7 @@ def con():
 
 
 def test_sd_latest_date_reads_the_supply_demand_table(con):
-    from collectors.daily_bars import _sd_latest_date
+    from collectors.supply_demand import _latest_sd_date as _sd_latest_date
 
     con.execute("INSERT INTO supply_demand VALUES ('005930', '20260821')")
 

@@ -32,7 +32,6 @@ from .storage import (
     date_days_ago,
     days_ago,
     fetchall,
-    fetchone,
     progress_line,
     to_float,
     to_int,
@@ -41,36 +40,22 @@ from .storage import (
 )
 
 
-def _has_recent_ss(con: Any, code: str, cutoff: str) -> bool:
-    """이 종목에 ``cutoff`` **이후** 공매도 행이 있나 — 일일 수집의 resume 기준."""
-    return fetchone(
-        con, "SELECT 1 FROM short_selling WHERE code=? AND date>=? LIMIT 1",
-        (code, cutoff),
-    ) is not None
-
-
-def _has_history_back_to(con: Any, code: str, depth_cutoff: str) -> bool:
-    """이 종목의 공매도가 이미 ``depth_cutoff`` **이전**까지 닿아 있나.
+def codes_with_history_back_to(con: Any, depth_cutoff: str) -> set[str]:
+    """공매도 이력이 이미 ``depth_cutoff`` **이전**까지 닿아 있는 코드 집합.
 
     주간 깊이 백필(`weekly_history_backfill`)의 스킵 기준이다. "최근 행이
-    있나"(`_has_recent_ss`)로는 깊이를 판정할 수 없다 — 매일 수집이 최근
-    구간을 채워두므로 전 종목이 항상 참이 되어 스킵이 무의미해진다.
+    있나"(:func:`codes_with_rows_since`)로는 깊이를 판정할 수 없다 — 매일 수집이
+    최근 구간을 채워두므로 전 종목이 항상 참이 되어 스킵이 무의미해진다.
 
-    **왜 깊이로 판정해야 하는가.** 백필은 키움 TR 상한(공매도 ~336일)까지
-    긁는 게 목적인데, 실측 2,545 종목 중 2,463개(96.8%)가 이미 330일 이전까지
-    확보돼 있다. 실제로 얕은 건 82종목뿐인데 매주 5,090 요청(49분)을 전부
-    다시 보내고 ~107만 행을 같은 값으로 덮어썼다.
-    """
-    return code in codes_with_history_back_to(con, depth_cutoff)
+    **왜 깊이로 판정해야 하는가.** 백필은 키움 TR 상한(공매도 ~336일)까지 긁는 게
+    목적인데, 실측 2,545 종목 중 2,463개(96.8%)가 이미 330일 이전까지 확보돼 있다.
+    실제로 얕은 건 82종목뿐인데 매주 5,090 요청(49분)을 전부 다시 보내고 ~107만
+    행을 같은 값으로 덮어썼다.
 
-
-def codes_with_history_back_to(con: Any, depth_cutoff: str) -> set[str]:
-    """``depth_cutoff`` 이전 공매도 행이 있는 코드 집합 — 깊이 스킵의 **대량** 판정.
-
-    종목마다 EXISTS 를 부르면 2,545 왕복인데, 이 조건은 **오래된** 청크를 봐야 해서
-    하이퍼테이블 대부분을 가로지른다 — `daily_bars.codes_current_as_of` 가 실측한
-    건당 845ms 짜리 모양 그대로다. 그러면 API 를 한 번도 안 불러도 스킵 판정에만
-    ~35분이 든다. 실제로 얕은 건 82종목뿐인데. 집합 하나면 왕복이 1회다.
+    **집합으로 받는 이유.** 종목마다 EXISTS 를 부르면 2,545 왕복인데, 이 조건은
+    **오래된** 청크를 봐야 해서 하이퍼테이블 대부분을 가로지른다 —
+    `daily_bars.codes_current_as_of` 가 실측한 건당 845ms 짜리 모양 그대로다.
+    그러면 API 를 한 번도 안 불러도 스킵 판정에만 ~35분이 든다. 집합 하나면 1회다.
     """
     return {r[0] for r in fetchall(
         con, "SELECT DISTINCT code FROM short_selling WHERE date<=?", (depth_cutoff,))}

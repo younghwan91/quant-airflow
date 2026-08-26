@@ -79,11 +79,11 @@ def collect(
             수급 가드가 없던 시절엔 ka10059 가 "롤링 100일 창만 주고 단일일을
             안 준다"는 이유로 항상 재수집됐다. 그 논리가 틀렸다 — 필요한 건
             단일일 조회 API 가 아니라 "이 종목의 최신 거래일 행이 DB 에 이미
-            있나" 한 줄이고, 그게 `_sd_latest_date` 다. 그 전까지는 새 데이터가
+            있나" 한 줄이고, 그게 `codes_current_as_of` 다. 그 전까지는 새 데이터가
             존재할 수 없는 일요일에도 175,266행을 다시 쓰며 48.6분을 태웠다.
     """
     base_dt = time.strftime("%Y%m%d")
-    # date_days_ago(=항상 날짜): 여기는 원래 days>0 가드가 없었다. daily_cutoff 와
+    # date_days_ago(=항상 날짜): 여기도 원래 days>0 가드가 없었다. daily_cutoff 와
     # 달리 sd_days=0 은 "창 없음"이 아니라 "오늘"이다.
     sd_cutoff = date_days_ago(sd_days)
     daily_cutoff = days_ago(daily_days)

@@ -198,23 +198,11 @@ def load_corp_map_with_rotation(keys: list[str]) -> dict[str, str]:
     raise last_err if last_err else RuntimeError("DART 키 없음")
 
 
-def fetch_net_income(api_key: str, corp_code: str, year: int, quarter: int) -> tuple[float | None, float | None]:
-    """Fetch (current, prior) net income for one corp/year/quarter from DART."""
-    return parse_net_income(_fetch_payload(api_key, corp_code, year, quarter))
-
-
 def _fetch_payload(api_key: str, corp_code: str, year: int, quarter: int) -> dict:
     return _get_json(f"{BASE}/fnlttSinglAcnt.json", {
         "crtfc_key": api_key, "corp_code": corp_code,
         "bsns_year": str(year), "reprt_code": QUARTER_REPORT[quarter],
     })
-
-
-def fetch_financials(
-    api_key: str, corp_code: str, year: int, quarter: int,
-) -> tuple[float | None, float | None, float | None, float | None, float | None, float | None]:
-    """Fetch net income + revenue + operating income (current & prior) in one call."""
-    return parse_financials(_fetch_payload(api_key, corp_code, year, quarter))
 
 
 MULTI_BATCH_SIZE = 100  # fnlttMultiAcnt cap: "조회 가능한 회사 개수가 초과하였습니다 (최대 100건)" (021)
@@ -471,7 +459,7 @@ def main() -> int:
         # 전부 딸려오고, 2016년부터 ~2,600종목×~40분기면 10만 행이 넘는다.
         # daily_earnings 는 그중 두 분기만 쓴다(≈5,200행).
         want = sorted({f"{year}Q{q}" for year, q in periods})
-        ph = ",".join(["%%(p%d)s" % i for i in range(len(want))])
+        ph = ",".join(["%(p%d)s" % i for i in range(len(want))])
         existing = pd.read_sql_query(
             f"SELECT DISTINCT code, period FROM earnings WHERE period IN ({ph})",  # noqa: S608 — 자리표시자만 조립
             con, params={f"p{i}": v for i, v in enumerate(want)})

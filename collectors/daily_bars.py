@@ -41,13 +41,8 @@ from .storage import (
 _CHART_KEY = "stk_dt_pole_chart_qry"
 
 
-#: 구현은 storage.fetchone 하나로 모았다 — 콜렉터마다 sqlite 전용 사본을 두다
-#: Postgres 에서 죽는 사고가 반복됐다. 기존 호출부 호환을 위해 이름만 남긴다.
-_fetchone = fetchone
-
-
 def _has_any_rows(con: Any, code: str) -> bool:
-    return _fetchone(con, "SELECT 1 FROM daily_bars WHERE code=? LIMIT 1", (code,)) is not None
+    return fetchone(con, "SELECT 1 FROM daily_bars WHERE code=? LIMIT 1", (code,)) is not None
 
 
 def codes_current_as_of(con: Any, table: str, market_latest: str) -> set[str]:
@@ -68,23 +63,9 @@ def codes_current_as_of(con: Any, table: str, market_latest: str) -> set[str]:
     return {r[0] for r in fetchall(con, sql, (market_latest,))}
 
 
-def _sd_latest_date(con: Any, code: str) -> str | None:
-    """수급(supply_demand)의 최신 저장일. ``_latest_date`` 의 수급 짝이다.
-
-    이게 없어서 `--update` 가 일봉만 건너뛰고 수급은 **매번 전 종목 재수집**
-    했다. 실측: 새 데이터가 존재할 수 없는 일요일 catchup 이 `일봉 0행 수급
-    175,266행` 을 쓰며 48.6분을 태웠다.
-    """
-    row = _fetchone(con, "SELECT MAX(date) FROM supply_demand WHERE code=?", (code,))
-    v = row[0] if row else None
-    if v is None:
-        return None
-    return v.strftime("%Y%m%d") if hasattr(v, "strftime") else str(v)
-
-
 def _latest_date(con: Any, code: str) -> str | None:
     """Most recent stored bar date for ``code`` (YYYYMMDD), or None if empty."""
-    row = _fetchone(con, "SELECT MAX(date) FROM daily_bars WHERE code=?", (code,))
+    row = fetchone(con, "SELECT MAX(date) FROM daily_bars WHERE code=?", (code,))
     v = row[0] if row else None
     if v is None:
         return None

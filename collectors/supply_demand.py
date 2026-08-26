@@ -32,13 +32,16 @@ import argparse
 import sqlite3
 import time
 
+from typing import Any
+
 from kiwoom_rest_api import KiwoomAPI
 from kiwoom_rest_api.base import KiwoomAPIError
 
 from .kiwoom_cli import add_common_args, build_universe, open_session, print_banner
 from .storage import (
-    days_ago,
     INVESTOR_COLUMNS,
+    days_ago,
+    fetchone,
     progress_line,
     to_float,
     to_int,
@@ -76,11 +79,10 @@ def fetch_stock_list(api: KiwoomAPI, markets: list[str]) -> list[dict]:
     return out
 
 
-def _has_recent_rows(con: sqlite3.Connection, code: str, cutoff: str) -> bool:
-    cur = con.execute(
-        "SELECT 1 FROM supply_demand WHERE code=? AND date>=? LIMIT 1", (code, cutoff)
-    )
-    return cur.fetchone() is not None
+def _has_recent_rows(con: Any, code: str, cutoff: str) -> bool:
+    return fetchone(
+        con, "SELECT 1 FROM supply_demand WHERE code=? AND date>=? LIMIT 1", (code, cutoff)
+    ) is not None
 
 
 def build_sd_records(code: str, resp: dict, cutoff: str) -> list[tuple]:
@@ -219,9 +221,23 @@ def _fetch_investor_flow_pages(
     return all_rows
 
 
-def _latest_sd_date(con: sqlite3.Connection, code: str) -> str | None:
-    cur = con.execute("SELECT MAX(date) FROM supply_demand WHERE code=?", (code,))
-    return cur.fetchone()[0]
+def _latest_sd_date(con: Any, code: str) -> str | None:
+    """수급(supply_demand)의 최신 저장일 (``YYYYMMDD``), 없으면 None.
+
+    ``con.execute`` 를 직접 쓰던 sqlite 전용 구현이었다 — ``combined --resume`` 은
+    이 함수를 Postgres DSN 으로 부르므로 `AttributeError: 'connection' object has
+    no attribute 'execute'` 가 나기 직전이었고, 그건 ``storage.fetchone`` 의
+    docstring 이 "잠복" 이라고 이름까지 적어둔 바로 그 자리다.
+
+    Postgres 는 DATE 컬럼을 ``datetime.date`` 로 돌려주는데 호출부는 응답의
+    ``dt``(``YYYYMMDD`` 문자열)와 부등호로 비교한다 — 문자열로 맞춰야 date vs str
+    TypeError 가 안 난다.
+    """
+    row = fetchone(con, "SELECT MAX(date) FROM supply_demand WHERE code=?", (code,))
+    v = row[0] if row else None
+    if v is None:
+        return None
+    return v.strftime("%Y%m%d") if hasattr(v, "strftime") else str(v)
 
 
 def collect(

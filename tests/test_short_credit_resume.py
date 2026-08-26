@@ -11,7 +11,11 @@ import sqlite3
 
 import pytest
 
-from collectors.short_credit import _has_history_back_to, _has_recent_ss, collect
+from collectors.short_credit import (
+    codes_with_history_back_to,
+    codes_with_rows_since,
+    collect,
+)
 
 
 @pytest.fixture
@@ -27,16 +31,16 @@ def con():
 def test_depth_check_sees_how_far_back_the_history_reaches(con):
     con.execute("INSERT INTO short_selling VALUES ('005930', '20250101')")
 
-    assert _has_history_back_to(con, "005930", "20250601") is True
-    assert _has_history_back_to(con, "005930", "20240101") is False
+    assert "005930" in codes_with_history_back_to(con, "20250601")
+    assert "005930" not in codes_with_history_back_to(con, "20240101")
 
 
 def test_recent_check_cannot_tell_depth(con):
     """왜 깊이 기준이 따로 필요한가 — 최근 기준은 얕은 종목도 통과시킨다."""
     con.execute("INSERT INTO short_selling VALUES ('123456', '20260821')")
 
-    assert _has_recent_ss(con, "123456", "20260801") is True   # 최근엔 있다
-    assert _has_history_back_to(con, "123456", "20251001") is False  # 깊이는 없다
+    assert "123456" in codes_with_rows_since(con, "20260801")          # 최근엔 있다
+    assert "123456" not in codes_with_history_back_to(con, "20251001")  # 깊이는 없다
 
 
 def _api(calls):
