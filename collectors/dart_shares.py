@@ -286,7 +286,11 @@ def main() -> int:
     con.close()
     print(f"DONE targets={len(targets)} 확보={found} corp없음={no_corp} "
           f"못찾음={missing} 기록={written}행 "
-          f"완료표시={len(exhausted) if not args.dry_run else 0}")
+          # --listed 는 마킹하지 않는다(위 참고). 그런데 이 줄이 그걸 반영하지
+          # 않아 실행 결과에 `완료표시=60` 이 찍혔다 — 한 건도 안 찍었는데.
+          # 로그가 하지도 않은 일을 보고하면 다음 사람이 "왜 또 조회하지?" 를
+          # 코드가 아니라 DB 에서 찾게 된다.
+          f"완료표시={len(exhausted) if (not args.dry_run and not args.listed) else 0}")
     return 0
 
 
