@@ -408,6 +408,30 @@ def _universe_query(args: argparse.Namespace) -> tuple[str, dict]:
     return universe_query(all_codes=args.all_codes, top_n=args.top_n)
 
 
+def _period_placeholders(periods: list[tuple[int, int]]) -> tuple[str, dict[str, str]]:
+    """``period IN (...)`` 의 자리표시자 문자열과 파라미터 dict.
+
+    pyformat(``%(name)s``) 이다 — 이 경로는 psycopg2 전용이다(``universe_query`` 도
+    같은 스타일을 쓴다).
+
+    **함수로 뽑아둔 이유가 있다.** 원래 이 두 줄은 ``main()`` 안에 인라인이었고,
+    자리표시자를 ``",".join(["%(p%d)s" % i for i in ...])`` 로 만들었다. 그런데
+    ``"%(p%d)s"`` 를 ``%`` 연산자에 넘기면 파이썬은 ``%(...)s`` 를 **매핑 키**로
+    읽어 ``TypeError: format requires a mapping`` 을 던진다. 문자열 안에 리터럴
+    ``%`` 를 남기려면 ``%%`` 여야 한다.
+
+    그 코드는 `daily_earnings` 를 2026-08-27 에 두 번(재시도 포함) 실패시켰다.
+    ``main()`` 안에 있어서 단위 테스트가 닿지 않았고, 검증할 때 표현식을 **손으로
+    옮겨 적어** 돌리는 바람에 옮기면서 ``%%`` 로 고쳐 써서 통과했다 — 실행되는
+    코드가 아니라 사본을 시험한 것이다. 이제 그 사본이 존재할 수 없다.
+
+    ``%`` 연산자를 아예 안 쓰고 f-string 으로 만든다.
+    """
+    want = sorted({f"{year}Q{q}" for year, q in periods})
+    ph = ",".join(f"%(p{i})s" for i in range(len(want)))
+    return ph, {f"p{i}": v for i, v in enumerate(want)}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="DART 분기 순이익 YoY 수집 (PEAD 입력)")
     ap.add_argument("--out", required=False, default=None, help="출력 CSV 경로")
@@ -458,11 +482,10 @@ def main() -> int:
         # 중복을 버렸다 — 키가 (code, period, knowledge_date) 라 정정공시 버전까지
         # 전부 딸려오고, 2016년부터 ~2,600종목×~40분기면 10만 행이 넘는다.
         # daily_earnings 는 그중 두 분기만 쓴다(≈5,200행).
-        want = sorted({f"{year}Q{q}" for year, q in periods})
-        ph = ",".join(["%(p%d)s" % i for i in range(len(want))])
+        ph, ph_params = _period_placeholders(periods)
         existing = pd.read_sql_query(
             f"SELECT DISTINCT code, period FROM earnings WHERE period IN ({ph})",  # noqa: S608 — 자리표시자만 조립
-            con, params={f"p{i}": v for i, v in enumerate(want)})
+            con, params=ph_params)
         done_periods = set(zip(existing["code"], existing["period"]))
     else:
         con.close()

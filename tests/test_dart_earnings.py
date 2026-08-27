@@ -16,6 +16,7 @@ from collectors.dart_earnings import (
     parse_financials,
     parse_financials_multi,
     parse_net_income,
+    _period_placeholders,
     yoy_growth,
 )
 
@@ -426,3 +427,30 @@ def test_a_quarter_with_no_filing_is_not_a_failure():
         mod._fetch_multi_payload = orig
 
     assert failures == []
+
+
+def test_period_placeholders_are_valid_pyformat():
+    """2026-08-27 daily_earnings 를 두 번 죽인 회귀.
+
+    자리표시자를 ``"%(p%d)s" % i`` 로 만들면 파이썬이 ``%(...)s`` 를 매핑 키로 읽어
+    ``TypeError: format requires a mapping`` 이 난다. 이 테스트는 ``main()`` 이
+    실제로 부르는 함수를 그대로 부른다 — 표현식을 손으로 옮겨 적으면 옮기면서
+    고쳐 써서 통과해버린다(그게 원래 사고의 원인이었다).
+    """
+    ph, params = _period_placeholders([(2026, 2), (2026, 1)])
+    assert ph == "%(p0)s,%(p1)s"
+    assert params == {"p0": "2026Q1", "p1": "2026Q2"}
+    # psycopg2 가 실제로 바인딩하는 모양인지 — 문자열 보간이 성립해야 한다.
+    assert f"period IN ({ph})" % params == "period IN ('2026Q1','2026Q2')".replace("'", "")
+
+
+def test_period_placeholders_dedupe_and_sort():
+    ph, params = _period_placeholders([(2025, 4), (2026, 1), (2025, 4)])
+    assert ph == "%(p0)s,%(p1)s"
+    assert list(params.values()) == ["2025Q4", "2026Q1"]
+
+
+def test_period_placeholders_empty_is_caller_guarded():
+    """빈 periods 는 `IN ()` 를 만든다 — main() 이 `and periods` 로 막는다."""
+    ph, params = _period_placeholders([])
+    assert ph == "" and params == {}
