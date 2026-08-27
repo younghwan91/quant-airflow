@@ -26,6 +26,13 @@ _PG_PREFIXES = ("postgresql://", "postgres://")
 
 # ka10059 (투자자기관별종목별) net-buy fields → DB columns.
 # Order matters: it defines the column order for ``supply_demand`` inserts.
+#
+# **단위: 순매매 수량(주). 금액이 아니다.** 수집기가 amt_qty_tp="2"(수량)로
+# 부르기 때문이다. 금액으로 쓰려면 종가를 곱하되, 참값은 VWAP 가중이므로 근사다.
+#
+# ``natn``(국가)은 실측상 값이 들어온 적이 없다 — 최근 90일 157,532행 전부 0이다
+# (2026-08-27). 컬럼은 벤더 응답 모양을 보존하려고 남겨두지만, 이걸 화면에 그리면
+# 항상 빈 값이다.
 INVESTOR_COLUMNS: dict[str, str] = {
     "individual": "ind_invsr",   # 개인
     "foreign_": "frgnr_invsr",   # 외국인
@@ -75,8 +82,14 @@ CREATE TABLE IF NOT EXISTS supply_demand (
     code         TEXT NOT NULL,
     date         TEXT NOT NULL,
     close        INTEGER,
+    -- 등락률 × 100 (bp). 175 = +1.75%, -309 = -3.09% — **백분율이 아니다.**
+    -- 벤더(ka10059) 표기를 그대로 저장한다. 그대로 % 로 읽으면 100배가 되고,
+    -- 실제로 하류에서 +1301% 가 찍힌 적이 있다(2026-08-27, kr-quant 뷰어).
     flu_rt       REAL,
-    acc_trde_qty INTEGER,
+    acc_trde_qty INTEGER,       -- 거래량(주). daily_bars.volume 과 같은 값이다.
+    -- 아래 투자자별 순매매는 전부 **수량(주)** 이지 금액이 아니다 — 수집기가
+    -- ka10059 를 amt_qty_tp="2"(수량)로 부른다. 금액이 필요하면 종가를 곱해야
+    -- 하고, 참값은 VWAP 가중이라 그 환산은 근사다.
     {_INVESTOR_COL_DDL},
     source       TEXT NOT NULL DEFAULT 'kiwoom',  -- kiwoom(전체) / naver(폐지 부분: 기관·외국인만)
     PRIMARY KEY (code, date)

@@ -36,8 +36,15 @@ CREATE TABLE IF NOT EXISTS supply_demand (
     code         TEXT NOT NULL,
     date         DATE NOT NULL,
     close        INTEGER,
+    -- 등락률 × 100 (bp). 175 = +1.75%, -309 = -3.09% — **백분율이 아니다.**
+    -- 벤더(ka10059) 표기를 그대로 저장한다. 그대로 % 로 읽으면 100배가 되고,
+    -- 실제로 하류에서 +1301% 가 찍힌 적이 있다(2026-08-27, kr-quant 뷰어).
     flu_rt       REAL,
-    acc_trde_qty BIGINT,
+    acc_trde_qty BIGINT,        -- 거래량(주). daily_bars.volume 과 같은 값이다.
+    -- 아래 투자자별 순매매는 전부 **수량(주)** 이지 금액이 아니다 — 수집기가
+    -- ka10059 를 amt_qty_tp="2"(수량)로 부른다. 금액이 필요하면 종가를 곱해야
+    -- 하고, 참값은 VWAP 가중이라 그 환산은 근사다.
+    -- natn(국가)은 실측상 값이 들어온 적이 없다(최근 90일 157,532행 전부 0).
     individual   INTEGER,
     foreign_     INTEGER,
     institution  INTEGER,
