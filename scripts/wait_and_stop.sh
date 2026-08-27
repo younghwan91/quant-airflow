@@ -122,8 +122,38 @@ SELECT 'shares_outstanding', COUNT(*) FROM stocks s
 " 2>&1 || log "커버리지 점검 실패 (DB 연결 안 됨?)"
 }
 
+# 오늘 실패한 태스크 — **"완료"와 "성공"은 다르다.**
+#
+# 이 스크립트의 종료 조건은 "오늘 예정된 런이 더 없고 도는 것도 없다" 이지,
+# "다 성공했다" 가 아니다. 실패한 런도 끝난 런이라 pending 에서 빠지므로,
+# 전부 빨간불이어도 로그에는 `예정 DAG 모두 완료 — 컨테이너 종료` 가 찍힌다.
+#
+# 실제로 그렇게 지나갔다: 2026-08-27, daily_earnings 가 재시도까지 두 번 실패한
+# (TypeError 로 즉사) 상태에서 18:24 에 "모두 완료" 로 종료됐다. 커버리지 점검의
+# 6개 테이블에 earnings 가 없어서 거기서도 안 잡혔다. 로그만 보면 정상이었다.
+#
+# 커버리지 점검(종목 단위 결측)으로는 이걸 못 대체한다 — earnings 는 비수기에
+# 0행이 정상이고, consensus 는 커버리지 있는 ~650종목만 대상이라 "전 종목 대비
+# 결측"이 항상 크게 나온다. 둘 다 결측 수로는 정상/이상을 가를 수 없다.
+# 그래서 테이블이 아니라 **Airflow 의 태스크 상태**를 직접 본다.
+report_failures() {
+    local failed
+    # 구분자에 공백을 쓰지 않는다 — meta_q 가 결과의 모든 공백을 지운다.
+    failed=$(meta_q "
+SELECT string_agg(DISTINCT dag_id || '.' || task_id, ',')
+  FROM task_instance
+ WHERE state = 'failed'
+   AND start_date >= (date_trunc('day', now() AT TIME ZONE 'Asia/Seoul')) AT TIME ZONE 'Asia/Seoul';")
+    if [ -z "$failed" ]; then
+        log "오늘 실패한 태스크: 없음"
+    else
+        log "⚠️ 오늘 실패한 태스크: $failed"
+    fi
+}
+
 shutdown() {
     report_coverage
+    report_failures
     log "$1"
     # **timescaledb 를 내리지 않는다.** 이 컨테이너는 이 레포 전용이 아니다 —
     # scalp-it 의 장중 틱 수집이 같은 DB를 쓰고, crontab 의 db_guard.sh 가
