@@ -168,6 +168,41 @@ def _targets(con, *, refetch: bool = False) -> list[tuple[str, str, str]]:
     return [(r[0], str(r[1]), str(r[2])) for r in fetchall(con, sql)]
 
 
+def _listed_targets(con, *, from_year: int, to_year: int) -> list[tuple[str, str, str]]:
+    """``(code, 시작연도, 종료연도)`` — **현재 상장 종목** 중 과거 주식수가 없는 것.
+
+    :func:`_targets` 의 폐지 종목 짝이다. 폐지분은 생존편향 때문에 이미 채웠는데,
+    정작 **살아 있는 유니버스의 과거 시총이 계산되지 않는다.** 실측 2026-08-27:
+
+        SELECT count(*) FROM stocks k WHERE EXISTS (
+          SELECT 1 FROM shares_outstanding_history s
+          WHERE s.code=k.code AND s.date <= '2018-06-01' AND s.shares_outstanding > 0)
+        → 5
+
+    2016~2025 에 있는 190~261 종목은 **전부 폐지분(source='dart')** 이라 상장
+    마스터와 교집합이 없다. 키움 주간 피드(ka10001)는 현재 스냅샷만 주므로
+    2026년부터만 쌓인다. 결과적으로 시총을 분모로 쓰는 백테스트는 2026년 이전
+    구간에서 대부분 NaN 이 되고, **값이 나오는 소수는 폐지 종목 쪽으로 치우친
+    표본**이다 — 조용히 틀리는 종류다(kr-quant 기관수급 알파가 이걸로 VOID 됐다).
+
+    **재개 단위는 종목이다.** ``2026-01-01`` 이전 주식수 점이 하나라도 있으면
+    건너뛴다 — 연 단위로 따지지 않으므로, 중간에 끊긴 종목은 다시 전 연도를
+    조회한다. DART 호출이 비싸지만(종목·연도당 1~4콜) 종목 단위 스킵만으로도
+    이어받기는 성립한다.
+    """
+    ph_from = f"{from_year}-01-01"
+    ph_to = f"{to_year}-12-31"
+    sql = (
+        "SELECT b.code, min(b.date), max(b.date) FROM daily_bars b "
+        "WHERE b.source <> 'naver' AND b.date >= ? AND b.date <= ? "
+        "GROUP BY b.code "
+        "HAVING NOT EXISTS (SELECT 1 FROM shares_outstanding_history s "
+        "                   WHERE s.code = b.code AND s.date < '2026-01-01') "
+        "ORDER BY b.code"
+    )
+    return [(r[0], str(r[1]), str(r[2])) for r in fetchall(con, sql, (ph_from, ph_to))]
+
+
 def _write(con, records: list[tuple]) -> int:
     """(code, date, shares, knowledge_date, source) 삽입. 기존 행은 보존."""
     if not records:
@@ -187,6 +222,13 @@ def main() -> int:
         "--refetch", action="store_true",
         help="dart_checked 로 제외된 코드까지 전부 다시 조회 (DART 자료가 늘었을 때)",
     )
+    ap.add_argument(
+        "--listed", action="store_true",
+        help="폐지 종목 대신 **현재 상장 종목**의 과거 주식수를 백필한다 "
+             "(_listed_targets 참고). 시총 분모가 2026년 이전에 없는 문제를 메운다.",
+    )
+    ap.add_argument("--from-year", type=int, default=2016, help="--listed 백필 시작 연도")
+    ap.add_argument("--to-year", type=int, default=2025, help="--listed 백필 종료 연도")
     args = ap.parse_args()
 
     from .config import mask_dsn
@@ -198,7 +240,10 @@ def main() -> int:
     corp = load_corp_map_with_rotation(keys)
 
     con = connect(args.db or default_db_path())
-    targets = _targets(con, refetch=args.refetch)
+    if args.listed:
+        targets = _listed_targets(con, from_year=args.from_year, to_year=args.to_year)
+    else:
+        targets = _targets(con, refetch=args.refetch)
     if args.limit:
         targets = targets[: args.limit]
     print(f"🔌 {mask_dsn(args.db)} | 대상 {len(targets)}종목 | corp_map {len(corp)}"
@@ -214,8 +259,11 @@ def main() -> int:
             no_corp += 1
             exhausted.append(code)
             continue
-        series = shares_series(keys[0], cc, int(first[:4]), int(last[:4]),
-                               sleep=args.sleep)
+        first_year, last_year = int(first[:4]), int(last[:4])
+        if args.listed:
+            first_year = max(first_year, args.from_year)
+            last_year = min(last_year, args.to_year)
+        series = shares_series(keys[0], cc, first_year, last_year, sleep=args.sleep)
         if not series:
             missing += 1
             exhausted.append(code)
@@ -231,7 +279,9 @@ def main() -> int:
                   f"기록={written}행 | {rate:.1f}종목/s "
                   f"ETA {(len(targets)-i)/rate/60 if rate else 0:.1f}분", flush=True)
 
-    if not args.dry_run:
+    # dart_checked 는 delisted_stocks 의 컬럼이다 — 상장 종목은 그 테이블에 없으므로
+    # --listed 에서는 마킹하지 않는다(무해한 no-op 이 아니라 의미가 틀린 UPDATE 다).
+    if not args.dry_run and not args.listed:
         mark_checked(con, CHECKED_DART_SHARES, exhausted, time.strftime("%Y-%m-%d"))
     con.close()
     print(f"DONE targets={len(targets)} 확보={found} corp없음={no_corp} "
