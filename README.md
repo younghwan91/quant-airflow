@@ -14,7 +14,7 @@
 잰다(생존편향). 이 파이프라인은 폐지 종목의 과거 시세·실적을 별도로 메우고
 (`naver_delisted_bars`, `daily_bars.source`), 매주 새 폐지분을 따라간다.
 
-- **오케스트레이션**: Airflow(LocalExecutor) — 12개 DAG, 한국은 매일 증분 + 주간 깊이 재수집, 미국(Sharadar)은 일일 스냅샷 재구축
+- **오케스트레이션**: Airflow(LocalExecutor) — 13개 DAG, 한국은 매일 증분 + 주간 깊이 재수집, 미국(Sharadar)은 일일 스냅샷 재구축
 - **데이터 소스**: DART(실적) · 키움 REST(시세·수급·공매도·신용·상장주식수) · KRX(상장주식수·상장폐지) · 네이버(컨센서스·폐지종목 시세)
 - **스토어**: TimescaleDB(hypertable + 압축) — LAN에 열어 메인 PC가 읽기 전용으로 질의
 
@@ -92,7 +92,7 @@ spare PC (Ubuntu, 이 저장소)                                 main PC
 | 창 | 기동 | 대상 |
 |---|---|---|
 | 1 — 오전 수집 | 매일 10:00 (지평선 11:30) | catchup · short_credit · listed_shares · 주간 백필 |
-| 2 — 평일 저녁 | 평일 15:55 | daily_collection(16:00) · consensus(17:00) · sharadar(화~금 17:30) |
+| 2 — 평일 저녁 | 평일 15:55 | daily_collection(16:00) · price_adjust(16:55) · consensus(17:00) · sharadar(화~금 17:30) |
 | 3 — 토요일 저녁 | 토 17:20 | sharadar(17:30) 하나 |
 
 각 창은 `scripts/wait_and_stop.sh` 가 "그 지평선까지 예정된 DAG가 전부 끝났는가"를
@@ -104,6 +104,12 @@ Airflow 메타DB에 물어 조기 종료한다(안전장치 포함).
 마감(15:30) 이후에만 데이터가 나오므로 앞당길 수 없다 — 스케줄을 붙이는 건
 원리적으로 불가능하고 창을 나누는 게 유일한 답이다.
 
+> **완료 ≠ 성공.** 종료 조건은 "예정된 런이 더 없다"라서 실패한 런도 끝난 런으로
+> 세어진다. 실제로 2026-08-27 에 `daily_earnings` 가 재시도까지 두 번 실패한 채
+> `모두 완료 — 컨테이너 종료`가 찍혔다(그 전에도 `daily_minervini_scan` 10일,
+> `daily_krx_shares` 6일이 같은 식으로 조용히 지나갔다). 지금은 종료 직전
+> `report_failures()` 가 그날 실패한 (dag_id, task_id) 를 로그에 남긴다.
+>
 > ⚠️ `wait_and_stop.sh` 는 **airflow 4종(스케줄러·웹서버·init·메타DB)만
 > 내린다.** `timescaledb` 는 이 저장소 전용이 아니다 — scalp-it 의 장중 틱 수집이
 > 같은 컨테이너를 쓰고 crontab 의 `db_guard.sh` 가 평일 08:00~15:55 살아 있는지 지킨다.
@@ -141,6 +147,7 @@ docker compose --profile ui up -d    # 웹 UI 까지 필요할 때만
 | `daily_collection_catchup` | 평일 10:05 | 전날 실패분만 값싸게 재수집(일봉·수급을 따로 판정, 최신이면 API 호출 0) |
 | `daily_short_credit` | 화~토 10:00 | 공매도 + 신용잔고(키움, T+1~2 지연 고려). 쓰는 창 최근 10일 |
 | `daily_earnings` | 평일 16:00 | DART 실적 증분(당기 + 전분기, `--multi-batch`) |
+| `daily_price_adjust` | 평일 16:55 | `daily_bars_adjusted` 재생성 — **조정가 테이블에 이번 주 행을 채운다**. 토요일 런만 있던 시절엔 월~금 내내 그 주가 비어 있었다(실측 8/27 목: 원자료 8/27 vs 조정가 8/21, 4거래일 결측) |
 | `daily_consensus` | 평일 17:00 | 네이버 애널리스트 컨센서스. 월요일만 전종목, 화~금은 최근 90일 커버리지 종목만 |
 | ~~`daily_krx_shares`~~ | ~~수동 전용~~ | ⛔ **`schedule=None` (2026-08-25)** — KRX가 MDCSTAT 계열에 로그인을 걸어 OTP가 `LOGOUT`을 반환한다. 원래 `is_paused_upon_creation=True` 를 걸어뒀는데 **그 플래그는 최초 등록 때만 적용돼** 무시됐고, 8/17 이후 평일마다 실패하며 재시도 10분으로 저녁 창을 18:40까지 늘렸다. 대체: 상장분은 `weekly_listed_shares`, 폐지분은 `dart_shares` |
 
@@ -152,7 +159,7 @@ docker compose --profile ui up -d    # 웹 UI 까지 필요할 때만
 | `weekly_history_backfill` | 일 11:00 | 업종지수·공매도·신용잔고 히스토리 깊이 재수집. `--resume-depth 330` 으로 **이미 깊은 종목은 건너뛴다** |
 | `weekly_listed_shares` | 화 10:10 | 키움 상장주식수 스냅샷. 화요일인 이유는 `daily_short_credit` 과 TR 버킷이 달라 겹쳐 돌려도 서로 안 막기 때문이다 |
 | `weekly_delisted_stocks` | 토 10:05 | KRX 상장폐지종목 마스터 + **과거 일봉**(네이버) + **상장주식수**(DART) 백필 — 생존편향 보정 3층 |
-| `weekly_price_adjust` | 토 10:40 | `daily_bars_adjusted`(액면분할 백조정) 재생성. `ExternalTaskSensor` 로 delisted 의 시세 백필 완료를 **직접 확인한 뒤** 시작한다(예전엔 35분 시계 간격이 유일한 보장이었다) |
+| `weekly_price_adjust` | 토 10:40 | 같은 재생성을 **폐지 시세 백필 뒤에** 돌려 새로 폐지된 종목까지 조정가에 넣는다. `ExternalTaskSensor` 로 완료를 **직접 확인한 뒤** 시작한다(예전엔 35분 시계 간격이 유일한 보장이었다). 평일 갱신은 위 `daily_price_adjust` 담당 |
 
 > **신뢰성** — 모든 DAG 태스크에 재시도를 걸어 두었다. 외부 API·수집 DAG는
 > `retries=1, retry_delay=10분`, 전체 이력 백필은 `retries=2, 30분`이다. 일시적
@@ -201,10 +208,15 @@ docker compose --profile ui up -d    # 웹 UI 까지 필요할 때만
   코드라 **DuckDB SQL로 재구현하지 않는다**(동등성 테스트 없이는 금지).
 - **스토어**: `~/data/us_micro.duckdb`(2.7GB, 컨테이너에선 `/opt/us-data/`).
   가격 21,963종목·4,630만행, 1997~. 폐지 종목 포함. 경로는 `.env`의 `US_DATA_DIR`.
-- **17:30인 이유**: 벤더가 테이블마다 다른 시각에 올린다(실측 KST) — holdings_ticker
-  01:39, insiders 09:48, daily 12:56, **stocks(주가) 16:40**, fundamentals 16:49,
-  funds 16:54. 가장 늦은 16:54 뒤로 여유를 둔 값이다. 화~토인 건 미국 장이
-  없는 날엔 새로 받을 게 없어서다(금요일 세션은 토요일 드롭에 실려 온다).
+- **17:30인 이유**: 벤더 드롭이 그날 다 끝난 뒤라야 받을 게 있다. ⚠️ **테이블별
+  시각은 믿을 게 못 된다** — 2026-08-15 실측(stocks 16:40 / fundamentals 16:49 /
+  funds 16:54)이 08-27 재측정에서 크게 이동했다(stocks **12:40** / fundamentals
+  12:25 / funds 12:47, 반대로 holdings_ticker 는 01:39 → 14:42). 개별 표가 아니라
+  **그날의 마지막 드롭**이 기준이고, 관측된 최악값이 **17:28**(2026-08-25)로 현재
+  스케줄보다 2분 이르다. 그래서 17:30 은 앞당기지 않는다(표본 3일이라 근거는 얇다).
+  화~토인 건 미국 장이 없는 날엔 새로 받을 게 없어서다(금요일 세션은 토요일 드롭에
+  실려 온다). 이 DAG 가 평일 저녁 창을 혼자 ~53분 늘린다 — `daily_consensus` 는
+  17:00·49초라 스택을 잡아두지 않는다.
   ⚠️ 토요일은 이 DAG 하나 때문에 오전 창(11:30 종료)과 6시간 떨어진 저녁 창을
   따로 띄운다(17:20 기동) — 예전엔 이것 하나 때문에 스택이 18:15까지 통째로 떠 있었다.
 - **실측 소요(2026-08-25 정기 런)**: DAG 전체 31.6분 — 다운로드 3,307MB 약 9분
@@ -226,12 +238,12 @@ TimescaleDB hypertable(PK `(code, date)`)이고, 그 외는 일반 테이블이�
 | 테이블 | 내용 |
 |---|---|
 | `daily_bars` | 일봉 OHLCV + 거래대금. `source`='kiwoom'(상장 종목) / 'naver'(폐지 종목 백필 — 거래대금은 close×volume 근사) |
-| `daily_bars_adjusted` | 액면분할 백조정 일봉(`weekly_price_adjust`가 매주 재생성). `source`는 `daily_bars`에서 전파 |
-| `supply_demand` | 투자자별 순매수(개인·외국인·기관 + 기관 세부 8종). `source`='kiwoom'(전체 항목) / 'naver'(폐지 종목 부분 백필 — 기관·외국인만, 나머지는 NULL) |
+| `daily_bars_adjusted` | 액면분할 백조정 일봉. 평일 `daily_price_adjust` + 토요일 `weekly_price_adjust` 가 **전량 재계산**한다(back-adjust 는 종목별 전체 이력을 봐야 해서 증분이 불가능하다 — 실측 6분 23초 / 피크 RSS 5.2GB). `source`는 `daily_bars`에서 전파 |
+| `supply_demand` | 투자자별 순매매 **수량(주)** — 금액이 아니다(`amt_qty_tp="2"`). `flu_rt` 는 **등락률 × 100(bp)**: 175 = +1.75%. `natn`(국가)은 실측상 늘 0(90일 157,532행 전부). `source`='kiwoom'(전체) / 'naver'(폐지 부분 백필 — 기관·외국인만, 개인·기관세부는 NULL → **지표마다 유니버스가 달라진다**) |
 | `short_selling` | 공매도 추이(수량·잔고·비율·평균가) |
 | `credit_balance` | 신용잔고(신규·상환·잔고·비율) |
 | `sector_index` | 업종지수 OHLCV |
-| `shares_outstanding_history` | 상장주식수 이력(point-in-time 시총 계산용). `source`가 kiwoom/krx/dart(폐지 백필)를 구분 |
+| `shares_outstanding_history` | 상장주식수 이력(point-in-time 시총 계산용). `source`가 kiwoom(주간 스냅샷)/krx(중단)/dart(과거 백필)를 구분. 키움은 현재 스냅샷만 주므로 **2016~2025 구간은 DART `--listed` 백필로 채운다** |
 | `consensus` | 네이버 애널리스트 컨센서스(목표가·투자의견·EPS) |
 
 **펀더멘털·마스터·스캐너 (일반 테이블)**
@@ -245,14 +257,16 @@ TimescaleDB hypertable(PK `(code, date)`)이고, 그 외는 일반 테이블이�
 ## 저장소 구조
 
 ```
-dags/                  # 12개 DAG — run_collector()로 `python -m collectors.X` 실행
+dags/                  # 13개 DAG — run_collector()로 `python -m collectors.X` 실행
   _common.py           #   공유 헬퍼: timescale_dsn()/kiwoom_env()/dart_env()/run_collector()
 collectors/            # 수집 로직 자체 보유 (kr_quant 런타임 의존 없음)
   storage.py           #   스키마 + upsert 전체 (sqlite/Postgres 듀얼 백엔드)
-  config.py            #   자격증명 로딩 + 키움 클라이언트 생성 + DSN 마스킹
+  config.py            #   자격증명 로딩 + 키움 클라이언트 생성 + DSN 마스킹 + DART 키 목록(정본)
+  kiwoom_cli.py        #   전종목 스윕 콜렉터 공통 CLI(인자·세션·유니버스·배너)
+  proc.py              #   자식 프로세스 스트리밍 + 줄 단위 시크릿 마스킹(정본)
   {daily_bars,supply_demand,short_credit,...}.py   # 소스별 수집기
   naver_delisted_bars.py  #   폐지 종목 과거 일봉(키움은 빈 응답을 '성공'으로 준다)
-  dart_shares.py          #   폐지 종목 상장주식수(KRX MDCSTAT는 로그인 장벽으로 0행)
+  dart_shares.py          #   상장주식수(DART). 기본은 폐지 종목, `--listed` 는 상장 종목 과거 백필
 scripts/
   wait_and_stop.sh     # 지평선까지 예정 DAG 전부 끝나면 airflow 조기 종료 (--until HH:MM)
   sync_to_timescale.py # sqlite → TimescaleDB 증분 upsert (레거시 경로)
