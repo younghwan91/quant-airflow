@@ -7,6 +7,7 @@ from datetime import datetime
 
 from collectors import storage
 from collectors import dart_earnings
+from collectors.dart import DartQuotaExhausted
 from collectors.dart_earnings import (
     _recent_quarters,
     _universe_query,
@@ -267,7 +268,7 @@ def test_load_corp_map_rotates_past_key_with_daily_limit(monkeypatch):
     def fake_load_corp_map(api_key):
         calls.append(api_key)
         if api_key == "k1":
-            raise RuntimeError("DART corpCode 오류 (status='020') — 한도초과(020)/키오류(010) 등 확인")
+            raise DartQuotaExhausted("DART corpCode 일한도 소진 (status='020')")
         return {"005930": "00126380"}
 
     monkeypatch.setattr(dart_earnings, "load_corp_map", fake_load_corp_map)
@@ -292,11 +293,11 @@ def test_load_corp_map_rotation_reraises_non_020_errors_without_trying_next_key(
 
 def test_load_corp_map_rotation_raises_after_all_keys_exhausted(monkeypatch):
     def fake_load_corp_map(api_key):
-        raise RuntimeError("DART corpCode 오류 (status='020') — 한도초과(020)/키오류(010) 등 확인")
+        raise DartQuotaExhausted("DART corpCode 일한도 소진 (status='020')")
 
     monkeypatch.setattr(dart_earnings, "load_corp_map", fake_load_corp_map)
     import pytest
-    with pytest.raises(RuntimeError, match="020"):
+    with pytest.raises(DartQuotaExhausted, match="020"):
         load_corp_map_with_rotation(["k1", "k2"])
 
 
@@ -454,3 +455,34 @@ def test_period_placeholders_empty_is_caller_guarded():
     """빈 periods 는 `IN ()` 를 만든다 — main() 이 `and periods` 로 막는다."""
     ph, params = _period_placeholders([])
     assert ph == "" and params == {}
+
+
+def test_load_corp_map_maps_status_to_exception_type(monkeypatch):
+    """020 은 로테이션 대상(타입 예외), 010 은 아니다.
+
+    예전엔 이 구분을 **호출부가 메시지 문자열로** 했다. 그런데 메시지 템플릿에
+    "한도초과(020)/키오류(010)" 안내문이 늘 박혀 있어 `"020" in str(e)` 가 010
+    에러에도 참이었다 — docstring 을 고치면 제어흐름이 바뀌는 상태였다. 이제
+    타입으로 가르므로 그 실수가 구조적으로 불가능하다.
+    """
+    import pytest
+
+    def _resp(status):
+        body = f"<result><status>{status}</status></result>".encode()
+
+        class _R:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return body
+        return _R()
+
+    monkeypatch.setattr(dart_earnings.urllib.request, "urlopen",
+                        lambda *a, **k: _resp("020"))
+    with pytest.raises(DartQuotaExhausted):
+        dart_earnings.load_corp_map("k")
+
+    monkeypatch.setattr(dart_earnings.urllib.request, "urlopen",
+                        lambda *a, **k: _resp("010"))
+    with pytest.raises(RuntimeError) as ei:
+        dart_earnings.load_corp_map("k")
+    assert not isinstance(ei.value, DartQuotaExhausted)

@@ -65,7 +65,7 @@ def test_series_covers_every_year_of_the_trading_life(monkeypatch):
     """
     monkeypatch.setattr(ds, "fetch",
                         lambda key, cc, year, rc, **kw: _payload_for(f"{year}-12-31"))
-    got = ds.shares_series("k", "c", 2018, 2021, sleep=0)
+    got = ds.shares_series(["k"], "c", 2018, 2021, sleep=0)
     assert [stlm for _, stlm, _ in got] == [
         "2018-12-31", "2019-12-31", "2020-12-31", "2021-12-31"]
 
@@ -79,7 +79,7 @@ def test_series_falls_back_to_quarterly_when_annual_is_missing(monkeypatch):
         return _payload_for(f"{year}-09-30") if rc == "11014" else {"status": "013"}
 
     monkeypatch.setattr(ds, "fetch", fake)
-    got = ds.shares_series("k", "c", 2020, 2020, sleep=0)
+    got = ds.shares_series(["k"], "c", 2020, 2020, sleep=0)
     assert len(got) == 1 and got[0][1] == "2020-09-30"
     assert calls[0] == (2020, "11011"), "사업보고서를 먼저 시도해야 한다"
 
@@ -93,13 +93,13 @@ def test_series_takes_one_point_per_year(monkeypatch):
         return _payload_for(f"{year}-12-31")
 
     monkeypatch.setattr(ds, "fetch", fake)
-    ds.shares_series("k", "c", 2019, 2021, sleep=0)
+    ds.shares_series(["k"], "c", 2019, 2021, sleep=0)
     assert len(calls) == 3, "연도마다 첫 성공에서 멈춰야 한다"
 
 
 def test_series_empty_when_nothing_is_filed(monkeypatch):
     monkeypatch.setattr(ds, "fetch", lambda *a, **k: {"status": "013"})
-    assert ds.shares_series("k", "x", 2019, 2021, sleep=0) == []
+    assert ds.shares_series(["k"], "x", 2019, 2021, sleep=0) == []
 
 
 def test_targets_skip_codes_that_already_have_shares(tmp_path):
@@ -164,3 +164,46 @@ def test_codes_with_no_dart_data_get_marked(tmp_path):
     got = con.execute("SELECT dart_checked FROM delisted_stocks WHERE code='A'").fetchone()
     assert got[0] == "2026-08-25"
     con.close()
+
+
+def test_shares_series_rotates_to_next_key_on_quota(monkeypatch):
+    """일한도(020)를 만나면 다음 키로 넘어간다 — 예전엔 keys[0] 하나뿐이었다.
+
+    그 제약이 상장분 백필(2,595종목 × ~9.5콜)을 하루 한도 밖으로 밀어냈고,
+    이틀로 나눈 분할이 정렬과 겹쳐 시대별로 기울어진 중간 상태를 만들었다.
+    """
+    seen = []
+
+    def fake_fetch(key, corp_code, year, reprt_code):
+        seen.append(key)
+        if key == "k1":
+            return {"status": "020"}          # 한도 소진
+        return {"status": "000", "list": [
+            {"se": "보통주", "istc_totqy": "1,000", "stlm_dt": f"{year}-12-31"}]}
+
+    monkeypatch.setattr(ds, "fetch", fake_fetch)
+    ki = [0]
+    out = ds.shares_series(["k1", "k2"], "c", 2020, 2020, ki=ki, sleep=0)
+
+    assert seen[:2] == ["k1", "k2"]     # 소진 즉시 다음 키로
+    assert ki == [1]                    # 인덱스가 유지된다(다음 종목은 k2 로 시작)
+    assert out and out[0][0] == 1000
+
+
+def test_shares_series_key_index_is_shared_across_calls(monkeypatch):
+    """ki 를 넘기면 종목 간에 유지된다 — 안 그러면 종목마다 소진된 키를 또 친다."""
+    seen = []
+
+    def fake_fetch(key, corp_code, year, reprt_code):
+        seen.append(key)
+        if key == "k1":
+            return {"status": "020"}
+        return {"status": "000", "list": [
+            {"se": "보통주", "istc_totqy": "1", "stlm_dt": f"{year}-12-31"}]}
+
+    monkeypatch.setattr(ds, "fetch", fake_fetch)
+    ki = [0]
+    ds.shares_series(["k1", "k2"], "a", 2020, 2020, ki=ki, sleep=0)
+    seen.clear()
+    ds.shares_series(["k1", "k2"], "b", 2020, 2020, ki=ki, sleep=0)
+    assert "k1" not in seen        # 두 번째 종목은 소진된 키를 다시 치지 않는다

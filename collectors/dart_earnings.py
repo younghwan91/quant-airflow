@@ -32,6 +32,12 @@ from typing import Any
 import pandas as pd
 
 from .config import DART_KEY_ENV_VARS
+from .dart import (
+    QUOTA_EXHAUSTED,
+    DartQuotaExhausted,
+    rotate_on_quota,
+    rotate_on_quota_raising,
+)
 from .storage import to_float_or_none, universe_query
 
 BASE = "https://opendart.fss.or.kr/api"
@@ -163,7 +169,12 @@ def load_corp_map(api_key: str) -> dict[str, str]:
             status = ET.fromstring(raw.decode()).findtext("status") or ""
         except Exception:
             pass
-        raise RuntimeError(f"DART corpCode 오류 (status={status!r}) — 한도초과(020)/키오류(010) 등 확인")
+        if status == QUOTA_EXHAUSTED:
+            # 타입으로 알린다 — 예전엔 이 메시지를 호출부가 문자열로 매칭했는데,
+            # 템플릿에 "한도초과(020)" 안내문이 늘 박혀 있어 010 에러에도 참이 되는
+            # 버그가 있었다. docstring 을 고치면 제어흐름이 바뀌는 상태였다.
+            raise DartQuotaExhausted(f"DART corpCode 일한도 소진 (status={status!r})")
+        raise RuntimeError(f"DART corpCode 오류 (status={status!r}) — 키오류(010) 등 확인")
     z = zipfile.ZipFile(io.BytesIO(raw))
     root = ET.fromstring(z.read(z.namelist()[0]).decode())
     out: dict[str, str] = {}
@@ -184,18 +195,7 @@ def load_corp_map_with_rotation(keys: list[str]) -> dict[str, str]:
     the day via 020 mid-run, and the very next retry died instantly on
     ``load_corp_map(keys[0])`` alone despite a second key being available).
     """
-    last_err: Exception | None = None
-    for key in keys:
-        try:
-            return load_corp_map(key)
-        except RuntimeError as e:
-            # 에러 메시지 템플릿 자체에 "한도초과(020)/키오류(010)" 안내문구가 항상
-            # 박혀있어 "020" in str(e)는 010 에러에도 항상 참이 된다 — status='020'
-            # 형태로 실제 값만 정확히 매칭해야 함(실측 버그).
-            if "status='020'" not in str(e):
-                raise
-            last_err = e
-    raise last_err if last_err else RuntimeError("DART 키 없음")
+    return rotate_on_quota_raising(load_corp_map, keys)
 
 
 def _fetch_payload(api_key: str, corp_code: str, year: int, quarter: int) -> dict:
@@ -263,11 +263,9 @@ def _fetch_multi_with_rotation(
     :func:`collect_all_financials_batched` 의 주석에 있다 — 요약하면 **"공시가
     없다"와 "우리가 못 받았다"가 구분되지 않아 실패가 성공으로 보고**됐다.
     """
-    payload = _fetch_multi_payload(keys[ki[0]], corp_codes, year, quarter)
-    while payload.get("status") == "020" and ki[0] + 1 < len(keys):
-        ki[0] += 1
-        print(f"DART 키 일한도(020) 도달 → 키{ki[0] + 1}로 로테이션", flush=True)
-        payload = _fetch_multi_payload(keys[ki[0]], corp_codes, year, quarter)
+    payload = rotate_on_quota(
+        lambda k: _fetch_multi_payload(k, corp_codes, year, quarter),
+        keys, ki, label="fnlttMultiAcnt")
     status = payload.get("status")
     # 013 = "조회된 데이터가 없습니다" — 그 분기에 공시가 없다는 정상 응답이다.
     # 그 외의 비-000 은 우리 쪽 문제(020 한도소진, 010 키오류, {} 네트워크 실패).
@@ -362,11 +360,9 @@ def _fetch_with_rotation(
     ``ki`` is a one-element list holding the current key index, mutated in place so
     the rotation persists across calls (once a key is exhausted it stays skipped).
     """
-    payload = _fetch_payload(keys[ki[0]], corp_code, year, quarter)
-    while payload.get("status") == "020" and ki[0] + 1 < len(keys):
-        ki[0] += 1
-        print(f"DART 키 일한도(020) 도달 → 키{ki[0] + 1}로 로테이션", flush=True)
-        payload = _fetch_payload(keys[ki[0]], corp_code, year, quarter)
+    payload = rotate_on_quota(
+        lambda k: _fetch_payload(k, corp_code, year, quarter),
+        keys, ki, label="fnlttSinglAcnt")
     return parse_financials(payload)
 
 

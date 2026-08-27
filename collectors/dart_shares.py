@@ -47,6 +47,7 @@ import time
 import urllib.parse
 import urllib.request
 
+from .dart import rotate_on_quota
 from .storage import CHECKED_DART_SHARES, connect, default_db_path, fetchall, mark_checked
 
 API = "https://opendart.fss.or.kr/api/stockTotqySttus.json"
@@ -112,8 +113,9 @@ def fetch(key: str, corp_code: str, year: int, reprt_code: str,
         return {}
 
 
-def shares_series(key: str, corp_code: str, first_year: int, last_year: int,
-                  *, sleep: float = 0.15) -> list[tuple[int, str, str]]:
+def shares_series(keys: list[str], corp_code: str, first_year: int, last_year: int,
+                  *, ki: list[int] | None = None,
+                  sleep: float = 0.15) -> list[tuple[int, str, str]]:
     """연도별 ``(발행주식총수, 기준일, 접수일)`` **시계열**. 없으면 빈 리스트.
 
     **왜 시계열이어야 하나(2026-08-15 실측으로 배움).** 처음엔 "마지막으로 알려진
@@ -125,11 +127,25 @@ def shares_series(key: str, corp_code: str, first_year: int, last_year: int,
 
     연도마다 사업보고서를 먼저 보고, 없으면 분기·반기를 훑어 **연 1점**을 확보한다.
     분기 전부를 받으면 4배 비싸고, 주식수는 분기 안에서 잘 안 변한다.
+
+    **키 로테이션을 쓴다(2026-08-28).** 예전엔 ``keys[0]`` 하나만 받아서 하루
+    한도가 20,000콜로 묶였다. 상장 종목 과거 주식수 백필이 2,595종목 × ~9.5콜 ≈
+    24,650콜이라 한도를 넘었고, 이틀에 나눠 돌린 그 분할이 ``ORDER BY code`` 와
+    겹쳐 **시대별로 기울어진 중간 상태**를 만들었다 — 2023~24년 상장분의 87%가
+    미처리로 남아, 그걸 모르고 소비하면 유니버스가 시대마다 다르게 좁혀진다.
+    키 3개면 60,000콜/일이라 한 번에 끝난다.
+
+    ``ki`` 는 현재 키 인덱스를 담은 1칸 리스트다. 종목 루프를 도는 호출부가
+    **같은 리스트를 넘겨 재사용해야** 한다 — 종목마다 새로 만들면 이미 소진된
+    키로 매번 되돌아가 한도 오류를 한 번씩 더 맞는다.
     """
+    ki = ki if ki is not None else [0]
     out: list[tuple[int, str, str]] = []
     for year in range(first_year, last_year + 1):
         for rc, _name in REPORTS:
-            payload = fetch(key, corp_code, year, rc)
+            payload = rotate_on_quota(
+                lambda k, y=year, r=rc: fetch(k, corp_code, y, r),
+                keys, ki, label="stockTotqySttus")
             time.sleep(sleep)
             shares, stlm = parse_shares(payload)
             if shares and stlm:
@@ -192,13 +208,22 @@ def _listed_targets(con, *, from_year: int, to_year: int) -> list[tuple[str, str
     """
     ph_from = f"{from_year}-01-01"
     ph_to = f"{to_year}-12-31"
+    # **정렬을 코드순으로 두면 안 된다.** 한국 종목코드는 상장 시기순에 가까워서,
+    # `ORDER BY code` + `--limit` 으로 자른 부분집합이 곧 **시대 표본추출**이 된다.
+    # 실측 2026-08-27: 2,595종목 중 앞 2,000개를 먼저 돌렸더니 2016년 상장분은
+    # 97% 완료인데 2023~24년 상장분은 87%가 미처리로 남았다. 그 상태를 모르고
+    # 소비하면 유니버스가 시대마다 다르게 좁혀진다 — 폴드 간 비교가 구성 변화를
+    # 알아채지 못하는, 조용히 틀리는 종류다.
+    #
+    # md5 로 결정론적 셔플한다. 재개·재현성은 코드순과 똑같이 유지되면서
+    # (같은 입력 → 같은 순서), 중간에 멈춘 부분집합은 시대별로 균일해진다.
     sql = (
         "SELECT b.code, min(b.date), max(b.date) FROM daily_bars b "
         "WHERE b.source <> 'naver' AND b.date >= ? AND b.date <= ? "
         "GROUP BY b.code "
         "HAVING NOT EXISTS (SELECT 1 FROM shares_outstanding_history s "
         "                   WHERE s.code = b.code AND s.date < '2026-01-01') "
-        "ORDER BY b.code"
+        "ORDER BY md5(b.code)"
     )
     return [(r[0], str(r[1]), str(r[2])) for r in fetchall(con, sql, (ph_from, ph_to))]
 
@@ -249,6 +274,9 @@ def main() -> int:
     print(f"🔌 {mask_dsn(args.db)} | 대상 {len(targets)}종목 | corp_map {len(corp)}"
           f"{' | DRY-RUN' if args.dry_run else ''}", flush=True)
 
+    # 키 인덱스는 종목 루프 전체에서 공유한다 — 종목마다 [0] 으로 되돌리면
+    # 이미 소진된 키에 매번 한 번씩 더 부딪힌다.
+    ki = [0]
     found = no_corp = missing = written = 0
     # 이번 회차에 "DART 에 자료 없음"으로 판명된 코드 — 끝에 한 번에 마킹한다.
     exhausted: list[str] = []
@@ -263,7 +291,7 @@ def main() -> int:
         if args.listed:
             first_year = max(first_year, args.from_year)
             last_year = min(last_year, args.to_year)
-        series = shares_series(keys[0], cc, first_year, last_year, sleep=args.sleep)
+        series = shares_series(keys, cc, first_year, last_year, ki=ki, sleep=args.sleep)
         if not series:
             missing += 1
             exhausted.append(code)
