@@ -12,6 +12,8 @@ import sqlite3
 import pytest
 
 from collectors.short_credit import (
+    _build_cb_records,
+    _build_ss_records,
     codes_with_history_back_to,
     codes_with_rows_since,
     collect,
@@ -85,3 +87,53 @@ def test_depth_skip_is_off_by_default(con):
 
     assert stats["skipped"] == 0
     assert ("ss", "005930") in calls
+
+
+# --- 미확정 세션(T+0) 거부 -------------------------------------------------
+
+def _cb_resp(*rows):
+    return {"crd_trde_trend": [
+        {"dt": dt, "cur_prc": prc, "new": n, "rpya": r, "remn": rem,
+         "amt": 0, "remn_rt": 0, "shr_rt": 0}
+        for dt, prc, n, r, rem in rows
+    ]}
+
+
+def test_todays_credit_row_is_rejected():
+    """ka10013 은 당일 행을 **0으로 채운 스텁**으로 주고 가격 자리에 장중가를 넣는다.
+
+    실측 2026-08-27: credit_balance 2,627행이 전부 잔고=신규=상환=0 이었고
+    close 는 확정 종가가 아니라 10:00 스윕 시점의 장중가였다(005930 265,000 vs
+    확정 266,000). 그대로 쌓으면 ~24시간 동안 전 종목 신용잔고가 0으로 보인다.
+    """
+    resp = _cb_resp(
+        ("20260827", 265000, 0, 0, 0),          # 오늘 = 미확정 스텁
+        ("20260826", 261500, 1234, 567, 89000),  # 어제 = 확정
+    )
+    rows = _build_cb_records("005930", resp, "20260817", today="20260827")
+
+    assert [r[1] for r in rows] == ["20260826"]
+    assert rows[0][3:6] == (1234, 567, 89000)
+
+
+def test_todays_short_row_is_rejected_too():
+    """ka10014 는 T+0 행을 안 주지만 규약은 두 빌더에 같이 둔다."""
+    resp = {"shrts_trnsn": [
+        {"dt": "20260827", "close_pric": 1, "trde_qty": 1},
+        {"dt": "20260826", "close_pric": 2, "trde_qty": 2},
+    ]}
+    rows = _build_ss_records("005930", resp, "20260817", today="20260827")
+    assert [r[1] for r in rows] == ["20260826"]
+
+
+def test_settled_window_is_unaffected():
+    """확정 구간은 그대로 통과해야 한다 — 가드가 정상 데이터를 깎으면 안 된다."""
+    resp = _cb_resp(*[(f"202608{d:02d}", 1000, 1, 1, 1) for d in (26, 25, 24, 21)])
+    rows = _build_cb_records("005930", resp, "20260817", today="20260827")
+    assert [r[1] for r in rows] == ["20260826", "20260825", "20260824", "20260821"]
+
+
+def test_cutoff_lower_bound_still_applies():
+    resp = _cb_resp(("20260826", 1, 1, 1, 1), ("20260801", 1, 1, 1, 1))
+    rows = _build_cb_records("005930", resp, "20260820", today="20260827")
+    assert [r[1] for r in rows] == ["20260826"]

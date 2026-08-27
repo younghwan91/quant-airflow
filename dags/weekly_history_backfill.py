@@ -21,8 +21,18 @@ DB 리셋 이후에도 히스토리가 다시 비지 않게** 한다. 키움 TR�
 **일요일 11:00 KST 이유:** 장이 안 서는 날 + 스택 가동 창(10:00~) 안. short_credit
 전체 재수집이 ~1시간이라 평일 수집과 겹치지 않게 주말에 둔다. earnings_backfill
 (일요일 10:00, DART)과는 1시간 분리 — 소스(키움 vs DART)가 달라 자원 경합은 없지만
-실패 blast radius를 나눈다. 두 태스크는 같은 키움 TR 레이트리밋 버킷을 공유하므로
-병렬이 아니라 순차로 둔다(sector 먼저, 빠름 → short_credit).
+실패 blast radius를 나눈다. 두 태스크는 순차로 둔다(sector 먼저, 빠름 → short_credit).
+
+**직렬화 이유는 TR 버킷이 아니다 — 앱키 토큰이다.** 예전 주석은 "같은 키움 TR
+레이트리밋 버킷을 공유하므로"라고 적었는데 사실이 아니다: backfill_sector 는
+ka20003/ka20006, backfill_short_credit 은 ka10014/ka10013 으로 **버킷이 서로
+다르다.** 이 레포의 규칙(daily_collection 주석)대로면 겹쳐 돌려도 공짜다.
+
+진짜 이유는 둘이 같은 KIWOOM_APP_KEY 로 각각 로그인하기 때문이다. 나중에
+로그인한 쪽이 먼저 받은 토큰을 무효화한다(`8005:Token이 유효하지 않습니다`) —
+daily_collection 이 실측 40런 중 4런을 그렇게 잃고 collect_sector >> collect_both
+로 직렬화한 것과 같은 사고다. 틀린 근거를 남겨두면 "버킷 다르네, 병렬로 돌리자"
+가 정당해 보이므로 바로잡는다.
 """
 
 from __future__ import annotations

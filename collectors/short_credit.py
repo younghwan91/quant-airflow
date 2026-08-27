@@ -67,11 +67,38 @@ def codes_with_rows_since(con: Any, cutoff: str) -> set[str]:
         con, "SELECT DISTINCT code FROM short_selling WHERE date>=?", (cutoff,))}
 
 
-def _build_ss_records(code: str, resp: dict, cutoff: str) -> list[tuple]:
+#: 미확정 세션 거부의 근거. 공매도(ka10014)·신용잔고(ka10013) 는 둘 다 거래소가
+#: **T+1 이후**에 확정 공시한다 — `daily_short_credit` 이 화~토 10:00 에 도는 이유가
+#: 그것이다(그 DAG docstring 참고). 따라서 "오늘 날짜" 행은 정의상 확정값이 아니다.
+#:
+#: **왜 가드가 필요한가 — ka10013 은 그 미확정 행을 빈손으로 안 준다.** 0 으로 채운
+#: 스텁을 주고, 가격 자리에는 조회 시점의 장중 가격을 넣는다. 실측(2026-08-27):
+#:
+#:     date        rows   전부 0(잔고=신규=상환=0)
+#:     2026-08-26  2,627  440   (17% — 실제로 신용잔고 없는 종목들)
+#:     2026-08-27  2,627  2,627 (100% — 전부 스텁)
+#:
+#:     credit_balance.close  vs  daily_bars.close(확정)
+#:     005930  265,000           266,000
+#:     000660  1,710,000         1,730,000
+#:
+#: 그대로 적재하면 ~24시간 동안 **전 종목 신용잔고가 0으로 보인다.** 다음날
+#: `--days 10` 창이 덮어써 자가치유되지만, 그 사이 이 테이블을 읽는 쪽은 "신용잔고가
+#: 0으로 붕괴했다"를 읽는다. `daily_bars` 의 진행 중 캔들(_SESSION_CLOSE_HHMM)과
+#: 같은 계열이고, 그쪽엔 있는 상한이 여기엔 없었다.
+#:
+#: ka10014 는 애초에 T+0 행을 안 주므로 이 가드가 no-op 이지만, 두 빌더에 같은
+#: 규약을 두어 "미확정 세션은 저장하지 않는다"를 한 곳에서 읽히게 한다.
+def _is_settled(dt: str, today: str) -> bool:
+    """``dt`` 가 확정된 세션인가 — 오늘(미확정) 이전이어야 한다."""
+    return bool(dt) and dt < today
+
+
+def _build_ss_records(code: str, resp: dict, cutoff: str, today: str) -> list[tuple]:
     records = []
     for row in resp.get("shrts_trnsn", []) or []:
         dt = row.get("dt", "")
-        if dt < cutoff:
+        if dt < cutoff or not _is_settled(dt, today):
             continue
         records.append((
             code,
@@ -87,11 +114,11 @@ def _build_ss_records(code: str, resp: dict, cutoff: str) -> list[tuple]:
     return records
 
 
-def _build_cb_records(code: str, resp: dict, cutoff: str) -> list[tuple]:
+def _build_cb_records(code: str, resp: dict, cutoff: str, today: str) -> list[tuple]:
     records = []
     for row in resp.get("crd_trde_trend", []) or []:
         dt = row.get("dt", "")
-        if dt < cutoff:
+        if dt < cutoff or not _is_settled(dt, today):
             continue
         records.append((
             code,
@@ -167,13 +194,13 @@ def collect(
             ss_resp = api.short_selling.short_selling_trend(
                 stk_cd=code, tm_tp="1", strt_dt=start_dt, end_dt=today
             )
-            ss_buffer.extend(_build_ss_records(code, ss_resp, cutoff))
+            ss_buffer.extend(_build_ss_records(code, ss_resp, cutoff, today))
 
             # 신용잔고 (ka10013) — independent TR bucket
             cb_resp = api.stock_info.credit_trading_trend(
                 stk_cd=code, dt="0", qry_tp="1"
             )
-            cb_buffer.extend(_build_cb_records(code, cb_resp, cutoff))
+            cb_buffer.extend(_build_cb_records(code, cb_resp, cutoff, today))
             stats["done"] += 1
         except KiwoomAPIError as e:
             stats["failed"] += 1
