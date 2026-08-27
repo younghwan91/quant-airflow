@@ -157,8 +157,8 @@ def _targets(con, *, refetch: bool = False) -> list[str]:
     :func:`_mark_checked` 주석 참고. ``refetch=True`` 면 그 마커를 무시한다.
     """
     checked_filter = "" if refetch else (
-        "  AND NOT EXISTS (SELECT 1 FROM delisted_stocks d "
-        "                  WHERE d.code = b.code AND d.naver_sd_checked IS NOT NULL) "
+        "  AND NOT EXISTS (SELECT 1 FROM backfill_markers m "
+        f"                  WHERE m.code = b.code AND m.source = '{CHECKED_NAVER_FLOW}') "
     )
     sql = (
         "SELECT DISTINCT b.code FROM daily_bars b "

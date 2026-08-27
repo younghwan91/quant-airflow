@@ -159,7 +159,8 @@ def _delisted_codes(con, *, refetch: bool = False) -> list[str]:
     ]
     if not refetch:
         where.append("code NOT IN (SELECT DISTINCT code FROM daily_bars WHERE source = 'naver')")
-        where.append("naver_checked IS NULL")
+        where.append(f"NOT EXISTS (SELECT 1 FROM backfill_markers m "
+                    f"WHERE m.code = delisted_stocks.code AND m.source = '{CHECKED_NAVER_BARS}')")
     sql = f"SELECT code FROM delisted_stocks WHERE {' AND '.join(where)} ORDER BY code"  # noqa: S608 — 조건은 전부 모듈 상수
     return [r[0] for r in fetchall(con, sql)]
 

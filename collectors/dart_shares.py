@@ -48,7 +48,14 @@ import urllib.parse
 import urllib.request
 
 from .dart import rotate_on_quota
-from .storage import CHECKED_DART_SHARES, connect, default_db_path, fetchall, mark_checked
+from .storage import (
+    CHECKED_DART_SHARES,
+    CHECKED_DART_SHARES_LISTED,
+    connect,
+    default_db_path,
+    fetchall,
+    mark_checked,
+)
 
 API = "https://opendart.fss.or.kr/api/stockTotqySttus.json"
 
@@ -170,8 +177,8 @@ def _targets(con, *, refetch: bool = False) -> list[tuple[str, str, str]]:
     자료가 없으면 영원히 없다. 다시 훑으려면 ``--refetch``.
     """
     checked_filter = "" if refetch else (
-        "  AND NOT EXISTS (SELECT 1 FROM delisted_stocks d "
-        "                  WHERE d.code = b.code AND d.dart_checked IS NOT NULL) "
+        "  AND NOT EXISTS (SELECT 1 FROM backfill_markers m "
+        f"                  WHERE m.code = b.code AND m.source = '{CHECKED_DART_SHARES}') "
     )
     sql = (
         "SELECT b.code, min(b.date), max(b.date) FROM daily_bars b "
@@ -223,6 +230,10 @@ def _listed_targets(con, *, from_year: int, to_year: int) -> list[tuple[str, str
         "GROUP BY b.code "
         "HAVING NOT EXISTS (SELECT 1 FROM shares_outstanding_history s "
         "                   WHERE s.code = b.code AND s.date < '2026-01-01') "
+        # 조회했는데 DART 에 보고서가 아예 없던 코드는 뺀다. 이 절이 없어서
+        # 60종목을 매 회차 다시 조회했다(종목당 최대 4보고서 × 연수).
+        f"   AND NOT EXISTS (SELECT 1 FROM backfill_markers m "
+        f"                   WHERE m.code = b.code AND m.source = '{CHECKED_DART_SHARES_LISTED}') "
         "ORDER BY md5(b.code)"
     )
     return [(r[0], str(r[1]), str(r[2])) for r in fetchall(con, sql, (ph_from, ph_to))]
@@ -307,10 +318,12 @@ def main() -> int:
                   f"기록={written}행 | {rate:.1f}종목/s "
                   f"ETA {(len(targets)-i)/rate/60 if rate else 0:.1f}분", flush=True)
 
-    # dart_checked 는 delisted_stocks 의 컬럼이다 — 상장 종목은 그 테이블에 없으므로
-    # --listed 에서는 마킹하지 않는다(무해한 no-op 이 아니라 의미가 틀린 UPDATE 다).
-    if not args.dry_run and not args.listed:
-        mark_checked(con, CHECKED_DART_SHARES, exhausted, time.strftime("%Y-%m-%d"))
+    # 마커는 (code, source) 테이블이라 상장·폐지가 같은 경로를 쓴다. 예전엔 이게
+    # delisted_stocks 의 컬럼이라 --listed 는 남길 자리가 없었고, 그래서 자료가 없는
+    # 60종목을 매 회차 다시 조회했다.
+    if not args.dry_run:
+        source = CHECKED_DART_SHARES_LISTED if args.listed else CHECKED_DART_SHARES
+        mark_checked(con, source, exhausted, time.strftime("%Y-%m-%d"))
     con.close()
     print(f"DONE targets={len(targets)} 확보={found} corp없음={no_corp} "
           f"못찾음={missing} 기록={written}행 "
@@ -318,7 +331,7 @@ def main() -> int:
           # 않아 실행 결과에 `완료표시=60` 이 찍혔다 — 한 건도 안 찍었는데.
           # 로그가 하지도 않은 일을 보고하면 다음 사람이 "왜 또 조회하지?" 를
           # 코드가 아니라 DB 에서 찾게 된다.
-          f"완료표시={len(exhausted) if (not args.dry_run and not args.listed) else 0}")
+          f"완료표시={len(exhausted) if not args.dry_run else 0}")
     return 0
 
 

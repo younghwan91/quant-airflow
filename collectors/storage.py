@@ -200,6 +200,20 @@ CREATE TABLE IF NOT EXISTS daily_bars_adjusted (
     PRIMARY KEY (code, date)
 );
 CREATE INDEX IF NOT EXISTS idx_dba_date ON daily_bars_adjusted(date);
+-- 백필 소스가 "이 코드는 조회해봤고 자료가 없더라"를 기록하는 곳.
+-- **소스마다 컬럼을 늘리지 않는다.** 예전엔 delisted_stocks 에 naver_checked(004)
+-- → dart_checked·naver_sd_checked(007) 로 컬럼을 붙여갔고, 007 주석이 스스로
+-- "004 와 같은 병, 같은 약"이라고 적고 있다. 소스가 하나 늘 때마다 마이그레이션 +
+-- 컬럼 + 함수 사본 + 대상쿼리의 NOT EXISTS 절이 같이 늘었다.
+-- 게다가 그 컬럼들은 delisted_stocks 에 있어서 **상장 종목에는 쓸 수가 없었다** —
+-- dart_shares --listed 가 자료 없는 60종목을 매번 다시 조회하던 이유다.
+-- 여기서는 (code, source) 한 쌍이라 새 소스가 문자열 하나로 끝난다.
+CREATE TABLE IF NOT EXISTS backfill_markers (
+    code         TEXT NOT NULL,
+    source       TEXT NOT NULL,   -- storage.CHECKED_* 상수
+    checked_date TEXT NOT NULL,   -- 조회해봤고 자료가 없던 날
+    PRIMARY KEY (code, source)
+);
 CREATE TABLE IF NOT EXISTS delisted_stocks (
     code            TEXT NOT NULL,
     name            TEXT,
@@ -301,36 +315,50 @@ def execute(con: Any, sql: str, params: tuple = ()) -> None:
     con.commit()
 
 
-#: ``delisted_stocks`` 의 "이 소스로 이미 조회해봤다" 마커 컬럼들.
-#: 값은 조회한 날짜(YYYY-MM-DD), NULL 은 미확인.
-CHECKED_NAVER_BARS = "naver_checked"
-CHECKED_NAVER_FLOW = "naver_sd_checked"
-CHECKED_DART_SHARES = "dart_checked"
-_CHECKED_COLUMNS = (CHECKED_NAVER_BARS, CHECKED_NAVER_FLOW, CHECKED_DART_SHARES)
+#: ``backfill_markers.source`` 값들 — "이 소스로 조회해봤고 자료가 없더라".
+#: 새 백필 소스는 여기에 문자열 하나만 더하면 된다(스키마 변경 없음).
+CHECKED_NAVER_BARS = "naver_bars"
+CHECKED_NAVER_FLOW = "naver_flow"
+CHECKED_DART_SHARES = "dart_shares_delisted"
+CHECKED_DART_SHARES_LISTED = "dart_shares_listed"
 
 
-def mark_checked(con: Any, column: str, codes: list[str], today: str) -> None:
-    """``codes`` 에 "이 소스는 확인했다" 마커를 찍어 다음 회차부터 건너뛰게 한다.
+def mark_checked(con: Any, source: str, codes: list[str], today: str) -> None:
+    """``codes`` 에 "이 소스로 조회해봤고 자료가 없더라" 마커를 남긴다.
 
-    폐지 종목 백필 세 갈래(네이버 시세·네이버 수급·DART 주식수)가 각자 같은 12줄을
-    들고 있었고 **다른 건 컬럼 이름 하나뿐**이었다. 마커가 없으면 자료가 없는 코드는
-    결과 행이 안 생겨 제외 조건에도 안 걸리고 영원히 재조회된다 — 상장폐지는 과거
-    사실이라 한 번 없으면 영원히 없다.
+    마커가 없으면 자료가 없는 코드는 결과 행이 안 생겨 제외 조건에도 안 걸리고
+    **영원히 재조회된다.** 상장폐지는 과거 사실이라 한 번 없으면 영원히 없고,
+    상장 종목의 상장 이전 연도도 마찬가지다.
+
+    ``(code, source)`` 키라 새 소스가 문자열 하나로 끝난다 — 예전처럼
+    ``delisted_stocks`` 에 컬럼을 붙이지 않는다. 그 방식은 소스마다 마이그레이션·
+    컬럼·함수 사본·대상쿼리 절이 같이 늘었고, 무엇보다 **상장 종목에는 쓸 수가
+    없었다**(그 테이블에 상장 종목이 없다).
     """
-    if column not in _CHECKED_COLUMNS:
-        raise ValueError(f"unknown checked column: {column!r}")
     if not codes:
         return
     ph = "%s" if _is_pg(con) else "?"
-    sql = (f"UPDATE delisted_stocks SET {column} = {ph} "  # noqa: S608 — 컬럼은 위에서 화이트리스트 검증
-           f"WHERE code IN ({','.join([ph] * len(codes))})")
-    params = (today, *codes)
+    rows = [(c, source, today) for c in codes]
     if _is_pg(con):
+        import psycopg2.extras  # noqa: PLC0415
+
         with con.cursor() as cur:
-            cur.execute(sql, params)
+            psycopg2.extras.execute_values(
+                cur,
+                "INSERT INTO backfill_markers(code,source,checked_date) VALUES %s "
+                "ON CONFLICT (code,source) DO UPDATE SET checked_date=EXCLUDED.checked_date",
+                rows, page_size=max(len(rows), 100))
     else:
-        con.execute(sql, params)
+        con.executemany(
+            f"INSERT OR REPLACE INTO backfill_markers(code,source,checked_date) "
+            f"VALUES({ph},{ph},{ph})", rows)
     con.commit()
+
+
+def checked_codes(con: Any, source: str) -> set[str]:
+    """``source`` 로 이미 조회해봤고 자료가 없던 코드 집합."""
+    return {r[0] for r in fetchall(
+        con, "SELECT code FROM backfill_markers WHERE source=?", (source,))}
 
 
 def universe_query(*, all_codes: bool, top_n: int) -> tuple[str, dict]:

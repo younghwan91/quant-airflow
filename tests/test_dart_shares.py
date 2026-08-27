@@ -144,9 +144,7 @@ def test_targets_skip_codes_already_marked_as_having_no_dart_data(tmp_path):
         " VALUES(?,?,?,?,?,?,?,?,?)",
         [("A", "2020-01-02", 1, 1, 1, 1, 1, 1, "naver"),
          ("B", "2020-01-02", 1, 1, 1, 1, 1, 1, "naver")])
-    con.execute("INSERT INTO delisted_stocks(code, dart_checked)"
-                " VALUES('A','2026-08-25')")
-    con.commit()
+    mark_checked(con, ds.CHECKED_DART_SHARES, ["A"], "2026-08-25")
 
     assert [r[0] for r in ds._targets(con)] == ["B"]
     # --refetch 면 마커를 무시하고 다시 훑는다
@@ -156,13 +154,32 @@ def test_targets_skip_codes_already_marked_as_having_no_dart_data(tmp_path):
 
 def test_codes_with_no_dart_data_get_marked(tmp_path):
     con = connect(tmp_path / "t.db")
-    con.execute("INSERT INTO delisted_stocks(code) VALUES('A')")
-    con.commit()
-
     mark_checked(con, ds.CHECKED_DART_SHARES, ["A"], "2026-08-25")
 
-    got = con.execute("SELECT dart_checked FROM delisted_stocks WHERE code='A'").fetchone()
+    got = con.execute("SELECT checked_date FROM backfill_markers"
+                      " WHERE code='A' AND source=?", (ds.CHECKED_DART_SHARES,)).fetchone()
     assert got[0] == "2026-08-25"
+    con.close()
+
+
+def test_markers_are_per_source_not_per_column(tmp_path):
+    """소스가 늘어도 스키마가 안 바뀐다 — 004→007 로 세 번 재발한 그 자리.
+
+    무엇보다 마커가 delisted_stocks 컬럼이던 시절엔 **상장 종목에 쓸 자리가
+    없었다**(그 테이블에 상장 종목이 없다). 그래서 --listed 가 자료 없는 60종목을
+    매 회차 다시 조회했다.
+    """
+    from collectors.storage import CHECKED_DART_SHARES_LISTED, checked_codes
+    con = connect(tmp_path / "t.db")
+    mark_checked(con, ds.CHECKED_DART_SHARES, ["A"], "2026-08-25")
+    mark_checked(con, CHECKED_DART_SHARES_LISTED, ["B"], "2026-08-28")
+
+    assert checked_codes(con, ds.CHECKED_DART_SHARES) == {"A"}
+    assert checked_codes(con, CHECKED_DART_SHARES_LISTED) == {"B"}
+    # 같은 코드가 소스별로 독립적으로 기록된다
+    mark_checked(con, CHECKED_DART_SHARES_LISTED, ["A"], "2026-08-28")
+    assert checked_codes(con, CHECKED_DART_SHARES_LISTED) == {"A", "B"}
+    assert checked_codes(con, ds.CHECKED_DART_SHARES) == {"A"}
     con.close()
 
 
