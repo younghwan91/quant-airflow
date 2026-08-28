@@ -15,8 +15,8 @@ jobs:
         # 실행되는 순수 모듈이라, 런타임을 올릴 때 미리 깨지는 걸 보려는 것이다.
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
