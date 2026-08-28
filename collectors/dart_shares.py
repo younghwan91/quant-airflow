@@ -273,8 +273,14 @@ def main() -> int:
     keys = collect_keys()
     if not keys:
         raise SystemExit("환경변수 DART_API_KEY 필요")
-    corp = load_corp_map_with_rotation(keys)
 
+    # **대상을 먼저 센다.** corp_map 로드(수 MB zip)는 그 다음이다.
+    #
+    # 순서가 반대였을 때: 이 수집기는 마커 덕에 정상 상태에서 대상이 0이라 몇 초
+    # 만에 끝나야 하는데, 할 일이 없어도 corp_map 을 먼저 받다가 DART 가 잠깐
+    # 불안정하면 그대로 실패했다. 실측 2026-08-28 — 대상 0종목인 상태에서
+    # `RuntimeError: DART corpCode 오류 (status='800')` (800 = 시스템 점검)으로 죽었다.
+    # 월간 유지보수 DAG 가 "할 일 없음"을 벤더 가용성에 의존해 알아내면 안 된다.
     con = connect(args.db or default_db_path())
     if args.listed:
         targets = _listed_targets(con, from_year=args.from_year, to_year=args.to_year)
@@ -282,6 +288,13 @@ def main() -> int:
         targets = _targets(con, refetch=args.refetch)
     if args.limit:
         targets = targets[: args.limit]
+    if not targets:
+        con.close()
+        print("대상 0종목 — 받을 게 없다(백필 완료 상태). corp_map 로드 없이 종료.",
+              flush=True)
+        return 0
+
+    corp = load_corp_map_with_rotation(keys)
     print(f"🔌 {mask_dsn(args.db)} | 대상 {len(targets)}종목 | corp_map {len(corp)}"
           f"{' | DRY-RUN' if args.dry_run else ''}", flush=True)
 
