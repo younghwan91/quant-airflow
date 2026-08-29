@@ -175,15 +175,38 @@ CREATE TABLE IF NOT EXISTS daily_bars_adjusted (
 SELECT create_hypertable('daily_bars_adjusted', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
 CREATE INDEX IF NOT EXISTS idx_dba_date ON daily_bars_adjusted(date);
 
+-- 백필 소스가 "이 코드는 조회해봤고 자료가 없더라"를 기록하는 곳 (migration 009).
+-- 마커가 없으면 자료 없는 코드는 결과 행이 안 생겨 대상 쿼리에 영원히 걸린다.
+-- source 는 ``collectors.storage`` 의 CHECKED_* 상수 — 새 소스는 문자열 하나면
+-- 되고 스키마를 안 건드린다(그 전에는 소스마다 delisted_stocks 에 컬럼을 붙였고,
+-- 004 → 007 로 같은 병이 세 번 재발했다).
+--
+-- ⚠️ **이 테이블이 여기 없었다**(2026-08-30 발견). 009 마이그레이션이 만들고
+-- ``collectors/storage.py`` 의 sqlite SCHEMA 에도 있지만, Postgres 스키마의 정본은
+-- 이 파일 하나다(``storage.connect()`` 는 Postgres 경로에서 DDL 을 안 돌린다).
+-- 즉 이 파일로 DB 를 새로 세우면 ``backfill_markers`` 가 없고,
+-- ``weekly_delisted_stocks`` 의 세 백필 태스크와 ``monthly_listed_shares_backfill``
+-- 이 전부 ``relation "backfill_markers" does not exist`` 로 죽는다.
+CREATE TABLE IF NOT EXISTS backfill_markers (
+    code         TEXT NOT NULL,
+    source       TEXT NOT NULL,   -- collectors.storage 의 CHECKED_* 상수
+    checked_date DATE NOT NULL,   -- 조회해봤고 자료가 없던 날
+    PRIMARY KEY (code, source)
+);
+
 -- 일반 테이블: 종목당 1행뿐이고 시계열이 아니라 하이퍼테이블 대상 아님.
+--
+-- naver_checked / dart_checked / naver_sd_checked 는 DEPRECATED (009) — 위
+-- backfill_markers 로 옮겼고 더 이상 갱신되지 않는다. 새 DB 에는 필요 없지만,
+-- 기존 DB 와 컬럼 구성을 맞춰두려고 남긴다(009 도 원본을 안 지웠다).
 CREATE TABLE IF NOT EXISTS delisted_stocks (
     code            TEXT NOT NULL,
     name            TEXT,
     market          TEXT,
     last_trade_date TEXT,   -- daily_bars 기준 마지막 거래일(상장폐지일 근사), 이력 없으면 NULL
-    naver_checked   DATE,   -- 네이버 조회했으나 우리 구간 내 데이터 없던 날(NULL=미확인)
-    dart_checked    DATE,   -- DART 조회했으나 주식수 자료가 없던 날(NULL=미확인)
-    naver_sd_checked DATE,  -- 네이버 수급을 조회했으나 빈 응답이던 날(NULL=미확인)
+    naver_checked   DATE,   -- DEPRECATED(009) → backfill_markers(source='naver_bars')
+    dart_checked    DATE,   -- DEPRECATED(009) → backfill_markers(source='dart_shares_delisted')
+    naver_sd_checked DATE,  -- DEPRECATED(009) → backfill_markers(source='naver_flow')
     PRIMARY KEY (code)
 );
 
