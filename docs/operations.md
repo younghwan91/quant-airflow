@@ -10,7 +10,7 @@
 | 창 | 기동 | 대상 |
 |---|---|---|
 | 1 — 오전 수집 | 매일 10:00 (지평선 11:30) | catchup · short_credit · listed_shares · 주간/월간 백필 |
-| 2 — 평일 저녁 | 평일 15:55 | daily_collection(16:00) · price_adjust(16:55) · consensus(17:00) · sharadar(화~금 17:30) |
+| 2 — 평일 저녁 | 평일 15:55 | daily_collection(16:00) · earnings(16:00) · price_adjust(16:55) · consensus(17:00) · sharadar(화~금 17:30) |
 | 3 — 토요일 저녁 | 토 17:20 | sharadar(17:30) 하나 |
 
 각 창은 `scripts/wait_and_stop.sh` 가 "그 지평선까지 예정된 DAG 가 전부 끝났는가"를
