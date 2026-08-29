@@ -60,14 +60,31 @@ meta_q() {
 }
 
 # 지금 돌고 있거나 큐에 있는 런 수. 0이어야 아무것도 안 자르고 내릴 수 있다.
-# 지금 돌고 있거나 큐에 있는 런 수. 0이어야 아무것도 안 자르고 내릴 수 있다.
-# `start_date` 조건이 붙은 이유: 22:00 안전장치에 잘린 런은 state='running' 인
-# 채로 메타DB에 남는다. 날짜를 안 보면 그 유령 한 건이 **다음 날부터 영원히**
-# 조기 종료를 막아 매일 22:00까지 뜨게 된다.
+#
+# 날짜 조건이 붙은 이유: 22:00 안전장치에 잘린 런은 state='running' 인 채로
+# 메타DB에 남는다. 날짜를 안 보면 그 유령 한 건이 **다음 날부터 영원히** 조기
+# 종료를 막아 매일 22:00까지 뜨게 된다.
+#
+# **`start_date` 만 보면 안 된다 (2026-08-29 실측 사고).** 방금 만들어진
+# state='queued' 런은 `start_date` 가 NULL 이다 — 아직 시작을 안 했으니까.
+# NULL 은 `> now() - interval '1 day'` 에 안 걸리므로 그 런은 "도는 게 없다"로
+# 세어진다. 그날 토요일 저녁 창에서 정확히 그렇게 됐다:
+#
+#   17:20:02  스택 기동
+#   17:30:00  스케줄러가 daily_sharadar 런 생성(queued, start_date=NULL)
+#             → 그 순간 next_dagrun_create_after 가 다음 화요일로 넘어가
+#               pending 도 0 이 된다
+#   17:30:03  running=0, pending=0 → "모두 완료" 로 스택 종료
+#
+# 첫 폴에서 3초 만에 창을 닫아 **금요일 미국장 드롭을 통째로 놓쳤다.** 창이
+# DAG 스케줄 시각과 겹칠 때만 나는 사고라 평일(16:05 기동, 16:00 DAG)에서는
+# 안 났고, 그래서 토요일 저녁 창을 처음 켠 날 바로 터졌다.
+#
+# `queued_at` 으로 폴백한다 — 큐에 들어간 시각이라 큐 상태에서도 NULL 이 아니다.
 running_runs() {
     meta_q "SELECT count(*) FROM dag_run
              WHERE state IN ('running','queued')
-               AND start_date > now() - interval '1 day';"
+               AND coalesce(start_date, queued_at) > now() - interval '1 day';"
 }
 
 # 오늘 안에 더 생성될 런이 있는 unpaused DAG 수. next_dagrun_create_after가
@@ -172,13 +189,25 @@ shutdown() {
 
 log "대기 시작 — ${horizon_label}까지 예정된 unpaused DAG가 모두 끝나면 종료"
 
+# "할 일 0" 을 **연속 두 번** 봐야 내린다. 한 번으로 내리면 스케줄러가 런을
+# 만들기 직전의 찰나가 그대로 종료 근거가 된다 — `running_runs` 주석의 그 사고는
+# NULL `start_date` 가 원인이었지만, 창 기동 시각과 DAG 스케줄 시각이 겹치는 한
+# "아직 안 만들어졌다" 도 같은 모양으로 0/0 을 만든다. 폴 간격만큼(60초) 늦게
+# 내리는 게 창 하나를 통째로 날리는 것보다 싸다.
+idle_polls=0
 while :; do
     running=$(running_runs)
     pending=$(pending_dags)
 
     if [ -n "$running" ] && [ -n "$pending" ]; then
         if [ "$running" -eq 0 ] && [ "$pending" -eq 0 ]; then
-            shutdown "${horizon_label}까지 예정 DAG 모두 완료 — 컨테이너 종료"
+            idle_polls=$((idle_polls + 1))
+            if [ "$idle_polls" -ge 2 ]; then
+                shutdown "${horizon_label}까지 예정 DAG 모두 완료 — 컨테이너 종료"
+            fi
+            log "할 일 0 (${idle_polls}/2) — 한 번 더 확인하고 내린다"
+        else
+            idle_polls=0
         fi
         log "진행 중 런=$running, ${horizon_label}까지 남은 DAG=$pending ($(pending_names))"
     else
