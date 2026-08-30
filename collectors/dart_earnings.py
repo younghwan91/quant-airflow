@@ -35,6 +35,7 @@ from .config import DART_KEY_ENV_VARS
 from .dart import (
     QUOTA_EXHAUSTED,
     DartQuotaExhausted,
+    describe_status,
     rotate_on_quota,
     rotate_on_quota_raising,
 )
@@ -174,7 +175,7 @@ def load_corp_map(api_key: str) -> dict[str, str]:
             # 템플릿에 "한도초과(020)" 안내문이 늘 박혀 있어 010 에러에도 참이 되는
             # 버그가 있었다. docstring 을 고치면 제어흐름이 바뀌는 상태였다.
             raise DartQuotaExhausted(f"DART corpCode 일한도 소진 (status={status!r})")
-        raise RuntimeError(f"DART corpCode 오류 (status={status!r}) — 키오류(010) 등 확인")
+        raise RuntimeError(f"DART corpCode 오류 — status={describe_status(status)}")
     z = zipfile.ZipFile(io.BytesIO(raw))
     root = ET.fromstring(z.read(z.namelist()[0]).decode())
     out: dict[str, str] = {}
