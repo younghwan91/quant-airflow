@@ -486,3 +486,19 @@ def test_load_corp_map_maps_status_to_exception_type(monkeypatch):
     with pytest.raises(RuntimeError) as ei:
         dart_earnings.load_corp_map("k")
     assert not isinstance(ei.value, DartQuotaExhausted)
+
+
+def test_describe_status_names_the_code():
+    """오류 메시지가 status 를 풀어 써야 한다.
+
+    2026-08-29 `weekly_delisted_stocks` 가 `status='800'` 으로 죽었는데 메시지는
+    status 와 무관하게 늘 `— 키오류(010) 등 확인` 이었다. 800 은 벤더 시스템
+    점검이라 우리 쪽에 고칠 게 없는데, 그 줄만 보면 키를 의심하게 된다.
+    """
+    from collectors.dart import describe_status
+
+    assert "시스템 점검" in describe_status("800")
+    assert "일한도" in describe_status("020")
+    assert "등록되지 않은 키" in describe_status("010")
+    # 모르는 코드도 죽지 않고, 모른다고 말한다.
+    assert "알 수 없는" in describe_status("777")
