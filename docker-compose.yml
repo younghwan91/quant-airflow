@@ -4,6 +4,22 @@ x-airflow-common-env: &airflow-common-env
   AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
   AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
   AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  # **새 DAG 는 켜진 채로 등록된다.** Airflow 기본값은 `true`(= paused 로 등록)이고,
+  # 이 설정이 없어서 실제로 두 DAG 가 조용히 안 돌았다(2026-09-01 발견):
+  #
+  #   daily_price_adjust              08-27 추가 → 실행 0회, daily_bars_adjusted 2거래일 결측
+  #   monthly_listed_shares_backfill  08-28 추가 → 실행 0회
+  #
+  # 켤 자리가 웹 UI 뿐인데 그 UI 는 `profiles: ["ui"]` 라 평소에 안 뜬다. 그래서
+  # "추가했는데 안 돈다"가 아무 신호 없이 지나갔다 — `wait_and_stop.sh` 의
+  # `pending_dags()` 는 `NOT is_paused` 라 paused DAG 를 세지도 않고, 실행이
+  # 없으니 실패도 없어서 창은 매일 초록불로 닫혔다.
+  #
+  # **끄고 싶으면 코드에 적는다.** `daily_krx_shares` 가 그 예다 — 소스가 막혀서
+  # 안 돌려야 하는데 메타DB 의 paused 플래그 대신 `schedule=None` 을 쓴다. 그러면
+  # 그 의도가 코드 리뷰에 보이고, DB 를 새로 만들어도 유지된다. 메타DB 에만 있는
+  # 상태는 둘 다 안 된다.
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
   # 개인 서버라 스케줄러/파서 기본 폴링 주기가 과함 (CPU 80~100% 지속 관측됨).
   # 폴링 간격을 늘려 유휴 CPU/팬 소음을 낮춤.
   #
@@ -122,6 +138,19 @@ services:
         if [ -n "$$DART_API_KEY" ]; then airflow variables set DART_API_KEY "$$DART_API_KEY"; fi
         if [ -n "$$DART_API_KEY_2" ]; then airflow variables set DART_API_KEY_2 "$$DART_API_KEY_2"; fi
         if [ -n "$$DART_API_KEY_3" ]; then airflow variables set DART_API_KEY_3 "$$DART_API_KEY_3"; fi
+        # 이미 paused 로 등록된 DAG 를 되살린다. 위 DAGS_ARE_PAUSED_AT_CREATION 은
+        # **처음 등록될 때만** 적용되므로 기존 메타DB 에 paused 로 박힌 건 그대로
+        # 남는다 — daily_krx_shares 의 is_paused_upon_creation 이 무시됐던 것과
+        # 똑같은 함정이다. 매 기동마다 한 번 훑어 dags/ 가 정본이 되게 한다.
+        #
+        # 목록을 여기 적지 않고 dags/*.py 에서 뽑는 이유: 손으로 적은 목록은 DAG 를
+        # 추가할 때마다 어긋나고, 어긋난 걸 알려주는 건 아무것도 없다(이 사고가
+        # 정확히 그 모양이었다). 안 돌릴 DAG 는 schedule=None 으로 코드에 적는다.
+        for f in /opt/airflow/dags/*.py; do
+          d=$$(basename "$$f" .py)
+          [ "$$d" = "_common" ] && continue
+          airflow dags unpause "$$d" >/dev/null 2>&1 || true
+        done
 
   # UI 는 사람이 볼 때만 띄운다 — 상시 RSS 657MB(실측)를 하루 종일 이고 있을
   # 이유가 없다. 수집 자체는 스케줄러만으로 돈다.
