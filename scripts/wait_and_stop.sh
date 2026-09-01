@@ -168,9 +168,37 @@ SELECT string_agg(DISTINCT dag_id || '.' || task_id, ',')
     fi
 }
 
+# 켜져 있어야 하는데 꺼진 DAG — **실행 0회는 실패로 안 잡힌다.**
+#
+# 2026-09-01 실측: daily_price_adjust(08-27 추가)와
+# monthly_listed_shares_backfill(08-28 추가)이 paused 인 채로 한 번도 안 돌았다.
+# Airflow 기본값이 "새 DAG 는 paused 로 등록" 이고, 켤 자리인 웹 UI 는
+# profiles: ["ui"] 라 평소에 안 떠 있었다.
+#
+# 그 6일 내내 이 스크립트는 매일 초록불로 닫혔다 — pending_dags() 가
+# `NOT is_paused` 라 세지도 않고, 실행이 없으니 report_failures() 에도 안 걸린다.
+# daily_bars_adjusted 는 2거래일이 비어 있었는데 로그만 보면 정상이었다.
+#
+# 근본 대책은 compose 쪽이다(DAGS_ARE_PAUSED_AT_CREATION=false + init 의 unpause
+# 훑기). 여기는 그게 새는 날을 잡는 안전망이다 — 없는 걸 세는 건 이 스크립트가
+# 이미 하는 일(report_failures)의 짝이다.
+report_paused() {
+    local paused
+    paused=$(meta_q "
+SELECT string_agg(dag_id, ',' ORDER BY dag_id)
+  FROM dag
+ WHERE is_paused AND is_active;")
+    if [ -z "$paused" ]; then
+        log "paused 인 DAG: 없음"
+    else
+        log "⚠️ paused 라 안 도는 DAG: $paused  (안 돌릴 거면 schedule=None 으로 코드에 적을 것)"
+    fi
+}
+
 shutdown() {
     report_coverage
     report_failures
+    report_paused
     log "$1"
     # **timescaledb 를 내리지 않는다.** 이 컨테이너는 이 레포 전용이 아니다 —
     # scalp-it 의 장중 틱 수집이 같은 DB를 쓰고, crontab 의 db_guard.sh 가
