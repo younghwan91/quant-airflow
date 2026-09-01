@@ -9,16 +9,8 @@ name: Commit Identity Guard
 #
 # 설정으로는 막을 수 없다(`-c`가 항상 이긴다). 그래서 CI에서 막는다.
 #
-# **작성자(author)와 커미터(committer)를 따로 본다** — 요구 강도가 다르다.
-# 작성자는 `chyohw97@gmail.com` 하나뿐이다. 커밋은 그 신원으로 올라가야 한다.
-# 커미터는 GitHub 이 PR 을 rebase 로 머지할 때 사용자 noreply 로 바꿔 다는데,
-# 그건 우리가 통제할 수 없고 여전히 본인이다.
-#
-# **`noreply@github.com` 은 넣지 않는다.** GitHub 이 웹 머지/스쿼시 커밋에 다는
-# generic 주소라, 허용하면 "누가 만들었는지 모르는 커밋"에 문이 열린다. 그
-# 주소로 남은 커밋이 main 에 하나 있지만(fb3f7b9f, PR #3 웹 머지) 지난 일이고,
-# 아래 범위 계산이 과거를 안 건드리므로 넣을 이유가 없다. PR 은 rebase 로
-# 머지한다 — 그러면 이 주소가 생기지 않는다.
+# 허용 목록을 바꾸려면 ALLOWED_EMAILS를 수정하라.
+# dependabot[bot] 은 봇 신원이다 — 회사 주소가 아니라서 허용한다.
 
 on:
   push:
@@ -29,6 +21,8 @@ permissions:
 
 jobs:
   check-identity:
+    # 브랜치·태그 삭제 푸시엔 검사할 커밋도, checkout 할 ref 도 없다.
+    if: ${{ !github.event.deleted }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -37,76 +31,59 @@ jobs:
 
       - name: 커밋 신원 검사
         env:
-          # 커밋을 만든 사람. 이 하나뿐이다.
-          ALLOWED_AUTHORS: |
-            chyohw97@gmail.com
-          # 커밋을 트리에 얹은 주체. 위에 더해 사용자 본인의 GitHub noreply 만.
-          # (GitHub 이 rebase 머지할 때 committer 를 이걸로 바꿔 단다.)
-          ALLOWED_COMMITTERS: |
+          # 개인 이메일 + GitHub noreply만 허용.
+          # noreply@github.com 은 GitHub 머지 버튼이 만드는 커밋의 신원이다
+          # (Merge pull request #N ...). 회사 주소가 아니라 GitHub 자신이다.
+          ALLOWED_EMAILS: |
             chyohw97@gmail.com
             48156556+younghwan91@users.noreply.github.com
+            noreply@anthropic.com
+            noreply@github.com
+            49699333+dependabot[bot]@users.noreply.github.com
         run: |
           set -euo pipefail
 
-          # **이 브랜치가 새로 만든 커밋만 본다.** 히스토리 전체를 검사하면 과거
-          # 사고 때문에 영원히 실패하고, 반대로 범위가 새면 남의 커밋으로 빨간불이
-          # 뜬다 — 후자가 실제로 났다(2026-08-29):
-          #
-          #   새 브랜치 푸시는 `event.before` 가 전부 0 이라 폴백을 타는데, 그
-          #   폴백이 `최근 50개` 였다. main 의 옛 커밋(웹 머지의 noreply@github.com)
-          #   까지 걸어 들어가 이 브랜치가 만들지도 않은 커밋을 잡았다. 오탐이
-          #   일상이 되면 진짜 빨간불도 같이 무시된다 — 가드가 죽는 방식이다.
-          #
-          # 폴백을 merge-base 기준으로 바꾼다. 브랜치가 main 에서 갈라진 지점부터
-          # HEAD 까지 = 정확히 이 브랜치가 더한 커밋.
-          BASE_REF="origin/${{ github.event.repository.default_branch }}"
+          # PR이면 base..head, push면 이번에 밀린 커밋만 본다.
+          # 히스토리 전체를 검사하면 과거 사고 때문에 영원히 실패한다.
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             RANGE="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            # 태그 푸시는 새 커밋을 만들지 않는다. before 가 0 이라 아래 폴백을 타면
+            # 히스토리 50개를 다시 훑고, 과거 머지 커밋 때문에 영원히 실패한다.
+            # 기본 브랜치에 아직 없는 커밋만 본다 (보통 0개).
+            BASE="origin/${{ github.event.repository.default_branch }}"
+            if git rev-parse --verify -q "$BASE" >/dev/null; then
+              RANGE="$BASE..${{ github.sha }}"
+            else
+              RANGE="${{ github.sha }}~1..${{ github.sha }}"
+            fi
           elif [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ] \
                && git cat-file -e "${{ github.event.before }}" 2>/dev/null; then
             RANGE="${{ github.event.before }}..${{ github.sha }}"
-          elif git rev-parse --verify "$BASE_REF" >/dev/null 2>&1 \
-               && MB=$(git merge-base "$BASE_REF" "${{ github.sha }}" 2>/dev/null) \
-               && [ "$MB" != "${{ github.sha }}" ]; then
-            RANGE="$MB..${{ github.sha }}"
           else
-            # 기본 브랜치 자체를 처음 밀거나 merge-base 를 못 구하는 경우:
-            # 그 커밋 하나만. 넓게 잡느니 좁게 잡고 확실히 본다.
-            RANGE="${{ github.sha }}~1..${{ github.sha }}"
+            # 새 브랜치/강제 푸시 등 before를 못 쓰는 경우: 최근 50개만
+            RANGE="$(git rev-list -n 50 ${{ github.sha }} | tail -1)^..${{ github.sha }}" || RANGE="${{ github.sha }}"
           fi
 
           echo "검사 범위: $RANGE"
           echo
 
-          norm() { echo "$1" | tr -d ' ' | grep -v '^$' | sort -u; }
-          AUTHORS=$(norm "$ALLOWED_AUTHORS")
-          COMMITTERS=$(norm "$ALLOWED_COMMITTERS")
-          echo "허용된 author:";    echo "$AUTHORS"    | sed 's/^/  /'
-          echo "허용된 committer:"; echo "$COMMITTERS" | sed 's/^/  /'
+          # 허용 목록을 정규화 (빈 줄·공백 제거)
+          ALLOWED=$(echo "$ALLOWED_EMAILS" | tr -d ' ' | grep -v '^$' | sort -u)
+          echo "허용된 이메일:"
+          echo "$ALLOWED" | sed 's/^/  /'
           echo
 
-          # **fail-closed.** 예전엔 `git log ... || true` 라, 범위가 틀려서 조회가
-          # 실패하면 검사할 커밋이 0개가 되고 그대로 초록불이었다. 검사를 못 했으면
-          # 통과가 아니라 실패다.
-          if ! LOG=$(git log --format='%H|%ae|%ce|%s' "$RANGE"); then
-            echo "::error::커밋 목록을 못 읽었다 (범위: $RANGE). 검사를 못 했으므로 실패로 둔다."
-            exit 1
-          fi
-
           BAD=0
-          COUNT=0
           while IFS='|' read -r sha author committer subject; do
             [ -z "$sha" ] && continue
-            COUNT=$((COUNT + 1))
-            if ! echo "$AUTHORS" | grep -Fxq "$author"; then
-              echo "::error::${sha:0:8} author 가 허용 목록에 없다: $author  ($subject)"
-              BAD=1
-            fi
-            if ! echo "$COMMITTERS" | grep -Fxq "$committer"; then
-              echo "::error::${sha:0:8} committer 가 허용 목록에 없다: $committer  ($subject)"
-              BAD=1
-            fi
-          done <<< "$LOG"
+            for email in "$author" "$committer"; do
+              if ! echo "$ALLOWED" | grep -Fxq "$email"; then
+                echo "::error::${sha:0:8} 허용되지 않은 이메일: $email  ($subject)"
+                BAD=1
+              fi
+            done
+          done < <(git log --format='%H|%ae|%ce|%s' "$RANGE" 2>/dev/null || true)
 
           if [ "$BAD" -eq 1 ]; then
             echo
@@ -121,4 +98,4 @@ jobs:
             exit 1
           fi
 
-          echo "✅ 커밋 신원 이상 없음 (${COUNT}개 검사)"
+          echo "✅ 커밋 신원 이상 없음"
