@@ -79,9 +79,17 @@
   175분 걸린 날 깨졌다.
 - 스케줄을 정할 때 **가동 창**을 함께 본다(`docs/operations.md`). 창 밖으로
   삐져나가는 DAG 는 22:00 안전장치에 잘린다(`earnings_backfill` 전례).
-- 새 DAG 를 추가·unpause 하면 `scripts/wait_and_stop.sh` 가 그걸 기다리는지
-  확인한다(메타DB 를 직접 물으므로 보통 자동이지만, 창의 **지평선** 안에
-  들어오는지는 사람이 확인해야 한다).
+- 새 DAG 를 추가하면 `scripts/wait_and_stop.sh` 가 그걸 기다리는지 확인한다
+  (메타DB 를 직접 물으므로 보통 자동이지만, 창의 **지평선** 안에 들어오는지는
+  사람이 확인해야 한다).
+- **DAG 를 켜고 끄는 상태는 메타DB 가 아니라 코드에 둔다.** compose 가
+  `DAGS_ARE_PAUSED_AT_CREATION=false` 이고 `airflow-init` 이 매 기동마다
+  `dags/*.py` 를 훑어 unpause 하므로, 추가한 DAG 는 그냥 돈다. **안 돌릴 DAG 는
+  `schedule=None` 으로 코드에 적는다**(`daily_krx_shares` 가 그 예다) — UI 에서
+  pause 해두면 다음 기동에 되살아나고, 애초에 그 의도가 코드 리뷰에 안 보인다.
+  실제로 `daily_price_adjust`·`monthly_listed_shares_backfill` 이 paused 인 채로
+  6일간 조용히 안 돌았다(2026-09-01 발견). 종료 로그의 `⚠️ paused 라 안 도는 DAG`
+  줄이 그 안전망이다.
 
 ## 5. "초록불 = 성공" 이 아니다
 
@@ -94,6 +102,11 @@
   아니다. `report_failures()` 가 남기는 `⚠️ 오늘 실패한 태스크` 줄을 본다.
 - 커버리지 점검 6개 테이블에 `earnings`·`consensus` 는 없다 — 그쪽 실패는
   태스크 상태로만 잡힌다.
+- **실행 0회는 실패로 안 잡힌다.** `daily_price_adjust` 가 paused 인 채 6일을
+  보냈고 그동안 창은 매일 초록불로 닫혔다 — `pending_dags()` 가 paused DAG 를
+  세지 않고, 실행이 없으니 실패도 없다. "고쳤다" 를 말하기 전에 **그 DAG 가
+  실제로 돌았는지**(`logs/dag_id=<name>/` 이 있는지, 대상 테이블 `max(date)` 가
+  움직였는지)를 본다.
 
 ## 6. 개발
 
