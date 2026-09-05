@@ -1,4 +1,13 @@
-from collectors.news_judge import EVENT_TYPES, Judgment, build_prompt, parse_judgment
+from collectors.news_judge import EVENT_TYPES, Judgment, build_prompt, collect, judge_item, parse_judgment
+from collectors.storage import connect, upsert_disclosures, upsert_news_judgments
+
+
+def _seed_disclosure(con, disclosure_id="dart:x", ticker="005930"):
+    upsert_disclosures(con, [(
+        disclosure_id, "dart", "제목", "https://dart.fss.or.kr/x",
+        "삼성전자", ticker, "주요사항보고서",
+        "2026-09-06T08:00:00", "2026-09-06T08:45:00",
+    )])
 
 
 def test_build_prompt_includes_item_fields_and_event_type_choices():
@@ -65,3 +74,81 @@ def test_parse_judgment_rejects_boolean_sentiment():
                '"related_codes": [], "is_stale_repeat": false, ' \
                '"first_seen_date": null, "price_impact_likely": false, "rationale": ""}'
     assert parse_judgment(response) is None
+
+
+def test_judge_item_returns_parsed_judgment_on_valid_response():
+    def fake_generate(prompt: str) -> str:
+        assert "005930" in prompt
+        return ('{"event_type": "실적", "sentiment_direction": 1, '
+                '"related_codes": [], "is_stale_repeat": false, '
+                '"first_seen_date": null, "price_impact_likely": true, '
+                '"rationale": "테스트"}')
+
+    item = {"ticker": "005930", "title": "제목", "content": "본문",
+            "published_at": "2026-09-06T08:30:00"}
+    j = judge_item(fake_generate, item, prior_context=[])
+    assert j is not None
+    assert j.event_type == "실적"
+
+
+def test_judge_item_returns_none_on_unparseable_response():
+    j = judge_item(lambda prompt: "JSON 아님",
+                    {"ticker": "005930", "title": "t", "content": "c",
+                     "published_at": "2026-09-06T08:30:00"}, prior_context=[])
+    assert j is None
+
+
+def test_collect_judges_new_disclosure_and_upserts(tmp_path):
+    con = connect(tmp_path / "t.db")
+    _seed_disclosure(con)
+
+    def fake_generate(prompt: str) -> str:
+        return ('{"event_type": "기타", "sentiment_direction": 0, '
+                '"related_codes": [], "is_stale_repeat": false, '
+                '"first_seen_date": null, "price_impact_likely": false, '
+                '"rationale": "테스트"}')
+
+    stats = collect(con, fake_generate, model_id="gemini-test", today="20260906")
+    assert stats == {"target": 1, "judged": 1, "api_failures": 0}
+
+    rows = con.execute("SELECT ticker, event_type FROM news_judgments").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["ticker"] == "005930"
+
+
+def test_collect_skips_already_judged_at_same_prompt_version(tmp_path):
+    con = connect(tmp_path / "t.db")
+    _seed_disclosure(con)
+    upsert_news_judgments(con, [(
+        "disclosure", "dart:x", "005930", "기타", 0, "[]", 0, None, False,
+        "기존 판단", "gemini-test", "v1", "20260906",
+    )])
+
+    calls = []
+    def fake_generate(prompt: str) -> str:
+        calls.append(prompt)
+        return "안 불려야 함"
+
+    stats = collect(con, fake_generate, model_id="gemini-test", today="20260906")
+    assert calls == []
+    assert stats == {"target": 0, "judged": 0, "api_failures": 0}
+
+
+def test_collect_counts_api_failures_without_writing_a_row(tmp_path):
+    con = connect(tmp_path / "t.db")
+    _seed_disclosure(con)
+
+    def failing_generate(prompt: str) -> str:
+        raise RuntimeError("rate limited")
+
+    stats = collect(con, failing_generate, model_id="gemini-test", today="20260906")
+    assert stats == {"target": 1, "judged": 0, "api_failures": 1}
+    assert con.execute("SELECT count(*) AS n FROM news_judgments").fetchone()["n"] == 0
+
+
+def test_collect_skips_malformed_output_without_counting_as_api_failure(tmp_path):
+    con = connect(tmp_path / "t.db")
+    _seed_disclosure(con)
+
+    stats = collect(con, lambda prompt: "JSON 아님", model_id="gemini-test", today="20260906")
+    assert stats == {"target": 1, "judged": 0, "api_failures": 0}

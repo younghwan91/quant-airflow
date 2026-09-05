@@ -5,6 +5,9 @@ krx-news-client @ git+https://github.com/younghwan91/krx-news-client.git@main
 # krx-fundamentals-client도 아직 PyPI 미배포 — dart_earnings.py가 DartScraper를 쓴다.
 krx-fundamentals-client @ git+https://github.com/younghwan91/krx-fundamentals-client.git@main
 pandas>=2.0
+# news_judge.py의 Gemini 연동 — google-generativeai는 2025-11-30부로 deprecated
+# (https://ai.google.dev/gemini-api/docs/libraries), google-genai가 후속 GA SDK.
+google-genai>=2.22.0
 
 # 미국(Sharadar) 파이프라인 — opt_portfolio.factor 를 /opt/opt-portfolio/src 에서
 # import 해 돌리므로(daily_sharadar), 그쪽 런타임 의존을 여기에 갖춰야 한다.
