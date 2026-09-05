@@ -267,6 +267,24 @@ CREATE TABLE IF NOT EXISTS disclosures (
 );
 CREATE INDEX IF NOT EXISTS idx_disclosures_ticker ON disclosures(ticker);
 CREATE INDEX IF NOT EXISTS idx_disclosures_published_at ON disclosures(published_at);
+CREATE TABLE IF NOT EXISTS news_judgments (
+    source_type         TEXT NOT NULL,
+    source_id           TEXT NOT NULL,
+    ticker              TEXT NOT NULL,
+    event_type          TEXT NOT NULL,
+    sentiment_direction INTEGER NOT NULL,
+    related_codes       TEXT NOT NULL DEFAULT '[]',
+    is_stale_repeat     BOOLEAN NOT NULL DEFAULT 0,
+    first_seen_date     TEXT,
+    price_impact_likely BOOLEAN NOT NULL DEFAULT 0,
+    rationale           TEXT NOT NULL DEFAULT '',
+    model_id            TEXT NOT NULL,
+    prompt_version      TEXT NOT NULL,
+    knowledge_date      TEXT NOT NULL,
+    PRIMARY KEY (source_type, source_id, ticker, prompt_version)
+);
+CREATE INDEX IF NOT EXISTS idx_news_judgments_ticker ON news_judgments(ticker);
+CREATE INDEX IF NOT EXISTS idx_news_judgments_knowledge_date ON news_judgments(knowledge_date);
 """
 
 

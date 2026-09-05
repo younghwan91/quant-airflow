@@ -146,6 +146,25 @@ CREATE TABLE IF NOT EXISTS earnings (
 CREATE INDEX IF NOT EXISTS idx_earnings_avail_date ON earnings(avail_date);
 CREATE INDEX IF NOT EXISTS idx_earnings_asof ON earnings(code, period, knowledge_date DESC);
 
+CREATE TABLE IF NOT EXISTS news_judgments (
+    source_type         TEXT NOT NULL,   -- 'news' | 'disclosure'
+    source_id           TEXT NOT NULL,   -- news_articles.id 또는 disclosures.id
+    ticker              TEXT NOT NULL,
+    event_type          TEXT NOT NULL,   -- 실적/유상증자/자사주/최대주주변경/소송/가이던스/규제/기타
+    sentiment_direction INTEGER NOT NULL,  -- -1/0/1
+    related_codes       TEXT NOT NULL DEFAULT '[]',  -- JSON 배열 문자열
+    is_stale_repeat     BOOLEAN NOT NULL DEFAULT FALSE,
+    first_seen_date     DATE,            -- is_stale_repeat=true일 때만 채움
+    price_impact_likely BOOLEAN NOT NULL DEFAULT FALSE,
+    rationale           TEXT NOT NULL DEFAULT '',
+    model_id            TEXT NOT NULL,
+    prompt_version      TEXT NOT NULL,
+    knowledge_date      DATE NOT NULL,   -- 판단이 실제로 이뤄진 날 (백필 없음)
+    PRIMARY KEY (source_type, source_id, ticker, prompt_version)
+);
+CREATE INDEX IF NOT EXISTS idx_news_judgments_ticker ON news_judgments(ticker);
+CREATE INDEX IF NOT EXISTS idx_news_judgments_knowledge_date ON news_judgments(knowledge_date);
+
 CREATE TABLE IF NOT EXISTS consensus (
     code         TEXT NOT NULL,
     date         DATE NOT NULL,

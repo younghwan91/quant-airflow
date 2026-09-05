@@ -131,3 +131,15 @@ def test_upsert_earnings_does_not_add_a_version_when_nothing_changed(tmp_path):
     assert [r["knowledge_date"] for r in rows] == ["20240515"]
     con.close()
 
+
+def test_news_judgments_table_exists():
+    from collectors.storage import connect
+    con = connect(":memory:")
+    cols = {r[1] for r in con.execute("PRAGMA table_info(news_judgments)").fetchall()}
+    assert cols == {
+        "source_type", "source_id", "ticker", "event_type",
+        "sentiment_direction", "related_codes", "is_stale_repeat",
+        "first_seen_date", "price_impact_likely", "rationale",
+        "model_id", "prompt_version", "knowledge_date",
+    }
+

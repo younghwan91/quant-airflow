@@ -33,6 +33,7 @@
 | `earnings` | DART 분기 실적(순이익·매출·영업이익, 당기/전년동기), lookahead-safe `avail_date` + 정정 이력을 보존하는 `knowledge_date`(PK: code, period, knowledge_date) |
 | `delisted_stocks` | 상장폐지 종목 마스터(생존편향 보정). 과거 시세는 `daily_bars` 에 `source='naver'` 로 들어간다 |
 | `backfill_markers` | `(code, source)` — "조회해봤는데 자료가 없더라"를 기록해 백필이 같은 코드를 매 회차 다시 훑지 않게 한다 |
+| `news_judgments` | LLM이 news_articles/disclosures를 읽고 낸 판단. PK `(source_type, source_id, ticker, prompt_version)` — prompt_version이 바뀌면 새 행, 기존 행은 절대 안 고침(재현성) |
 
 ## TimescaleDB 설계 노트
 
@@ -74,6 +75,8 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 | `008_compression_and_lookahead_cleanup` | 압축 경계 7일 → 30일 · `daily_bars_adjusted` 압축 영구 해제 · `shares_outstanding_history` 의 lookahead 행 삭제 |
 | `009_backfill_markers` | 004·007 의 마커 컬럼을 `backfill_markers(code, source)` 테이블로 옮긴다. 마커가 `delisted_stocks` 에 있으면 **상장 종목에는 쓸 수가 없었다** — 소스가 늘 때마다 컬럼을 붙이는 대신 자리를 바꿨다 |
 | `010_news_articles` | `news_articles`/`news_article_tickers` 신설 — krx-news-client(토스) 뉴스를 백테스팅+실매매용으로 영속 저장. `id` 자연키 upsert라 krx-news-rest-api 옛 Redis 캐시(ZSET member=article JSON)가 갖던 dedup 버그가 없다 |
+| `011_disclosures` | `disclosures` 신설 — krx-news-client(DART) 공시를 백테스팅+실매매용으로 영속 저장 |
+| `012_news_judgments` | `news_judgments` 신설 — LLM 뉴스/공시 판단, 장전/장중 DAG가 채움 |
 
 > ⚠️ 001 은 코드가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이 `daily_earnings` 가
 > 초록불이었던 건 비수기라 `rows=0` 이어서 DB 를 건드리기 전에 빠져나갔기 때문이지,
