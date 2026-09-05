@@ -36,8 +36,8 @@ import argparse
 import sqlite3
 import time
 
-from kiwoom_rest_api import KiwoomAPI
-from kiwoom_rest_api.base import KiwoomAPIError
+from kiwoom_client import KiwoomAPI
+from kiwoom_client.base import KiwoomAPIError
 
 from .kiwoom_cli import add_common_args, build_universe, open_session, print_banner
 from .storage import to_int, upsert_shares_outstanding

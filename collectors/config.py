@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # 런타임 import 는 make_api 안에서 — 아래 주석 참고.
-    from kiwoom_rest_api import KiwoomAPI
+    from kiwoom_client import KiwoomAPI
 
 
 #: DART API 키를 담는 환경변수 이름들 — **우선순위 순서**다.
@@ -72,8 +72,8 @@ def make_api(is_mock: bool = True, *, login: bool = True, **kwargs) -> "KiwoomAP
     """
     # 지연 import: 이 모듈에는 mask_dsn/load_keys 처럼 키움과 무관한 헬퍼도 있는데,
     # 최상단에서 클라이언트를 끌어오면 네이버·DART 전용 수집기와 그 테스트까지
-    # kiwoom_rest_api 설치를 요구하게 된다.
-    from kiwoom_rest_api import KiwoomAPI
+    # kiwoom_client 설치를 요구하게 된다.
+    from kiwoom_client import KiwoomAPI
 
     app_key, app_secret = load_keys()
     api = KiwoomAPI(app_key=app_key, app_secret=app_secret, is_mock=is_mock, **kwargs)

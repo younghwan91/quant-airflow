@@ -16,8 +16,8 @@ import argparse
 import sqlite3
 import time
 
-from kiwoom_rest_api import KiwoomAPI
-from kiwoom_rest_api.base import KiwoomAPIError
+from kiwoom_client import KiwoomAPI
+from kiwoom_client.base import KiwoomAPIError
 
 from .config import make_api, mask_dsn
 from .storage import connect, days_ago, default_db_path, to_int, upsert_sector_index

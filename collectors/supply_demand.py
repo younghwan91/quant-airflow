@@ -7,7 +7,7 @@ limiter throttles to ~1 req/s; a full KOSPI+KOSDAQ common-stock sweep
 
 Multi-page backfill (⚠️ important, discovered 2026-07-09): ka10059 supports
 continuation well beyond 100 days — Kiwoom returns ``cont-yn``/``next-key`` in
-the **HTTP response headers**, not the JSON body. ``kiwoom_rest_api``'s
+the **HTTP response headers**, not the JSON body. ``kiwoom_client``'s
 ``BaseClient.request()`` returns only ``resp.json()`` and silently drops
 response headers, so every collector in this repo that checked
 ``resp.get("cont_yn")`` (this file previously did not even try; ``daily_bars.py``
@@ -34,8 +34,8 @@ import time
 
 from typing import Any
 
-from kiwoom_rest_api import KiwoomAPI
-from kiwoom_rest_api.base import KiwoomAPIError
+from kiwoom_client import KiwoomAPI
+from kiwoom_client.base import KiwoomAPIError
 
 from .kiwoom_cli import add_common_args, build_universe, open_session, print_banner
 from .storage import (
