@@ -16,7 +16,23 @@
 설계한다. 설계 과정에서 실제 컨슈머가 될 두 세션(`kr-quant`, `scalp-it`)의
 의견을 구했고, 특히 `scalp-it`의 피드백(실제 트레이더 인터뷰 문서
 `scalp-it` 레포 `docs/research/manju/46-manju-answers.md` 기반)이 필드셋을
-바꿨다 — 그 근거는 아래 "필드셋" 절에 그대로 남긴다.
+바꿨다 — 그 근거는 아래 "필드셋" 절에 그대로 남긴다. `scalp-it`이 이 방향에
+동의했다(2026-09-06, 세션간 확인).
+
+### 데이터 계보 — 토스 뉴스 출처와 그 한계
+
+`news_articles`의 토스 뉴스는 `krx-news-client`의 `TossScraper`가 토스증권
+자체 대시보드 API(`wts-info-api.tossinvest.com/api/v1/dashboard/wts/news`,
+POST `{"type": "ALL_HIGHLIGHT"|"HOT"|"SOARING_STOCK"}`)를 직접 호출해서
+얻는다 — HTML을 긁는 게 아니라 JSON API라 robots.txt는 안 걸리지만, **토스
+ToS상 자동화 접근이 허용되는지는 검증되지 않았다.**
+
+그리고 이건 **현재 하이라이트만 주는 라이브 피드**다 — 과거분을 조회하는
+파라미터가 없어 **백필이 원천적으로 안 된다**. 나중에 이 DAG를 유지보수할
+사람이 "왜 과거 뉴스는 안 채워지지"에서 막히지 않도록 여기 남긴다(같은
+제약이 `scalp-it` 레포의 `docs/research/manju/17-news-source-survey.md`에서
+조사한 다른 뉴스 소스들 — 키움 REST 뉴스 API 없음, 네이버 robots 금지+2000건
+캡, 빅카인즈 수동 — 과 동일한 종류다).
 
 ## 소유권 — 왜 quant-airflow인가
 
