@@ -784,3 +784,24 @@ def upsert_disclosures(con: Any, records: list[tuple]) -> int:
     """
     return _upsert(con, "disclosures", _DISCLOSURES_COLS, records, pk_cols=("id", "published_at"))
 
+
+_NEWS_JUDGMENTS_COLS = [
+    "source_type", "source_id", "ticker", "event_type", "sentiment_direction",
+    "related_codes", "is_stale_repeat", "first_seen_date", "price_impact_likely",
+    "rationale", "model_id", "prompt_version", "knowledge_date",
+]
+
+
+def upsert_news_judgments(con: Any, records: list[tuple]) -> int:
+    """Insert news_judgments rows (tuples ordered by _NEWS_JUDGMENTS_COLS).
+
+    ``on_conflict="nothing"`` — 판단은 한 번 쓰면 불변이다. 재실행 시 같은
+    (source_type, source_id, ticker, prompt_version)는 기존 값을 그대로
+    보존한다(LLM 출력이 확률적이라 재실행마다 값이 달라질 수 있는데, 그걸
+    덮어쓰면 "그 시점에 실제로 어떤 판단이 있었는지"라는 point-in-time
+    기록이 흔들린다).
+    """
+    return _upsert(con, "news_judgments", _NEWS_JUDGMENTS_COLS, records,
+                   pk_cols=("source_type", "source_id", "ticker", "prompt_version"),
+                   on_conflict="nothing")
+

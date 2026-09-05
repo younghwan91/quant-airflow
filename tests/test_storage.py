@@ -143,3 +143,24 @@ def test_news_judgments_table_exists():
         "model_id", "prompt_version", "knowledge_date",
     }
 
+
+def test_upsert_news_judgments_is_idempotent_and_keeps_first_write(tmp_path):
+    from collectors.storage import connect, upsert_news_judgments
+
+    con = connect(tmp_path / "t.db")
+    # 날짜 컬럼은 이 레포 관례대로 압축형 YYYYMMDD(예: dart_earnings.py의
+    # today/avail_date)로 통일 — earnings.knowledge_date와 같은 포맷.
+    row = ("news", "toss:abc", "005930", "실적", 1, "[]", 0, None, True,
+           "실적 서프라이즈", "gemini-test", "v1", "20260906")
+    upsert_news_judgments(con, [row])
+
+    # 같은 PK로 재실행 — rationale이 달라져도 기존 행이 안 바뀐다(immutable).
+    changed = ("news", "toss:abc", "005930", "실적", -1, "[]", 0, None, True,
+               "바뀐 서술", "gemini-test", "v1", "20260906")
+    upsert_news_judgments(con, [changed])
+
+    rows = con.execute("SELECT rationale FROM news_judgments").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["rationale"] == "실적 서프라이즈"  # 처음 쓴 값 그대로
+    con.close()
+
