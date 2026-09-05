@@ -78,12 +78,12 @@ spare PC (Ubuntu, 이 저장소)                                 main PC
 | `daily_collection` | 평일 16:00 | 일봉 + 수급(키움) + 업종지수 — 쓰는 창 최근 15일 |
 | `daily_collection_catchup` | 평일 10:05 | 전날 실패분만 재수집(최신이면 API 호출 0) |
 | `daily_short_credit` | 화~토 10:00 | 공매도 + 신용잔고(키움, T+1~2 지연) — 쓰는 창 최근 10일 |
-| `daily_earnings` | 평일 16:00 | DART 실적 증분(당기 + 전분기) |
+| `daily_earnings` | 평일 16:00 | DART 실적 증분(당기 + 전분기, [krx-fundamentals-client](https://github.com/younghwan91/krx-fundamentals-client)) |
 | `daily_price_adjust` | 평일 16:55 | `daily_bars_adjusted` 재생성 |
 | `daily_consensus` | 평일 17:00 | 네이버 컨센서스(월요일만 전종목) |
 | `daily_sharadar` | 화~토 17:30 | 미국 벌크 스냅샷 → 스토어 재구축 → 검증 → 원자적 공개 |
 | `daily_news` | 평일 10:05 · 16:05 | 토스증권 뉴스 + DART 공시([krx-news-client](https://github.com/younghwan91/krx-news-client)) — 백테스팅+실매매용 |
-| `earnings_backfill` | 일 10:00 | DART 실적 전체 이력 백필(resume) |
+| `earnings_backfill` | 일 10:00 | DART 실적 전체 이력 백필(resume, krx-fundamentals-client) |
 | `weekly_history_backfill` | 일 11:00 | 업종지수·공매도·신용 히스토리 깊이 재수집 |
 | `weekly_listed_shares` | 화 10:10 | 키움 상장주식수 스냅샷 |
 | `weekly_delisted_stocks` | 토 10:05 | 폐지 마스터 + 과거 일봉 + 상장주식수 백필(위 3층) |

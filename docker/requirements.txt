@@ -2,6 +2,8 @@ psycopg2-binary>=2.9
 kiwoom-client>=0.2.1
 # krx-news-client는 아직 PyPI 미배포 — 배포되면 이 줄을 krx-news-client>=x.y로 바꾼다.
 krx-news-client @ git+https://github.com/younghwan91/krx-news-client.git@main
+# krx-fundamentals-client도 아직 PyPI 미배포 — dart_earnings.py가 DartScraper를 쓴다.
+krx-fundamentals-client @ git+https://github.com/younghwan91/krx-fundamentals-client.git@main
 pandas>=2.0
 
 # 미국(Sharadar) 파이프라인 — opt_portfolio.factor 를 /opt/opt-portfolio/src 에서

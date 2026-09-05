@@ -42,12 +42,21 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import time
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
+import zipfile
 
-from .dart import rotate_on_quota
+from .dart import (
+    QUOTA_EXHAUSTED,
+    DartQuotaExhausted,
+    describe_status,
+    rotate_on_quota,
+    rotate_on_quota_raising,
+)
 from .storage import (
     CHECKED_DART_SHARES,
     CHECKED_DART_SHARES_LISTED,
@@ -58,6 +67,58 @@ from .storage import (
 )
 
 API = "https://opendart.fss.or.kr/api/stockTotqySttus.json"
+CORP_CODE_URL = "https://opendart.fss.or.kr/api/corpCode.xml"
+
+
+def load_corp_map(api_key: str) -> dict[str, str]:
+    """Return ``{stock_code: corp_code}`` from DART's corpCode.xml zip.
+
+    krx-fundamentals-client의 ``DartScraper.load_corp_codes()``가 같은 데이터를
+    비동기로 제공하지만(``dart_earnings.py``가 이관한 부분), 이 모듈은
+    ``stockTotqySttus``(상장주식수) 전용이라 그대로 남는다 — 그 엔드포인트는
+    krx-fundamentals-client에 없어서(2026-09) dart_shares.py 전체를 옮길 수 없다.
+
+    Raises ``RuntimeError`` with the DART status when the response is an error
+    XML (e.g. status 020 = daily call-limit exceeded, 010 = bad key) rather than
+    the expected zip — otherwise the caller would see an opaque ``BadZipFile``.
+    """
+    q = urllib.parse.urlencode({"crtfc_key": api_key})
+    with urllib.request.urlopen(f"{CORP_CODE_URL}?{q}", timeout=60) as r:  # noqa: S310 — 고정 호스트
+        raw = r.read()
+    if not raw[:2] == b"PK":  # zip magic; DART errors come back as small XML
+        status = ""
+        try:
+            status = ET.fromstring(raw.decode()).findtext("status") or ""
+        except Exception:
+            pass
+        if status == QUOTA_EXHAUSTED:
+            # 타입으로 알린다 — 예전엔 이 메시지를 호출부가 문자열로 매칭했는데,
+            # 템플릿에 "한도초과(020)" 안내문이 늘 박혀 있어 010 에러에도 참이 되는
+            # 버그가 있었다. docstring 을 고치면 제어흐름이 바뀌는 상태였다.
+            raise DartQuotaExhausted(f"DART corpCode 일한도 소진 (status={status!r})")
+        raise RuntimeError(f"DART corpCode 오류 — status={describe_status(status)}")
+    z = zipfile.ZipFile(io.BytesIO(raw))
+    root = ET.fromstring(z.read(z.namelist()[0]).decode())
+    out: dict[str, str] = {}
+    for it in root.iter("list"):
+        sc = (it.findtext("stock_code") or "").strip()
+        cc = (it.findtext("corp_code") or "").strip()
+        if sc and cc:
+            out[sc] = cc
+    return out
+
+
+def load_corp_map_with_rotation(keys: list[str]) -> dict[str, str]:
+    """``load_corp_map`` with key rotation on daily-limit (020) — same rotation
+    ``shares_series`` already does for the per-year fetches, but for the one-time
+    corp_code map load at startup. Without this, a single exhausted key[0] kills
+    the whole run even when key[1..] still have quota (real incident: a 14.5h
+    overnight backfill run legitimately stopped for the day via 020 mid-run, and
+    the very next retry died instantly on ``load_corp_map(keys[0])`` alone
+    despite a second key being available).
+    """
+    return rotate_on_quota_raising(load_corp_map, keys)
+
 
 # 조회 순서 — 사업보고서가 가장 완전하지만 폐지 직전 해엔 없는 경우가 많다.
 REPORTS = (("11011", "사업"), ("11014", "3분기"), ("11012", "반기"), ("11013", "1분기"))
@@ -268,7 +329,7 @@ def main() -> int:
     args = ap.parse_args()
 
     from .config import mask_dsn
-    from .dart_earnings import collect_keys, load_corp_map_with_rotation
+    from .dart_earnings import collect_keys
 
     keys = collect_keys()
     if not keys:

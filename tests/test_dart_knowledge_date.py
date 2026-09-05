@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import collectors.dart_earnings as de
 
 CORP = {"000020": "00100001", "000030": "00100002"}
@@ -16,15 +18,15 @@ TODAY = "20260815"
 
 def _stub_fetch(monkeypatch):
     """DART 호출을 고정 응답으로 대체 — 네트워크·키 불요."""
-    def fake(keys, ki, corp_codes, year, q):
-        return {cc: (100.0, 90.0, 1000.0, 900.0, 50.0, 45.0) for cc in corp_codes}, None
+    async def fake(scrapers, keys, ki, tickers, year, q):
+        return {t: (100.0, 90.0, 1000.0, 900.0, 50.0, 45.0) for t in tickers}, None
     monkeypatch.setattr(de, "_fetch_multi_with_rotation", fake)
 
 
 def _rows(monkeypatch, **kw):
     _stub_fetch(monkeypatch)
-    return de.collect_all_financials_batched(
-        ["k"], CORP, PERIODS, sleep=0, today=TODAY, **kw)
+    return asyncio.run(de.collect_all_financials_batched(
+        {"k": None}, ["k"], CORP, PERIODS, sleep=0, today=TODAY, **kw))
 
 
 def test_default_mode_stamps_today(monkeypatch):
