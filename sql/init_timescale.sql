@@ -243,6 +243,27 @@ CREATE TABLE IF NOT EXISTS news_article_tickers (
 );
 CREATE INDEX IF NOT EXISTS idx_nat_ticker ON news_article_tickers(ticker);
 
+-- DART 공시 히스토리(migrations/011 참고) — krx-news-client의 DartScraper가
+-- DART API의 stock_code를 그대로 티커로 주므로, news_articles와 달리 정규화
+-- 테이블 없이 ticker 컬럼 하나로 충분하다(공시 1건=발행사 1곳).
+CREATE TABLE IF NOT EXISTS disclosures (
+    id              TEXT NOT NULL,
+    source          TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    url             TEXT NOT NULL,
+    company         TEXT,
+    ticker          TEXT,
+    disclosure_type TEXT,
+    published_at    TIMESTAMPTZ NOT NULL,
+    collected_at    TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (id, published_at)
+);
+SELECT create_hypertable(
+    'disclosures', 'published_at',
+    if_not_exists => TRUE, chunk_time_interval => INTERVAL '30 days'
+);
+CREATE INDEX IF NOT EXISTS idx_disclosures_ticker ON disclosures(ticker);
+
 -- Recent rows stay row-oriented (frequent upserts); anything older than 30
 -- days is compressed columnar in the background — cuts disk use and speeds
 -- up the long-range scans backtest/screener code does.
@@ -261,6 +282,7 @@ ALTER TABLE sector_index SET (timescaledb.compress, timescaledb.compress_segment
 ALTER TABLE shares_outstanding_history SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
 ALTER TABLE consensus SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
 ALTER TABLE news_articles SET (timescaledb.compress, timescaledb.compress_segmentby = 'source');
+ALTER TABLE disclosures SET (timescaledb.compress, timescaledb.compress_segmentby = 'ticker');
 -- daily_bars_adjusted는 압축 대상에서 제외 — weekly_price_adjust가 매주 전체를
 -- upsert로 재작성하므로, 압축을 걸면 매주 오래된 청크를 압축해제→재압축하는
 -- 순환이 반복돼 이득 없이 CPU/IO만 낭비된다(주간 전체재생성 테이블 특성).
@@ -280,4 +302,5 @@ SELECT add_compression_policy('sector_index', INTERVAL '30 days');
 SELECT add_compression_policy('shares_outstanding_history', INTERVAL '30 days');
 SELECT add_compression_policy('consensus', INTERVAL '30 days');
 SELECT add_compression_policy('news_articles', INTERVAL '30 days');
+SELECT add_compression_policy('disclosures', INTERVAL '30 days');
 -- earnings는 일반 테이블이라 압축/보존 정책 대상 아님 (위 CREATE TABLE 주석 참고).

@@ -249,6 +249,24 @@ CREATE TABLE IF NOT EXISTS news_article_tickers (
     PRIMARY KEY (article_id, ticker)
 );
 CREATE INDEX IF NOT EXISTS idx_nat_ticker ON news_article_tickers(ticker);
+-- krx-news-client(pip)의 DartScraper.scrape_disclosures()로 수집한 DART 공시
+-- (migrations/011 참고). NewsArticle과 필드가 달라(회사·티커·공시유형) 별도 테이블로
+-- 둔다 — ticker가 DART API의 stock_code를 그대로 쓰므로 news_articles와 달리
+-- 정규화 없이 컬럼 하나로 충분하다(공시 1건=발행사 1곳).
+CREATE TABLE IF NOT EXISTS disclosures (
+    id              TEXT NOT NULL,
+    source          TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    url             TEXT NOT NULL,
+    company         TEXT,
+    ticker          TEXT,
+    disclosure_type TEXT,
+    published_at    TEXT NOT NULL,
+    collected_at    TEXT NOT NULL,
+    PRIMARY KEY (id)
+);
+CREATE INDEX IF NOT EXISTS idx_disclosures_ticker ON disclosures(ticker);
+CREATE INDEX IF NOT EXISTS idx_disclosures_published_at ON disclosures(published_at);
 """
 
 
@@ -729,4 +747,22 @@ def upsert_news_article_tickers(con: Any, records: list[tuple]) -> int:
         con, "news_article_tickers", _NEWS_ARTICLE_TICKERS_COLS, records,
         pk_cols=("article_id", "ticker"),
     )
+
+
+_DISCLOSURES_COLS = [
+    "id", "source", "title", "url", "company", "ticker",
+    "disclosure_type", "published_at", "collected_at",
+]
+
+
+def upsert_disclosures(con: Any, records: list[tuple]) -> int:
+    """Insert/replace disclosures rows (tuples ordered by _DISCLOSURES_COLS).
+
+    ``pk_cols`` includes ``published_at`` for the Postgres path — Timescale's
+    hypertable partition column (migrations/011) can't be excluded from the
+    upsert's conflict target. sqlite ignores ``pk_cols`` here and upserts on
+    the table's own ``id``-only PRIMARY KEY (see SCHEMA above), matching
+    :func:`upsert_news_articles`.
+    """
+    return _upsert(con, "disclosures", _DISCLOSURES_COLS, records, pk_cols=("id", "published_at"))
 
