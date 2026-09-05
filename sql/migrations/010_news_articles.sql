@@ -1,6 +1,6 @@
 -- news_articles: 트레이딩 판단(백테스팅+실매매, 추후 LLM 매매판단)용 뉴스 히스토리
 --
--- krx-news-client(pip, https://github.com/younghwan91/krx-news-rest-api)가 토스/
+-- krx-news-client(pip, https://github.com/younghwan91/krx-news-client)가 토스/
 -- 한경/더벨/DART 뉴스·공시를 정규화된 형태로 반환하고, collectors/news_toss.py가
 -- 그 결과를 여기 upsert한다. 지금까지 이 데이터는 별도 저장소(krx-news-rest-api)의
 -- Redis 캐시에만 있었는데, TTL이 걸려 있고 dedup도 깨져 있어 백테스팅용 히스토리로

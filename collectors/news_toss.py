@@ -1,6 +1,6 @@
 """Collect Toss Invest news into TimescaleDB via krx-news-client.
 
-krx-news-client(pip, https://github.com/younghwan91/krx-news-rest-api)는 서버가
+krx-news-client(pip, https://github.com/younghwan91/krx-news-client)는 서버가
 아니라 kiwoom-client와 같은 클라이언트 라이브러리다 — 호출할 때마다 토스 API에
 직접 요청해 정규화된 ``NewsArticle``을 돌려준다. 이 콜렉터는 그 결과를
 ``news_articles``/``news_article_tickers``에 ``id`` 자연키로 upsert한다

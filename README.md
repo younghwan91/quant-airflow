@@ -82,7 +82,7 @@ spare PC (Ubuntu, 이 저장소)                                 main PC
 | `daily_price_adjust` | 평일 16:55 | `daily_bars_adjusted` 재생성 |
 | `daily_consensus` | 평일 17:00 | 네이버 컨센서스(월요일만 전종목) |
 | `daily_sharadar` | 화~토 17:30 | 미국 벌크 스냅샷 → 스토어 재구축 → 검증 → 원자적 공개 |
-| `daily_news` | 평일 10:05 · 16:05 | 토스증권 뉴스([krx-news-client](https://github.com/younghwan91/krx-news-rest-api)) — 백테스팅+실매매용 |
+| `daily_news` | 평일 10:05 · 16:05 | 토스증권 뉴스([krx-news-client](https://github.com/younghwan91/krx-news-client)) — 백테스팅+실매매용 |
 | `earnings_backfill` | 일 10:00 | DART 실적 전체 이력 백필(resume) |
 | `weekly_history_backfill` | 일 11:00 | 업종지수·공매도·신용 히스토리 깊이 재수집 |
 | `weekly_listed_shares` | 화 10:10 | 키움 상장주식수 스냅샷 |
@@ -142,7 +142,7 @@ DB 를 읽기 전용으로 쓴다.
 |---|---|---|
 | 🇰🇷 한국 주식 | **[kiwoom-client](https://github.com/younghwan91/kiwoom-client)** | 키움증권 REST API Python 라이브러리 — 국내주식 엔드포인트 전수·실시간 WebSocket, sync + async (`pip install kiwoom-client`) |
 | 🇰🇷 한국 주식 | **[krx-fundamentals-api](https://github.com/younghwan91/krx-fundamentals-api)** | 국내 기업 펀더멘탈 REST API — 재무제표·투자지표·배당·종목 스크리닝 (DART + KRX + 네이버) |
-| 🇰🇷 한국 주식 | **[krx-news-rest-api](https://github.com/younghwan91/krx-news-rest-api)** | 한국 주식 뉴스·공시 수집 REST API (FastAPI + Redis) |
+| 🇰🇷 한국 주식 | **[krx-news-client](https://github.com/younghwan91/krx-news-client)** | 한국 주식 뉴스·공시 수집 클라이언트 라이브러리 (토스/한경/더벨/DART, `pip install krx-news-client`) |
 | 🇰🇷 한국 주식 | **[kr-quant](https://github.com/younghwan91/kr-quant)** | 코스피·코스닥 알파 리서치 — walk-forward·랜덤 음성대조·purged CV·Deflated Sharpe 를 CI 가드레일로 강제 |
 | 🇺🇸 미국 주식 | **[portfolio-research](https://github.com/younghwan91/portfolio-research)** | 미국주식 팩터 엔진 — point-in-time·생존편향 보정 데이터 위에서 walk-forward 를 Deflated Sharpe·PBO 로 게이팅 (+ ETF 전술배분 TAA — 9개 사전등록, 채택 0) |
 | 🇺🇸 미국 주식 | **[automated-stock-trading-systems](https://github.com/younghwan91/automated-stock-trading-systems)** | Bensdorp 의 7개 비상관 트레이딩 시스템 백테스터 (교육용 재구현) |

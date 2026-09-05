@@ -1,9 +1,7 @@
 psycopg2-binary>=2.9
 kiwoom-client>=0.2.1
-# krx-news-client는 아직 PyPI 미배포 — 배포 전까지는 GitHub main을 직접 가리킨다.
-# krx-news-rest-api의 main 브랜치가 라이브러리 재구성 커밋을 포함해야 이 줄이
-# 유효하다(패키지명 krx_news_client, 서버/Redis/APScheduler 없는 버전).
-krx-news-client @ git+https://github.com/younghwan91/krx-news-rest-api.git@main
+# krx-news-client는 아직 PyPI 미배포 — 배포되면 이 줄을 krx-news-client>=x.y로 바꾼다.
+krx-news-client @ git+https://github.com/younghwan91/krx-news-client.git@main
 pandas>=2.0
 
 # 미국(Sharadar) 파이프라인 — opt_portfolio.factor 를 /opt/opt-portfolio/src 에서

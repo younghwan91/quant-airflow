@@ -210,7 +210,7 @@ CREATE TABLE IF NOT EXISTS delisted_stocks (
     PRIMARY KEY (code)
 );
 
--- krx-news-client(pip, https://github.com/younghwan91/krx-news-rest-api)로 수집한
+-- krx-news-client(pip, https://github.com/younghwan91/krx-news-client)로 수집한
 -- 뉴스 히스토리 — 백테스팅+실매매, 추후 LLM 매매판단용(010 참고).
 -- id 는 krx-news-client의 make_article_id(source, url)이라 안정적이다 — 같은
 -- 기사가 여러 피드나 여러 크롤링 주기에서 다시 들어와도 upsert가 같은 행을 갱신한다.
