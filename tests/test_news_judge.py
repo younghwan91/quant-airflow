@@ -58,3 +58,10 @@ def test_parse_judgment_rejects_malformed_json():
 def test_parse_judgment_rejects_missing_field():
     response = '{"event_type": "기타", "sentiment_direction": 0}'
     assert parse_judgment(response) is None
+
+
+def test_parse_judgment_rejects_boolean_sentiment():
+    response = '{"event_type": "기타", "sentiment_direction": true, ' \
+               '"related_codes": [], "is_stale_repeat": false, ' \
+               '"first_seen_date": null, "price_impact_likely": false, "rationale": ""}'
+    assert parse_judgment(response) is None

@@ -97,7 +97,7 @@ def parse_judgment(llm_response: str) -> Judgment | None:
         return None
 
     sentiment = data["sentiment_direction"]
-    if sentiment not in (-1, 0, 1):
+    if not isinstance(sentiment, int) or isinstance(sentiment, bool) or sentiment not in (-1, 0, 1):
         return None
 
     related_codes = data["related_codes"]
