@@ -17,6 +17,7 @@ CLI:
 
 from __future__ import annotations
 
+import argparse
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -263,3 +264,32 @@ def collect(
     if rows:
         upsert_news_judgments(con, rows)
     return {"target": len(targets), "judged": judged, "api_failures": api_failures}
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="뉴스/공시 LLM 판단")
+    ap.add_argument("--db", default=None, help="DSN (postgresql://... 또는 sqlite 경로)")
+    ap.add_argument("--model-id", default="gemini-flash-placeholder",
+                    help="Step 0에서 확인한 실제 모델 문자열로 기본값 교체")
+    args = ap.parse_args()
+
+    import os
+    from .storage import connect
+
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        raise SystemExit("환경변수 GEMINI_API_KEY 필요")
+
+    con = connect(args.db)
+    generate = _gemini_generate(args.model_id, api_key)
+    stats = collect(con, generate, model_id=args.model_id)
+    con.close()
+    print(f"대상 {stats['target']}건 | 판단 {stats['judged']}건 | "
+          f"API실패 {stats['api_failures']}건", flush=True)
+    if stats["api_failures"] > 0:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

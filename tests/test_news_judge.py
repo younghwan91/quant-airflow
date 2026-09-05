@@ -152,3 +152,13 @@ def test_collect_skips_malformed_output_without_counting_as_api_failure(tmp_path
 
     stats = collect(con, lambda prompt: "JSON 아님", model_id="gemini-test", today="20260906")
     assert stats == {"target": 1, "judged": 0, "api_failures": 0}
+
+
+def test_main_requires_gemini_api_key(monkeypatch):
+    import pytest
+    from collectors import news_judge
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr("sys.argv", ["news_judge", "--db", ":memory:"])
+    with pytest.raises(SystemExit, match="GEMINI_API_KEY"):
+        news_judge.main()

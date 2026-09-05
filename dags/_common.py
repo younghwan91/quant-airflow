@@ -74,6 +74,13 @@ def dart_env() -> dict[str, str]:
     return env
 
 
+def gemini_env() -> dict[str, str]:
+    # Gemini 키도 다른 자격증명과 같이 Fernet Variables에만 둔다.
+    env = os.environ.copy()
+    env["GEMINI_API_KEY"] = Variable.get("GEMINI_API_KEY")
+    return env
+
+
 def sharadar_env() -> dict[str, str]:
     """Sharadar 직판 API 키 + opt_portfolio 를 import 할 PYTHONPATH.
 
