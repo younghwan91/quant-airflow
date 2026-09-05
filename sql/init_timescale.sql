@@ -210,6 +210,39 @@ CREATE TABLE IF NOT EXISTS delisted_stocks (
     PRIMARY KEY (code)
 );
 
+-- krx-news-client(pip, https://github.com/younghwan91/krx-news-rest-api)로 수집한
+-- 뉴스 히스토리 — 백테스팅+실매매, 추후 LLM 매매판단용(010 참고).
+-- id 는 krx-news-client의 make_article_id(source, url)이라 안정적이다 — 같은
+-- 기사가 여러 피드나 여러 크롤링 주기에서 다시 들어와도 upsert가 같은 행을 갱신한다.
+-- published_at 을 파티션 컬럼으로 쓰므로 PK 에 포함한다(Timescale 은 파티션 컬럼을
+-- 뺀 유니크 제약을 허용하지 않는다).
+CREATE TABLE IF NOT EXISTS news_articles (
+    id           TEXT NOT NULL,
+    source       TEXT NOT NULL,
+    category     TEXT,
+    title        TEXT NOT NULL,
+    url          TEXT NOT NULL,
+    content      TEXT,
+    summary      TEXT,
+    author       TEXT,
+    published_at TIMESTAMPTZ NOT NULL,
+    collected_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (id, published_at)
+);
+SELECT create_hypertable(
+    'news_articles', 'published_at',
+    if_not_exists => TRUE, chunk_time_interval => INTERVAL '30 days'
+);
+
+-- 관련 종목 — 정규화된 별도 테이블(종목별 "이 종목 뉴스 전체" 조회가 핵심 사용처;
+-- 배열 컬럼은 sqlite 쪽(collectors/storage.py)에서 못 쓰고 인덱싱도 안 된다).
+CREATE TABLE IF NOT EXISTS news_article_tickers (
+    article_id TEXT NOT NULL,
+    ticker     TEXT NOT NULL,
+    PRIMARY KEY (article_id, ticker)
+);
+CREATE INDEX IF NOT EXISTS idx_nat_ticker ON news_article_tickers(ticker);
+
 -- Recent rows stay row-oriented (frequent upserts); anything older than 30
 -- days is compressed columnar in the background — cuts disk use and speeds
 -- up the long-range scans backtest/screener code does.
@@ -227,6 +260,7 @@ ALTER TABLE credit_balance SET (timescaledb.compress, timescaledb.compress_segme
 ALTER TABLE sector_index SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
 ALTER TABLE shares_outstanding_history SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
 ALTER TABLE consensus SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
+ALTER TABLE news_articles SET (timescaledb.compress, timescaledb.compress_segmentby = 'source');
 -- daily_bars_adjusted는 압축 대상에서 제외 — weekly_price_adjust가 매주 전체를
 -- upsert로 재작성하므로, 압축을 걸면 매주 오래된 청크를 압축해제→재압축하는
 -- 순환이 반복돼 이득 없이 CPU/IO만 낭비된다(주간 전체재생성 테이블 특성).
@@ -245,4 +279,5 @@ SELECT add_compression_policy('credit_balance', INTERVAL '30 days');
 SELECT add_compression_policy('sector_index', INTERVAL '30 days');
 SELECT add_compression_policy('shares_outstanding_history', INTERVAL '30 days');
 SELECT add_compression_policy('consensus', INTERVAL '30 days');
+SELECT add_compression_policy('news_articles', INTERVAL '30 days');
 -- earnings는 일반 테이블이라 압축/보존 정책 대상 아님 (위 CREATE TABLE 주석 참고).

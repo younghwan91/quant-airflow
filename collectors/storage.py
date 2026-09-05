@@ -224,6 +224,31 @@ CREATE TABLE IF NOT EXISTS delisted_stocks (
     naver_sd_checked TEXT,  -- 네이버 수급을 조회했으나 빈 응답이던 날(NULL=미확인)
     PRIMARY KEY (code)
 );
+-- krx-news-client(pip)로 수집한 뉴스 히스토리 — 백테스팅+실매매, 추후 LLM
+-- 매매판단용(migrations/010 참고). id 는 make_article_id(source, url)라 안정적이라
+-- 같은 기사가 여러 피드/크롤링 주기에서 다시 들어와도 upsert가 같은 행을 갱신한다.
+-- Postgres 쪽(init_timescale.sql)은 published_at 이 하이퍼테이블 파티션 컬럼이라
+-- PK 에 포함하지만, sqlite 는 하이퍼테이블 제약이 없으므로 id 하나만 PK로 둔다.
+CREATE TABLE IF NOT EXISTS news_articles (
+    id           TEXT NOT NULL,
+    source       TEXT NOT NULL,
+    category     TEXT,
+    title        TEXT NOT NULL,
+    url          TEXT NOT NULL,
+    content      TEXT,
+    summary      TEXT,
+    author       TEXT,
+    published_at TEXT NOT NULL,
+    collected_at TEXT NOT NULL,
+    PRIMARY KEY (id)
+);
+CREATE INDEX IF NOT EXISTS idx_news_articles_published_at ON news_articles(published_at);
+CREATE TABLE IF NOT EXISTS news_article_tickers (
+    article_id TEXT NOT NULL,
+    ticker     TEXT NOT NULL,
+    PRIMARY KEY (article_id, ticker)
+);
+CREATE INDEX IF NOT EXISTS idx_nat_ticker ON news_article_tickers(ticker);
 """
 
 
@@ -672,4 +697,36 @@ _DELISTED_STOCKS_COLS = ["code", "name", "market", "last_trade_date"]
 def upsert_delisted_stocks(con: Any, records: list[tuple]) -> int:
     """Insert/replace delisted_stocks rows (tuples ordered by _DELISTED_STOCKS_COLS)."""
     return _upsert(con, "delisted_stocks", _DELISTED_STOCKS_COLS, records, pk_cols=("code",))
+
+
+_NEWS_ARTICLE_COLS = [
+    "id", "source", "category", "title", "url",
+    "content", "summary", "author", "published_at", "collected_at",
+]
+
+
+def upsert_news_articles(con: Any, records: list[tuple]) -> int:
+    """Insert/replace news_articles rows (tuples ordered by _NEWS_ARTICLE_COLS).
+
+    ``id`` (source + url hash) is globally unique already, but Postgres side
+    (init_timescale.sql) needs ``published_at`` in the PK too — it's the
+    hypertable partition column and Timescale rejects a unique constraint that
+    excludes it. Passing both here keeps sqlite/Postgres behavior identical:
+    the same article re-scraped (same id) always updates the same row instead
+    of piling up duplicates, which is the bug this table exists to avoid
+    (krx-news-rest-api's Redis cache used the full article JSON as the dedup
+    key, so ``collected_at`` alone made every re-crawl look like a new row).
+    """
+    return _upsert(con, "news_articles", _NEWS_ARTICLE_COLS, records, pk_cols=("id", "published_at"))
+
+
+_NEWS_ARTICLE_TICKERS_COLS = ["article_id", "ticker"]
+
+
+def upsert_news_article_tickers(con: Any, records: list[tuple]) -> int:
+    """Insert/replace news_article_tickers rows (tuples ordered by (article_id, ticker))."""
+    return _upsert(
+        con, "news_article_tickers", _NEWS_ARTICLE_TICKERS_COLS, records,
+        pk_cols=("article_id", "ticker"),
+    )
 

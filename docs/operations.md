@@ -59,6 +59,7 @@ collectors/            # 수집 로직 자체 보유 (kr_quant 런타임 의존 
   kiwoom_cli.py        #   전종목 스윕 콜렉터 공통 CLI(인자·세션·유니버스·배너)
   proc.py              #   자식 프로세스 스트리밍 + 줄 단위 시크릿 마스킹(정본)
   {daily_bars,supply_demand,short_credit,...}.py   # 소스별 수집기
+  news_toss.py            #   토스 뉴스(krx-news-client) → news_articles/news_article_tickers
   naver_delisted_bars.py  #   폐지 종목 과거 일봉(키움은 빈 응답을 '성공'으로 준다)
   dart_shares.py          #   상장주식수(DART). 기본은 폐지 종목, `--listed` 는 상장 종목 과거 백필
   sharadar_bulk.py        #   미국 벌크 스냅샷 동기화, sharadar_build.py 가 스토어 재구축

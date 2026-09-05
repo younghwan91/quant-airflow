@@ -17,6 +17,13 @@
 | `sector_index` | 업종지수 OHLCV |
 | `shares_outstanding_history` | 상장주식수 이력(point-in-time 시총 계산용). `source` 가 kiwoom(주간 스냅샷)/krx(중단)/dart(과거 백필)를 구분. 키움은 현재 스냅샷만 주므로 **2016~2025 구간은 DART `--listed` 백필로 채운다** |
 | `consensus` | 네이버 애널리스트 컨센서스(목표가·투자의견·EPS) |
+| `news_articles` | krx-news-client(pip)로 수집한 뉴스(현재 토스만). PK `(id, published_at)` — `id`=`make_article_id(source,url)`라 재크롤링해도 같은 행을 갱신한다. 백테스팅+실매매, 추후 LLM 매매판단용 |
+
+## 관계형 (일반 테이블, 시계열 아님)
+
+| 테이블 | 내용 |
+|---|---|
+| `news_article_tickers` | `news_articles` 관련 종목 — `(article_id, ticker)` 정규화 테이블. 종목별 뉴스 전체 조회용 |
 
 ## 펀더멘털·마스터 (일반 테이블)
 
@@ -66,6 +73,7 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 | `007_delisted_backfill_markers` | `delisted_stocks.dart_checked`·`naver_sd_checked` — 004 와 같은 병 |
 | `008_compression_and_lookahead_cleanup` | 압축 경계 7일 → 30일 · `daily_bars_adjusted` 압축 영구 해제 · `shares_outstanding_history` 의 lookahead 행 삭제 |
 | `009_backfill_markers` | 004·007 의 마커 컬럼을 `backfill_markers(code, source)` 테이블로 옮긴다. 마커가 `delisted_stocks` 에 있으면 **상장 종목에는 쓸 수가 없었다** — 소스가 늘 때마다 컬럼을 붙이는 대신 자리를 바꿨다 |
+| `010_news_articles` | `news_articles`/`news_article_tickers` 신설 — krx-news-client(토스) 뉴스를 백테스팅+실매매용으로 영속 저장. `id` 자연키 upsert라 krx-news-rest-api 옛 Redis 캐시(ZSET member=article JSON)가 갖던 dedup 버그가 없다 |
 
 > ⚠️ 001 은 코드가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이 `daily_earnings` 가
 > 초록불이었던 건 비수기라 `rows=0` 이어서 DB 를 건드리기 전에 빠져나갔기 때문이지,
