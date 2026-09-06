@@ -20,7 +20,7 @@ import sys
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import DEFAULT_TASK_KW, dart_env, gemini_env, run_collector, timescale_dsn
+from _common import DEFAULT_TASK_KW, claude_env, dart_env, run_collector, timescale_dsn
 
 
 @dag(
@@ -52,7 +52,7 @@ def daily_news():
         run_collector([
             sys.executable, "-m", "collectors.news_judge",
             "--db", timescale_dsn(),
-        ], env=gemini_env())
+        ], env=claude_env())
 
     [collect_toss_news(), collect_dart_disclosures()] >> judge_news()
 

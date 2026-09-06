@@ -46,6 +46,20 @@ def test_parse_judgment_valid_response():
     )
 
 
+def test_parse_judgment_strips_markdown_code_fence():
+    # Claude Haiku 4.5는 "JSON만, 다른 텍스트 없이"라고 명시해도 실측으로
+    # ```json 펜스를 씌워 응답한다(2026-09-06 스모크테스트) — 이걸 못 벗기면
+    # Gemini→Claude 전환 후 모든 판단이 parse_failures로 잡힌다.
+    response = ('```json\n{"event_type": "실적", "sentiment_direction": 1, '
+                '"related_codes": [], "is_stale_repeat": false, '
+                '"first_seen_date": null, "price_impact_likely": true, '
+                '"rationale": "테스트", "confidence": 80}\n```')
+    j = parse_judgment(response)
+    assert j is not None
+    assert j.event_type == "실적"
+    assert j.confidence == 80
+
+
 def test_parse_judgment_rejects_unknown_event_type():
     response = '{"event_type": "존재안함", "sentiment_direction": 0, ' \
                '"related_codes": [], "is_stale_repeat": false, ' \
@@ -128,7 +142,7 @@ def test_collect_judges_new_disclosure_and_upserts(tmp_path):
                 '"first_seen_date": null, "price_impact_likely": false, '
                 '"rationale": "테스트", "confidence": 60}')
 
-    stats = collect(con, fake_generate, model_id="gemini-test", today="20260906")
+    stats = collect(con, fake_generate, model_id="claude-test", today="20260906")
     assert stats == {"target": 1, "judged": 1, "parse_failures": 0, "api_failures": 0}
 
     rows = con.execute("SELECT ticker, event_type FROM news_judgments").fetchall()
@@ -141,7 +155,7 @@ def test_collect_skips_already_judged_at_same_prompt_version(tmp_path):
     _seed_disclosure(con)
     upsert_news_judgments(con, [(
         "disclosure", "dart:x", "005930", "기타", 0, "[]", 0, None, False,
-        "기존 판단", "gemini-test", "v1", "20260906", 60, "2026-09-06T00:00:00+00:00",
+        "기존 판단", "claude-test", "v1", "20260906", 60, "2026-09-06T00:00:00+00:00",
     )])
 
     calls = []
@@ -149,7 +163,7 @@ def test_collect_skips_already_judged_at_same_prompt_version(tmp_path):
         calls.append(prompt)
         return "안 불려야 함"
 
-    stats = collect(con, fake_generate, model_id="gemini-test", today="20260906")
+    stats = collect(con, fake_generate, model_id="claude-test", today="20260906")
     assert calls == []
     assert stats == {"target": 0, "judged": 0, "parse_failures": 0, "api_failures": 0}
 
@@ -161,7 +175,7 @@ def test_collect_counts_api_failures_without_writing_a_row(tmp_path):
     def failing_generate(prompt: str) -> str:
         raise RuntimeError("rate limited")
 
-    stats = collect(con, failing_generate, model_id="gemini-test", today="20260906")
+    stats = collect(con, failing_generate, model_id="claude-test", today="20260906")
     assert stats == {"target": 1, "judged": 0, "parse_failures": 0, "api_failures": 1}
     assert con.execute("SELECT count(*) AS n FROM news_judgments").fetchone()["n"] == 0
 
@@ -170,7 +184,7 @@ def test_collect_skips_malformed_output_without_counting_as_api_failure(tmp_path
     con = connect(tmp_path / "t.db")
     _seed_disclosure(con)
 
-    stats = collect(con, lambda prompt: "JSON 아님", model_id="gemini-test", today="20260906")
+    stats = collect(con, lambda prompt: "JSON 아님", model_id="claude-test", today="20260906")
     assert stats == {"target": 1, "judged": 0, "parse_failures": 1, "api_failures": 0}
 
 
@@ -228,7 +242,7 @@ def test_collect_never_judges_old_disclosure_even_without_prior_judgment(tmp_pat
         calls.append(prompt)
         return "안 불려야 함"
 
-    stats = collect(con, fake_generate, model_id="gemini-test", today="20260906")
+    stats = collect(con, fake_generate, model_id="claude-test", today="20260906")
     assert calls == []
     assert stats == {"target": 0, "judged": 0, "parse_failures": 0, "api_failures": 0}
     assert con.execute("SELECT count(*) AS n FROM news_judgments").fetchone()["n"] == 0
@@ -251,7 +265,7 @@ def test_collect_writes_each_judgment_immediately_surviving_a_later_failure(tmp_
                      '"rationale": "첫 건", "confidence": 55}')
         raise RuntimeError("rate limited")
 
-    stats = collect(con, flaky_generate, model_id="gemini-test", today="20260906")
+    stats = collect(con, flaky_generate, model_id="claude-test", today="20260906")
     assert stats["judged"] == 1
     assert stats["api_failures"] == 1
 
@@ -259,11 +273,11 @@ def test_collect_writes_each_judgment_immediately_surviving_a_later_failure(tmp_
     assert {r["ticker"] for r in rows} == {"005930"}
 
 
-def test_main_requires_gemini_api_key(monkeypatch):
+def test_main_requires_anthropic_api_key(monkeypatch):
     import pytest
     from collectors import news_judge
 
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr("sys.argv", ["news_judge", "--db", ":memory:"])
-    with pytest.raises(SystemExit, match="GEMINI_API_KEY"):
+    with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY"):
         news_judge.main()

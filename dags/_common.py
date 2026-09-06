@@ -74,10 +74,12 @@ def dart_env() -> dict[str, str]:
     return env
 
 
-def gemini_env() -> dict[str, str]:
-    # Gemini 키도 다른 자격증명과 같이 Fernet Variables에만 둔다.
+def claude_env() -> dict[str, str]:
+    # Claude 키도 다른 자격증명과 같이 Fernet Variables에만 둔다.
+    # news_judge.py가 Gemini에서 전환(2026-09-06) — 근거는 collectors/news_judge.py
+    # 의 _claude_generate() docstring.
     env = os.environ.copy()
-    env["GEMINI_API_KEY"] = Variable.get("GEMINI_API_KEY")
+    env["ANTHROPIC_API_KEY"] = Variable.get("ANTHROPIC_API_KEY")
     return env
 
 
