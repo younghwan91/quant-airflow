@@ -18,7 +18,7 @@ confidence/judged_at 두 필드는 scalp-it 세션이 2026-09-06 세션간 문�
 
 순수 함수(build_prompt/parse_judgment)와 네트워크 I/O(judge_item)를
 분리하는 이 레포의 관례(dart_earnings.py)를 따른다 — 전자는 이 파일
-단독으로, 후자는 실제 Gemini 호출을 mock한 테스트로 검증한다.
+단독으로, 후자는 실제 Claude 호출을 mock한 테스트로 검증한다.
 
 CLI:
     python -m collectors.news_judge --db <DSN>
@@ -99,6 +99,25 @@ def build_prompt(item: dict, prior_context: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _strip_code_fence(text: str) -> str:
+    """마크다운 코드펜스(```json ... ``` / ``` ... ```)를 벗겨낸다.
+
+    Claude Haiku 4.5가 "JSON만, 다른 텍스트 없이"라고 명시해도 실측으로
+    ```json 펜스를 씌워 응답하는 걸 확인했다(2026-09-06, Gemini→Claude
+    전환 스모크테스트) — 이걸 안 벗기면 모든 판단이 parse_failures로
+    잡힌다. 문자열이 아니면 그대로 반환해 아래 json.loads가 기존과
+    동일하게 TypeError를 내게 둔다(이 함수가 새 실패 모드를 만들지
+    않는다).
+    """
+    if not isinstance(text, str):
+        return text
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = stripped.removeprefix("```json").removeprefix("```").strip()
+        stripped = stripped.removesuffix("```").strip()
+    return stripped
+
+
 def parse_judgment(llm_response: str) -> Judgment | None:
     """LLM 응답 텍스트 → Judgment, 또는 파싱/검증 실패 시 None.
 
@@ -106,7 +125,7 @@ def parse_judgment(llm_response: str) -> Judgment | None:
     예상된 잡음이고, 호출부(collect())가 이 항목만 스킵하고 넘어가야 한다.
     """
     try:
-        data = json.loads(llm_response)
+        data = json.loads(_strip_code_fence(llm_response))
     except (json.JSONDecodeError, TypeError):
         return None
 
@@ -170,33 +189,46 @@ def judge_item(
     generate: Callable[[str], str], item: dict, prior_context: list[dict],
 ) -> Judgment | None:
     """프롬프트 생성 → LLM 호출(generate) → 파싱. generate는 텍스트→텍스트 함수라
-    Gemini든 다른 제공사든 이 하나로 국한된다(model_id는 호출부가 별도로 남긴다)."""
+    제공사가 뭐든(Claude든 다른 곳이든) 이 하나로 국한된다(model_id는 호출부가
+    별도로 남긴다)."""
     prompt = build_prompt(item, prior_context)
     response = generate(prompt)
     return parse_judgment(response)
 
 
-def _gemini_generate(model_id: str, api_key: str) -> Callable[[str], str]:
-    """실제 Gemini API를 부르는 generate 함수를 만든다.
+def _claude_generate(model_id: str, api_key: str) -> Callable[[str], str]:
+    """실제 Claude API를 부르는 generate 함수를 만든다.
 
-    SDK: ``google-genai`` (PyPI, 2026-09 기준 최신 2.22.0) — 구
-    ``google-generativeai`` 는 2025-11-30부로 deprecated 됐다
-    (https://ai.google.dev/gemini-api/docs/libraries). 공식 사용 예
-    (https://ai.google.dev/gemini-api/docs/text-generation ,
-    https://googleapis.github.io/python-genai/):
+    Gemini(2.5 Flash)에서 전환(2026-09-06) — scalp-it 세션 요청으로 가격·
+    효과성을 조사한 결과, 이 워크로드(하루 수십~수백 건) 규모에선 제공사간
+    토큰 단가 차이가 월 몇 달러 수준이라 무의미하고, scalp-it이 요구한
+    "오탐 최소화 우선"에는 구조화 출력 신뢰도가 더 중요하다는 결론이었다.
+    모델 교체는 model_id가 행마다 남으니 설정값 변경이지 재설계가 아니다
+    (docs/superpowers/specs/2026-09-06-news-llm-judgments-design.md).
 
-        from google import genai
-        client = genai.Client(api_key=...)
-        response = client.models.generate_content(model=..., contents=...)
-        response.text
+    SDK: 공식 ``anthropic`` 패키지(PyPI, 2026-09 기준 1.x). 공식 사용 예
+    (https://github.com/anthropics/anthropic-sdk-python):
+
+        import anthropic
+        client = anthropic.Anthropic(api_key=...)
+        response = client.messages.create(model=..., max_tokens=..., messages=[...])
+        response.content[0].text
+
+    Haiku 4.5는 기본적으로 thinking을 안 켜므로(claude-api 스킬 참고) 이
+    분류 태스크에선 thinking 파라미터를 아예 생략한다 — 응답이 JSON 하나뿐이라
+    추론 과정을 노출할 이유가 없다. max_tokens=512는 rationale(한두 문장) +
+    related_codes 배열을 포함한 JSON 응답에 여유 있게 맞춘 값이다.
     """
-    from google import genai  # noqa: PLC0415 — optional dep, only needed for this path
+    import anthropic  # noqa: PLC0415 — optional dep, only needed for this path
 
-    client = genai.Client(api_key=api_key)
+    client = anthropic.Anthropic(api_key=api_key)
 
     def generate(prompt: str) -> str:
-        response = client.models.generate_content(model=model_id, contents=prompt)
-        return response.text
+        response = client.messages.create(
+            model=model_id, max_tokens=512,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return next(block.text for block in response.content if block.type == "text")
 
     return generate
 
@@ -331,19 +363,19 @@ def collect(
 def main() -> int:
     ap = argparse.ArgumentParser(description="뉴스/공시 LLM 판단")
     ap.add_argument("--db", default=None, help="DSN (postgresql://... 또는 sqlite 경로)")
-    ap.add_argument("--model-id", default="gemini-2.5-flash",
-                    help="Gemini 모델 ID (google-genai SDK, client.models.generate_content)")
+    ap.add_argument("--model-id", default="claude-haiku-4-5",
+                    help="Claude 모델 ID (anthropic SDK, client.messages.create)")
     args = ap.parse_args()
 
     import os
     from .storage import connect
 
-    api_key = os.environ.get("GEMINI_API_KEY", "")
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
-        raise SystemExit("환경변수 GEMINI_API_KEY 필요")
+        raise SystemExit("환경변수 ANTHROPIC_API_KEY 필요")
 
     con = connect(args.db)
-    generate = _gemini_generate(args.model_id, api_key)
+    generate = _claude_generate(args.model_id, api_key)
     stats = collect(con, generate, model_id=args.model_id)
     con.close()
     print(f"대상 {stats['target']}건 | 판단 {stats['judged']}건 | "

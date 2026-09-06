@@ -5,9 +5,11 @@ krx-news-client @ git+https://github.com/younghwan91/krx-news-client.git@main
 # krx-fundamentals-client도 아직 PyPI 미배포 — dart_earnings.py가 DartScraper를 쓴다.
 krx-fundamentals-client @ git+https://github.com/younghwan91/krx-fundamentals-client.git@main
 pandas>=2.0
-# news_judge.py의 Gemini 연동 — google-generativeai는 2025-11-30부로 deprecated
-# (https://ai.google.dev/gemini-api/docs/libraries), google-genai가 후속 GA SDK.
-google-genai>=2.22.0
+# news_judge.py의 LLM 연동 — Claude Haiku 4.5 (공식 anthropic SDK).
+# Gemini에서 전환(2026-09-06, scalp-it 세션 요청으로 가격/효과성 조사 후 결정) —
+# 이 워크로드(하루 수십~수백 건) 규모에서는 토큰 단가 차이가 월 몇 달러 수준이라
+# 무의미하고, 오탐 최소화가 우선순위라 구조화 출력 신뢰도를 기준으로 골랐다.
+anthropic>=1.4.0
 
 # 미국(Sharadar) 파이프라인 — opt_portfolio.factor 를 /opt/opt-portfolio/src 에서
 # import 해 돌리므로(daily_sharadar), 그쪽 런타임 의존을 여기에 갖춰야 한다.
