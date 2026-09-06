@@ -2,11 +2,11 @@ from collectors.news_judge import EVENT_TYPES, Judgment, build_prompt, collect, 
 from collectors.storage import connect, upsert_disclosures, upsert_news_judgments
 
 
-def _seed_disclosure(con, disclosure_id="dart:x", ticker="005930"):
+def _seed_disclosure(con, disclosure_id="dart:x", ticker="005930", published_at="2026-09-06T08:00:00"):
     upsert_disclosures(con, [(
         disclosure_id, "dart", "제목", "https://dart.fss.or.kr/x",
         "삼성전자", ticker, "주요사항보고서",
-        "2026-09-06T08:00:00", "2026-09-06T08:45:00",
+        published_at, "2026-09-06T08:45:00",
     )])
 
 
@@ -109,7 +109,7 @@ def test_collect_judges_new_disclosure_and_upserts(tmp_path):
                 '"rationale": "테스트"}')
 
     stats = collect(con, fake_generate, model_id="gemini-test", today="20260906")
-    assert stats == {"target": 1, "judged": 1, "api_failures": 0}
+    assert stats == {"target": 1, "judged": 1, "parse_failures": 0, "api_failures": 0}
 
     rows = con.execute("SELECT ticker, event_type FROM news_judgments").fetchall()
     assert len(rows) == 1
@@ -131,7 +131,7 @@ def test_collect_skips_already_judged_at_same_prompt_version(tmp_path):
 
     stats = collect(con, fake_generate, model_id="gemini-test", today="20260906")
     assert calls == []
-    assert stats == {"target": 0, "judged": 0, "api_failures": 0}
+    assert stats == {"target": 0, "judged": 0, "parse_failures": 0, "api_failures": 0}
 
 
 def test_collect_counts_api_failures_without_writing_a_row(tmp_path):
@@ -142,7 +142,7 @@ def test_collect_counts_api_failures_without_writing_a_row(tmp_path):
         raise RuntimeError("rate limited")
 
     stats = collect(con, failing_generate, model_id="gemini-test", today="20260906")
-    assert stats == {"target": 1, "judged": 0, "api_failures": 1}
+    assert stats == {"target": 1, "judged": 0, "parse_failures": 0, "api_failures": 1}
     assert con.execute("SELECT count(*) AS n FROM news_judgments").fetchone()["n"] == 0
 
 
@@ -151,7 +151,92 @@ def test_collect_skips_malformed_output_without_counting_as_api_failure(tmp_path
     _seed_disclosure(con)
 
     stats = collect(con, lambda prompt: "JSON 아님", model_id="gemini-test", today="20260906")
-    assert stats == {"target": 1, "judged": 0, "api_failures": 0}
+    assert stats == {"target": 1, "judged": 0, "parse_failures": 1, "api_failures": 0}
+
+
+def test_parse_judgment_rejects_non_yyyymmdd_first_seen_date():
+    response = ('{"event_type": "기타", "sentiment_direction": 0, '
+                '"related_codes": [], "is_stale_repeat": true, '
+                '"first_seen_date": "2026년 9월", "price_impact_likely": false, '
+                '"rationale": ""}')
+    assert parse_judgment(response) is None
+
+
+def test_parse_judgment_rejects_invalid_calendar_date_first_seen():
+    # 8자리 숫자지만 달력에 없는 날짜(13월) — strptime이 ValueError를 던진다.
+    response = ('{"event_type": "기타", "sentiment_direction": 0, '
+                '"related_codes": [], "is_stale_repeat": true, '
+                '"first_seen_date": "20261301", "price_impact_likely": false, '
+                '"rationale": ""}')
+    assert parse_judgment(response) is None
+
+
+def test_parse_judgment_accepts_valid_yyyymmdd_first_seen_date():
+    response = ('{"event_type": "기타", "sentiment_direction": 0, '
+                '"related_codes": [], "is_stale_repeat": true, '
+                '"first_seen_date": "20260901", "price_impact_likely": false, '
+                '"rationale": ""}')
+    j = parse_judgment(response)
+    assert j is not None
+    assert j.first_seen_date == "20260901"
+
+
+def test_pending_items_excludes_disclosures_published_before_since(tmp_path):
+    from collectors.news_judge import _pending_items
+
+    con = connect(tmp_path / "t.db")
+    _seed_disclosure(con, disclosure_id="dart:old", ticker="005930",
+                      published_at="2026-08-01T08:00:00")
+    _seed_disclosure(con, disclosure_id="dart:new", ticker="000660",
+                      published_at="2026-09-06T08:00:00")
+
+    items = _pending_items(con, since="2026-09-01")
+    ids = {source_id for _, source_id, _ in items}
+    assert ids == {"dart:new"}
+
+
+def test_collect_never_judges_old_disclosure_even_without_prior_judgment(tmp_path):
+    # C2: 백필 가드. since 하한 없이 그냥 _pending_items(con)만 부르던 예전
+    # 버그라면 이 오래된 공시(발행 2026-08-01)도 오늘(2026-09-06) 판단
+    # 대상에 잡혀 knowledge_date=오늘로 영구 기록됐을 것이다.
+    con = connect(tmp_path / "t.db")
+    _seed_disclosure(con, disclosure_id="dart:old", ticker="005930",
+                      published_at="2026-08-01T08:00:00")
+
+    calls = []
+    def fake_generate(prompt: str) -> str:
+        calls.append(prompt)
+        return "안 불려야 함"
+
+    stats = collect(con, fake_generate, model_id="gemini-test", today="20260906")
+    assert calls == []
+    assert stats == {"target": 0, "judged": 0, "parse_failures": 0, "api_failures": 0}
+    assert con.execute("SELECT count(*) AS n FROM news_judgments").fetchone()["n"] == 0
+
+
+def test_collect_writes_each_judgment_immediately_surviving_a_later_failure(tmp_path):
+    # I2: 두 번째 항목에서 generate가 죽어도 첫 번째 항목의 판단은 이미
+    # DB에 남아 있어야 한다(끝에 몰아쓰면 이 테스트가 실패한다).
+    con = connect(tmp_path / "t.db")
+    _seed_disclosure(con, disclosure_id="dart:a", ticker="005930")
+    _seed_disclosure(con, disclosure_id="dart:b", ticker="000660")
+
+    call_count = {"n": 0}
+    def flaky_generate(prompt: str) -> str:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return ('{"event_type": "기타", "sentiment_direction": 0, '
+                     '"related_codes": [], "is_stale_repeat": false, '
+                     '"first_seen_date": null, "price_impact_likely": false, '
+                     '"rationale": "첫 건"}')
+        raise RuntimeError("rate limited")
+
+    stats = collect(con, flaky_generate, model_id="gemini-test", today="20260906")
+    assert stats["judged"] == 1
+    assert stats["api_failures"] == 1
+
+    rows = con.execute("SELECT ticker FROM news_judgments").fetchall()
+    assert {r["ticker"] for r in rows} == {"005930"}
 
 
 def test_main_requires_gemini_api_key(monkeypatch):

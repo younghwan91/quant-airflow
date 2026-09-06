@@ -36,6 +36,12 @@ PROMPT_VERSION = "v1"
 #: 유효) v1은 단일값으로 시작 — 실측 후 유형별로 나눌지 결정한다.
 STALE_LOOKBACK_DAYS = 7
 
+#: v1은 새로 들어오는 항목만 판단한다(스펙 "백필 범위" — 과거분을 오늘
+#: 날짜로 판단하면 knowledge_date에 lookahead가 섞인다, CLAUDE.md §3).
+#: 그렇다고 정확히 "오늘"만 보면 직전 실행이 놓친 항목(수집 지연·재시작)을
+#: 영영 못 줍는다 — 며칠치 여유만 둔다(전체 이력 대비 무시할 만한 폭).
+PENDING_LOOKBACK_DAYS = 3
+
 
 @dataclass(frozen=True)
 class Judgment:
@@ -114,8 +120,17 @@ def parse_judgment(llm_response: str) -> Judgment | None:
         return None
 
     first_seen = data["first_seen_date"]
-    if first_seen is not None and not isinstance(first_seen, str):
-        return None
+    if first_seen is not None:
+        # 정확히 YYYYMMDD 8자리 숫자만 받는다 — strptime만으로는 "%Y"가
+        # 자릿수 가변이라 "2026090" 같은 값도 통과할 수 있다. 여기를
+        # 통과 못 하면 Postgres DATE 컬럼(news_judgments.first_seen_date)에
+        # 못 들어갈 값이니 판단 전체를 버린다(행 일부만 쓰지 않는다).
+        if not (isinstance(first_seen, str) and len(first_seen) == 8 and first_seen.isdigit()):
+            return None
+        try:
+            datetime.strptime(first_seen, "%Y%m%d")
+        except ValueError:
+            return None
 
     price_impact = data["price_impact_likely"]
     if not isinstance(price_impact, bool):
@@ -168,8 +183,16 @@ def _gemini_generate(model_id: str, api_key: str) -> Callable[[str], str]:
     return generate
 
 
-def _pending_items(con: Any) -> list[tuple[str, str, dict]]:
+def _pending_items(con: Any, since: str) -> list[tuple[str, str, dict]]:
     """(source_type, source_id, item-dict) — 아직 v1 판단이 없는 것만.
+
+    ``since``는 ISO 날짜(``YYYY-MM-DD``, ``published_at``이 저장된
+    ``datetime.isoformat()`` 형식과 같은 자릿수 규칙 — news_dart.py/news_toss.py의
+    ``d.published_at.isoformat()``)로, ``published_at >= since`` 문자열 비교가
+    올바르게 동작하려면 두 값이 같은 ISO 8601 자리수 순서를 따라야 한다(bare
+    ``YYYYMMDD``는 대시가 없어 문자열 비교가 어긋난다). 이 하한이 없으면 첫
+    배포 때 기존 히스토리 전체가 오늘 날짜의 knowledge_date로 영구 기록된다
+    (스펙 "백필 범위", CLAUDE.md §3 lookahead 오염과 같은 부류).
 
     ``fetchall()``(``.storage``)을 쓴다 — sqlite3.Row는 이름 접근이 되지만
     psycopg2 기본 커서는 튜플만 돌려주므로(이 파일의 다른 콜렉터, 예:
@@ -186,10 +209,10 @@ def _pending_items(con: Any) -> list[tuple[str, str, dict]]:
     out: list[tuple[str, str, dict]] = []
     rows = fetchall(con,
         "SELECT d.id, d.ticker, d.title, d.company, d.published_at FROM disclosures d "
-        "WHERE d.ticker IS NOT NULL AND NOT EXISTS ("
+        "WHERE d.ticker IS NOT NULL AND d.published_at >= ? AND NOT EXISTS ("
         "  SELECT 1 FROM news_judgments j WHERE j.source_type='disclosure' "
         "  AND j.source_id=d.id AND j.ticker=d.ticker AND j.prompt_version=?)",
-        (PROMPT_VERSION,))
+        (since, PROMPT_VERSION))
     for source_id, ticker, title, company, published_at in rows:
         # disclosures 테이블엔 본문이 없다(news_dart.py가 구조화 필드만 저장) —
         # title이 실제 내용이고, company/disclosure_type은 보조 맥락이다.
@@ -202,10 +225,10 @@ def _pending_items(con: Any) -> list[tuple[str, str, dict]]:
     rows = fetchall(con,
         "SELECT a.id, t.ticker, a.title, a.summary, a.published_at "
         "FROM news_articles a JOIN news_article_tickers t ON t.article_id = a.id "
-        "WHERE LENGTH(t.ticker) = 6 AND NOT EXISTS ("
+        "WHERE LENGTH(t.ticker) = 6 AND a.published_at >= ? AND NOT EXISTS ("
         "  SELECT 1 FROM news_judgments j WHERE j.source_type='news' "
         "  AND j.source_id=a.id AND j.ticker=t.ticker AND j.prompt_version=?)",
-        (PROMPT_VERSION,))
+        (since, PROMPT_VERSION))
     for source_id, ticker, title, summary, published_at in rows:
         out.append(("news", source_id, {
             "ticker": ticker, "title": title, "content": summary or "",
@@ -234,43 +257,60 @@ def collect(
     con: Any, generate: Callable[[str], str], *, model_id: str,
     today: str | None = None,
 ) -> dict[str, int]:
-    """재개 가능한 판단 루프. 반환: {"target", "judged", "api_failures"}.
+    """재개 가능한 판단 루프. 반환: {"target", "judged", "parse_failures", "api_failures"}.
 
     ``today``는 이 레포 관례대로 압축형 ``YYYYMMDD``(예: ``dart_earnings.py``의
     ``today = datetime.now().strftime("%Y%m%d")``) — DATE 컬럼(Postgres)도
     이 포맷을 그대로 받는다(``earnings.knowledge_date``와 동일 선례).
+
+    건마다 즉시 upsert한다(끝에 몰아쓰지 않는다) — 중간에 프로세스가 죽어도
+    이미 판단한 건을 잃지 않고, 같은 런 안에서도 ``_prior_context``가 방금
+    쓴 판단을 바로 볼 수 있다(``is_stale_repeat`` 판별의 전제).
     """
     today = today or datetime.now().strftime("%Y%m%d")
-    cutoff = (datetime.strptime(today, "%Y%m%d") - timedelta(days=STALE_LOOKBACK_DAYS)).strftime("%Y%m%d")
-    targets = _pending_items(con)
-    judged = api_failures = 0
-    rows: list[tuple] = []
+    today_dt = datetime.strptime(today, "%Y%m%d")
+    cutoff = (today_dt - timedelta(days=STALE_LOOKBACK_DAYS)).strftime("%Y%m%d")
+    # v1은 새로 들어오는 항목만 판단한다(스펙 "백필 범위") — since는
+    # published_at(ISO datetime 문자열)과 문자열 비교되므로 대시 포함 ISO
+    # 날짜(YYYY-MM-DD)여야 한다.
+    since = (today_dt - timedelta(days=PENDING_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+    targets = _pending_items(con, since)
+    judged = parse_failures = api_failures = 0
     for source_type, source_id, item in targets:
         prior = _prior_context(con, item["ticker"], cutoff)
+        # judge_item(generate, item, prior)를 통째로 감싸지 않는다 —
+        # build_prompt의 버그(예: item에 키 누락)까지 "API실패"로 잘못
+        # 집계되면 재시도만 반복되고 진짜 원인이 안 드러난다. generate
+        # 호출(네트워크 I/O)만 예외를 잡는다; parse_judgment는 설계상
+        # 예외를 던지지 않는다(위 docstring 참고).
+        prompt = build_prompt(item, prior)
         try:
-            j = judge_item(generate, item, prior)
+            response = generate(prompt)
         except Exception:
             api_failures += 1
             continue
+        j = parse_judgment(response)
         if j is None:
+            parse_failures += 1
             continue
-        rows.append((
+        upsert_news_judgments(con, [(
             source_type, source_id, item["ticker"], j.event_type,
             j.sentiment_direction, json.dumps(j.related_codes, ensure_ascii=False),
             j.is_stale_repeat, j.first_seen_date, j.price_impact_likely,
             j.rationale, model_id, PROMPT_VERSION, today,
-        ))
+        )])
         judged += 1
-    if rows:
-        upsert_news_judgments(con, rows)
-    return {"target": len(targets), "judged": judged, "api_failures": api_failures}
+    return {
+        "target": len(targets), "judged": judged,
+        "parse_failures": parse_failures, "api_failures": api_failures,
+    }
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="뉴스/공시 LLM 판단")
     ap.add_argument("--db", default=None, help="DSN (postgresql://... 또는 sqlite 경로)")
-    ap.add_argument("--model-id", default="gemini-flash-placeholder",
-                    help="Step 0에서 확인한 실제 모델 문자열로 기본값 교체")
+    ap.add_argument("--model-id", default="gemini-2.5-flash",
+                    help="Gemini 모델 ID (google-genai SDK, client.models.generate_content)")
     args = ap.parse_args()
 
     import os
@@ -285,6 +325,7 @@ def main() -> int:
     stats = collect(con, generate, model_id=args.model_id)
     con.close()
     print(f"대상 {stats['target']}건 | 판단 {stats['judged']}건 | "
+          f"파싱실패 {stats['parse_failures']}건 | "
           f"API실패 {stats['api_failures']}건", flush=True)
     if stats["api_failures"] > 0:
         return 1
