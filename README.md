@@ -46,18 +46,24 @@ spare PC (Ubuntu, 이 저장소)                                 main PC
 │                                                │
 │  ── 한국 ────────────────────────────────      │
 │   -m collectors.X  ──upsert──►  TimescaleDB   │◄──psql───┐
+│   (news_judge.py 의 LLM 판단 포함)              │          │
 │                                  (5432, LAN)   │          │
 │                                                │     ┌─────────┴──────────┐
 │  ── 미국 (Sharadar) ─────────────────────      │     │     분석/백테      │
 │   -m collectors.sharadar_bulk                  │     │      kr-quant      │
 │        │ bulk zip (modified 바뀐 것만)          │     │ portfolio-research │
-│        ▼                                       │     └─────────┬──────────┘
-│   sharadar/raw/  ──►  -m collectors.sharadar_build        │
-│                            │ build → gate      │          │
+│        ▼                                       │     │      scalp-it      │
+│   sharadar/raw/  ──►  -m collectors.sharadar_build     │  macro-sector-agent│
+│                            │ build → gate      │     └─────────┬──────────┘
 │                            ▼ os.replace        │          │
 │                       us_micro.duckdb          │◄──file───┘
 └──────────────────────────────────────────────┘
 ```
+
+이 저장소는 그 자체로 전략을 짜지 않는다 — 위 컨슈머들(`kr-quant`/`portfolio-research`
+의 백테스트, `scalp-it`의 실매매, `macro-sector-agent`의 섹터 리서치)이 각자 전략을
+돌릴 수 있게 **믿을 수 있는 point-in-time 데이터를 공급하는 인프라**가 이 레포의
+역할이다. `scalp-it`은 `news_judgments`(LLM 뉴스/공시 판단)를 필터/가중치로 소비한다.
 
 미국 쪽 화살표가 `os.replace` 인 게 핵심이다 — DuckDB 는 단일 라이터라 직접 upsert 하면
 연구와 수집이 상시 서로를 막지만, 파일을 갈아끼우면 연구가 열어둔 중에 배포해도
