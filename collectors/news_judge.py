@@ -7,6 +7,15 @@ docs/superpowers/specs/2026-09-06-news-llm-judgments-design.md — 특히
 related_codes/is_stale_repeat는 scalp-it 세션의 실제 트레이더 인터뷰
 피드백(만쥬 46번 답변)으로 추가됐다.
 
+confidence/judged_at 두 필드는 scalp-it 세션이 2026-09-06 세션간 문의에서
+추가로 요청한 것이다(마이그레이션 013) — "신뢰도 점수 없으면 오탐을 못
+거른다", "판단이 늦으면 체결 기반 신호와 같은 후행 근사 함정에 빠진다"는
+이유로, sentiment_direction만으로는 스캘핑 소비 쪽에서 필터/가중치로 못
+쓴다는 피드백이다. confidence는 LLM 자체 확신도(0~100, LLM 응답에서
+파싱), judged_at은 LLM 응답이 실제로 돌아온 시각(시스템이 찍음, LLM이
+주장하는 값이 아니다 — knowledge_date가 날짜 단위라 초 단위 레이턴시
+측정에 못 쓰인다).
+
 순수 함수(build_prompt/parse_judgment)와 네트워크 I/O(judge_item)를
 분리하는 이 레포의 관례(dart_earnings.py)를 따른다 — 전자는 이 파일
 단독으로, 후자는 실제 Gemini 호출을 mock한 테스트로 검증한다.
@@ -20,7 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from .storage import fetchall, upsert_news_judgments
@@ -52,6 +61,7 @@ class Judgment:
     first_seen_date: str | None
     price_impact_likely: bool
     rationale: str
+    confidence: int
 
 
 def build_prompt(item: dict, prior_context: list[dict]) -> str:
@@ -70,6 +80,9 @@ def build_prompt(item: dict, prior_context: list[dict]) -> str:
         "first_seen_date: is_stale_repeat가 true면 최초로 본 날짜(YYYYMMDD), 아니면 null.",
         "price_impact_likely: 단기(수일 내) 가격에 영향 줄 만한가 (true/false).",
         "rationale: 판단 근거를 한두 문장으로.",
+        "confidence: 이 판단 전체에 대한 스스로의 확신도, 0(전혀 확신 없음)~"
+        "100(매우 확신) 정수. 정보가 불충분하거나 애매하면 낮게 매겨라 —"
+        " 낮은 확신도는 다운스트림에서 이 판단을 걸러내는 데 쓰인다.",
     ]
     if prior_context:
         lines.append("")
@@ -80,7 +93,8 @@ def build_prompt(item: dict, prior_context: list[dict]) -> str:
     lines.append(
         '응답 형식(JSON만, 다른 텍스트 없이): {"event_type": "...", '
         '"sentiment_direction": 0, "related_codes": [], "is_stale_repeat": false, '
-        '"first_seen_date": null, "price_impact_likely": false, "rationale": "..."}'
+        '"first_seen_date": null, "price_impact_likely": false, "rationale": "...", '
+        '"confidence": 0}'
     )
     return "\n".join(lines)
 
@@ -98,7 +112,7 @@ def parse_judgment(llm_response: str) -> Judgment | None:
 
     required = {
         "event_type", "sentiment_direction", "related_codes", "is_stale_repeat",
-        "first_seen_date", "price_impact_likely", "rationale",
+        "first_seen_date", "price_impact_likely", "rationale", "confidence",
     }
     if not isinstance(data, dict) or not required.issubset(data.keys()):
         return None
@@ -140,11 +154,15 @@ def parse_judgment(llm_response: str) -> Judgment | None:
     if not isinstance(rationale, str):
         return None
 
+    confidence = data["confidence"]
+    if not isinstance(confidence, int) or isinstance(confidence, bool) or not (0 <= confidence <= 100):
+        return None
+
     return Judgment(
         event_type=event_type, sentiment_direction=sentiment,
         related_codes=related_codes, is_stale_repeat=is_stale,
         first_seen_date=first_seen, price_impact_likely=price_impact,
-        rationale=rationale,
+        rationale=rationale, confidence=confidence,
     )
 
 
@@ -289,6 +307,10 @@ def collect(
         except Exception:
             api_failures += 1
             continue
+        # generate()가 돌아온 직후를 judged_at으로 찍는다 — LLM이 스스로
+        # 주장하는 시각이 아니라 시스템이 관측한 시각이어야 scalp-it이
+        # 요청한 "published_at 대비 실제 레이턴시" 측정이 신뢰할 수 있다.
+        judged_at = datetime.now(timezone.utc).isoformat()
         j = parse_judgment(response)
         if j is None:
             parse_failures += 1
@@ -297,7 +319,7 @@ def collect(
             source_type, source_id, item["ticker"], j.event_type,
             j.sentiment_direction, json.dumps(j.related_codes, ensure_ascii=False),
             j.is_stale_repeat, j.first_seen_date, j.price_impact_likely,
-            j.rationale, model_id, PROMPT_VERSION, today,
+            j.rationale, model_id, PROMPT_VERSION, today, j.confidence, judged_at,
         )])
         judged += 1
     return {
