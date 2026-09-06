@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 logs/
 cron_updown.log
+scripts/backup_to_gdrive.cron.log
 plugins/
 airflow.db
 .DS_Store
