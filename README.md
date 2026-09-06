@@ -38,26 +38,57 @@
 
 데이터가 둘이고 **적재 방식이 서로 다르다.** 한국은 소스 API 가 증분만 주므로 DB 에
 직접 upsert 하고, 미국은 벤더가 전체 스냅샷을 주므로 파일을 새로 지어 갈아끼운다.
+아래는 실제 `dags/*.py` 의 태스크 의존성(`>>`)을 그대로 옮긴 것이다.
 
-```
-spare PC (Ubuntu, 이 저장소)                                 main PC
-┌──────────────────────────────────────────────┐
-│ Airflow (LocalExecutor)  dags/*.py            │
-│                                                │
-│  ── 한국 ────────────────────────────────      │
-│   -m collectors.X  ──upsert──►  TimescaleDB   │◄──psql───┐
-│   (news_judge.py 의 LLM 판단 포함)              │          │
-│                                  (5432, LAN)   │          │
-│                                                │     ┌─────────┴──────────┐
-│  ── 미국 (Sharadar) ─────────────────────      │     │     분석/백테      │
-│   -m collectors.sharadar_bulk                  │     │      kr-quant      │
-│        │ bulk zip (modified 바뀐 것만)          │     │ portfolio-research │
-│        ▼                                       │     │      scalp-it      │
-│   sharadar/raw/  ──►  -m collectors.sharadar_build     │  macro-sector-agent│
-│                            │ build → gate      │     └─────────┬──────────┘
-│                            ▼ os.replace        │          │
-│                       us_micro.duckdb          │◄──file───┘
-└──────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph SRC["데이터 소스"]
+        KIWOOM["키움 REST<br/>kiwoom-client"]
+        DART["DART 실적·공시<br/>krx-fundamentals-client"]
+        KRXM["KRX<br/>상장폐지 마스터"]
+        NAVER["네이버<br/>컨센서스·폐지시세"]
+        TOSS["토스증권 뉴스<br/>krx-news-client"]
+        SHARADAR["Sharadar<br/>벌크 스냅샷"]
+    end
+
+    subgraph KR["한국 파이프라인 — DB에 직접 upsert"]
+        COL["daily_collection<br/>일봉+수급+업종지수"]
+        NEWSCOL["collect_toss_news<br/>collect_dart_disclosures"]
+        JUDGE["judge_news<br/>(news_judge, LLM 판단)"]
+        EARN["daily_earnings /<br/>earnings_backfill"]
+        CONS["daily_consensus"]
+        DELIST["weekly_delisted_stocks<br/>collect→backfill_bars→<br/>backfill_shares→backfill_flow"]
+        ADJ["weekly_price_adjust<br/>(센서: backfill_delisted_bars 대기 후 rebuild)"]
+    end
+
+    subgraph US["미국 파이프라인(Sharadar) — 스냅샷 통째로 교체"]
+        DL["download<br/>(bulk zip, 변경분만)"]
+        BUILD["rebuild<br/>build → 검증 gate"]
+    end
+
+    TS[("TimescaleDB<br/>hypertable")]
+    DUCK[("us_micro.duckdb<br/>os.replace로 원자적 교체")]
+
+    KIWOOM --> COL --> TS
+    TOSS --> NEWSCOL
+    DART --> NEWSCOL
+    NEWSCOL --> JUDGE --> TS
+    DART --> EARN --> TS
+    NAVER --> CONS --> TS
+    KRXM --> DELIST
+    NAVER --> DELIST
+    DELIST --> TS
+    TS -. "wait_for_delisted_bars 센서" .-> ADJ --> TS
+    SHARADAR --> DL --> BUILD --> DUCK
+
+    subgraph CONSUMER["컨슈머(각자 전략 실행)"]
+        KRQ["kr-quant /<br/>portfolio-research<br/>(백테스트)"]
+        SCALP["scalp-it<br/>(실매매, news_judgments 소비)"]
+        MACRO["macro-sector-agent<br/>(섹터 리서치)"]
+    end
+
+    TS --> KRQ & SCALP & MACRO
+    DUCK --> KRQ
 ```
 
 이 저장소는 그 자체로 전략을 짜지 않는다 — 위 컨슈머들(`kr-quant`/`portfolio-research`
