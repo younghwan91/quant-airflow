@@ -33,6 +33,19 @@
 조회가 섞이지 않는다. 접수일은 ``knowledge_date`` 로 함께 남겨 나중에 PIT 를 조일 수
 있게 한다(migration 005).
 
+fetch/parse·보고서 폴백(사업→3분기→반기→1분기)·corp_code 매핑은
+krx-fundamentals-client의 ``DartScraper.fetch_shares_outstanding``으로 옮겼다
+(2026-09-06) — dart_earnings.py가 DartScraper로 옮겨간 것과 같은 이유다. 이
+파일은 연도별 시계열 조립·키 로테이션·대상 선정·DB 적재·CLI만 맡는다.
+``collectors/dart.py``(자체 로테이션 유틸)는 이 파일이 마지막 소비자였으므로
+같이 지운다 — async DartQuotaExceededError 기반 로테이션은
+``dart_earnings.py``가 이미 쓰는 패턴을 그대로 재사용한다.
+
+라이브러리가 돌려주는 ``stlm_dt``/``knowledge_date``는 대시 없는 ``YYYYMMDD``다 —
+이 테이블(``shares_outstanding_history.date``)은 기존 행(키움/KRX)과 문자열 비교로
+as-of 조회를 하므로(``market_cap_asof``, ``_listed_targets``의 ``date < '2026-01-01'``)
+``YYYY-MM-DD``로 변환해서 적재한다.
+
 CLI:
     python -m collectors.dart_shares --db <DSN>              # 폐지 종목 전체
     python -m collectors.dart_shares --db <DSN> --limit 20   # 표본
@@ -42,21 +55,11 @@ CLI:
 from __future__ import annotations
 
 import argparse
-import io
-import json
+import asyncio
 import time
-import urllib.parse
-import urllib.request
-import xml.etree.ElementTree as ET
-import zipfile
 
-from .dart import (
-    QUOTA_EXHAUSTED,
-    DartQuotaExhausted,
-    describe_status,
-    rotate_on_quota,
-    rotate_on_quota_raising,
-)
+from krx_fundamentals_client import DartQuotaExceededError, DartScraper
+
 from .storage import (
     CHECKED_DART_SHARES,
     CHECKED_DART_SHARES_LISTED,
@@ -66,124 +69,47 @@ from .storage import (
     mark_checked,
 )
 
-API = "https://opendart.fss.or.kr/api/stockTotqySttus.json"
-CORP_CODE_URL = "https://opendart.fss.or.kr/api/corpCode.xml"
+
+def _dashed(yyyymmdd: str) -> str:
+    """``"20251231"`` → ``"2025-12-31"``. 이미 대시가 있으면 그대로 둔다."""
+    if len(yyyymmdd) == 8 and yyyymmdd.isdigit():
+        return f"{yyyymmdd[:4]}-{yyyymmdd[4:6]}-{yyyymmdd[6:]}"
+    return yyyymmdd
 
 
-def load_corp_map(api_key: str) -> dict[str, str]:
-    """Return ``{stock_code: corp_code}`` from DART's corpCode.xml zip.
+async def _fetch_shares_with_rotation(
+    scrapers: dict[str, DartScraper], keys: list[str], ki: list[int],
+    ticker: str, year: int,
+) -> tuple[int, str, str] | None:
+    """한 (종목, 연도) 조회, 일한도(020)를 만나면 다음 키로 로테이션.
 
-    krx-fundamentals-client의 ``DartScraper.load_corp_codes()``가 같은 데이터를
-    비동기로 제공하지만(``dart_earnings.py``가 이관한 부분), 이 모듈은
-    ``stockTotqySttus``(상장주식수) 전용이라 그대로 남는다 — 그 엔드포인트는
-    krx-fundamentals-client에 없어서(2026-09) dart_shares.py 전체를 옮길 수 없다.
-
-    Raises ``RuntimeError`` with the DART status when the response is an error
-    XML (e.g. status 020 = daily call-limit exceeded, 010 = bad key) rather than
-    the expected zip — otherwise the caller would see an opaque ``BadZipFile``.
+    ``dart_earnings._fetch_with_rotation``과 같은 계약이다 — ``ki``는 1칸
+    리스트로 현재 키 인덱스를 담고, 호출부가 종목 루프 전체에서 재사용해야
+    이미 소진된 키로 매번 되돌아가지 않는다. 반환은
+    ``(shares_outstanding, stlm_dt, knowledge_date)``(둘 다 ``YYYY-MM-DD``)
+    또는 그 연도에 자료가 없으면 ``None``.
     """
-    q = urllib.parse.urlencode({"crtfc_key": api_key})
-    with urllib.request.urlopen(f"{CORP_CODE_URL}?{q}", timeout=60) as r:  # noqa: S310 — 고정 호스트
-        raw = r.read()
-    if not raw[:2] == b"PK":  # zip magic; DART errors come back as small XML
-        status = ""
+    while True:
+        scraper = scrapers[keys[ki[0]]]
         try:
-            status = ET.fromstring(raw.decode()).findtext("status") or ""
-        except Exception:
-            pass
-        if status == QUOTA_EXHAUSTED:
-            # 타입으로 알린다 — 예전엔 이 메시지를 호출부가 문자열로 매칭했는데,
-            # 템플릿에 "한도초과(020)" 안내문이 늘 박혀 있어 010 에러에도 참이 되는
-            # 버그가 있었다. docstring 을 고치면 제어흐름이 바뀌는 상태였다.
-            raise DartQuotaExhausted(f"DART corpCode 일한도 소진 (status={status!r})")
-        raise RuntimeError(f"DART corpCode 오류 — status={describe_status(status)}")
-    z = zipfile.ZipFile(io.BytesIO(raw))
-    root = ET.fromstring(z.read(z.namelist()[0]).decode())
-    out: dict[str, str] = {}
-    for it in root.iter("list"):
-        sc = (it.findtext("stock_code") or "").strip()
-        cc = (it.findtext("corp_code") or "").strip()
-        if sc and cc:
-            out[sc] = cc
-    return out
-
-
-def load_corp_map_with_rotation(keys: list[str]) -> dict[str, str]:
-    """``load_corp_map`` with key rotation on daily-limit (020) — same rotation
-    ``shares_series`` already does for the per-year fetches, but for the one-time
-    corp_code map load at startup. Without this, a single exhausted key[0] kills
-    the whole run even when key[1..] still have quota (real incident: a 14.5h
-    overnight backfill run legitimately stopped for the day via 020 mid-run, and
-    the very next retry died instantly on ``load_corp_map(keys[0])`` alone
-    despite a second key being available).
-    """
-    return rotate_on_quota_raising(load_corp_map, keys)
-
-
-# 조회 순서 — 사업보고서가 가장 완전하지만 폐지 직전 해엔 없는 경우가 많다.
-REPORTS = (("11011", "사업"), ("11014", "3분기"), ("11012", "반기"), ("11013", "1분기"))
-
-# 폐지 연도부터 몇 해 거슬러 올라가며 찾을지. 폐지 절차가 길어 마지막 보고서가
-# 1~2년 전인 경우가 실제로 있다(실측).
-LOOKBACK_YEARS = 3
-
-SHARES_SOURCE_COLS = ["code", "date", "shares_outstanding", "knowledge_date", "source"]
-
-
-def _to_int(s: object) -> int | None:
-    """'5,919,637,922' → 5919637922. '-'·공백·파싱불가는 None."""
-    txt = str(s or "").replace(",", "").strip()
-    if not txt or txt == "-":
-        return None
-    try:
-        return int(txt)
-    except ValueError:
-        return None
-
-
-def parse_shares(payload: dict) -> tuple[int | None, str | None]:
-    """응답 → ``(발행주식총수, 기준일)``. 보통주 행만 본다 (순수함수).
-
-    합계(se='합계') 행은 우선주를 포함하므로 쓰지 않는다 — 우리 유니버스와 시세는
-    보통주 기준이고, 합계를 쓰면 우선주가 있는 기업의 시총이 부풀려진다.
-    """
-    if payload.get("status") != "000":
-        return None, None
-    for row in payload.get("list") or []:
-        if row.get("se") != "보통주":
+            result = await scraper.fetch_shares_outstanding(ticker, year)
+        except DartQuotaExceededError:
+            if ki[0] + 1 >= len(keys):
+                return None
+            ki[0] += 1
+            print(f"DART 키 일한도(020) 도달 → 키{ki[0] + 1}로 로테이션 (stockTotqySttus)",
+                  flush=True)
             continue
-        shares = _to_int(row.get("istc_totqy"))
-        if shares:
-            return shares, (row.get("stlm_dt") or None)
-    return None, None
+        if result is None or not result.shares_outstanding:
+            return None
+        return result.shares_outstanding, _dashed(result.stlm_dt), _dashed(result.knowledge_date)
 
 
-def receipt_date(payload: dict) -> str | None:
-    """``rcept_no`` 앞 8자리(YYYYMMDD) → ISO 날짜. 이 값을 알게 된 날."""
-    for row in payload.get("list") or []:
-        rn = str(row.get("rcept_no") or "")
-        if len(rn) >= 8 and rn[:8].isdigit():
-            return f"{rn[:4]}-{rn[4:6]}-{rn[6:8]}"
-    return None
-
-
-def fetch(key: str, corp_code: str, year: int, reprt_code: str,
-          *, timeout: int = 30) -> dict:
-    """한 (기업, 연도, 보고서) 조회. 실패는 빈 dict(호출부가 '없음'과 동일 취급)."""
-    q = urllib.parse.urlencode({
-        "crtfc_key": key, "corp_code": corp_code,
-        "bsns_year": str(year), "reprt_code": reprt_code,
-    })
-    try:
-        with urllib.request.urlopen(f"{API}?{q}", timeout=timeout) as r:  # noqa: S310 — 고정 호스트
-            return json.loads(r.read().decode())
-    except Exception:
-        return {}
-
-
-def shares_series(keys: list[str], corp_code: str, first_year: int, last_year: int,
-                  *, ki: list[int] | None = None,
-                  sleep: float = 0.15) -> list[tuple[int, str, str]]:
+async def shares_series(
+    scrapers: dict[str, DartScraper], keys: list[str], ticker: str,
+    first_year: int, last_year: int, *, ki: list[int] | None = None,
+    sleep: float = 0.15,
+) -> list[tuple[int, str, str]]:
     """연도별 ``(발행주식총수, 기준일, 접수일)`` **시계열**. 없으면 빈 리스트.
 
     **왜 시계열이어야 하나(2026-08-15 실측으로 배움).** 처음엔 "마지막으로 알려진
@@ -193,8 +119,8 @@ def shares_series(keys: list[str], corp_code: str, first_year: int, last_year: i
     된다. 나머지도 생애의 꼬리 구간만 덮는다. 유니버스에 넣으려면 거래 기간을
     가로지르는 점들이 있어야 한다.
 
-    연도마다 사업보고서를 먼저 보고, 없으면 분기·반기를 훑어 **연 1점**을 확보한다.
-    분기 전부를 받으면 4배 비싸고, 주식수는 분기 안에서 잘 안 변한다.
+    연도마다 사업보고서를 먼저 보고, 없으면 분기·반기를 훑는 폴백은
+    ``DartScraper.fetch_shares_outstanding`` 내부가 담당한다(연 1점 확보).
 
     **키 로테이션을 쓴다(2026-08-28).** 예전엔 ``keys[0]`` 하나만 받아서 하루
     한도가 20,000콜로 묶였다. 상장 종목 과거 주식수 백필이 2,595종목 × ~9.5콜 ≈
@@ -210,15 +136,10 @@ def shares_series(keys: list[str], corp_code: str, first_year: int, last_year: i
     ki = ki if ki is not None else [0]
     out: list[tuple[int, str, str]] = []
     for year in range(first_year, last_year + 1):
-        for rc, _name in REPORTS:
-            payload = rotate_on_quota(
-                lambda k, y=year, r=rc: fetch(k, corp_code, y, r),
-                keys, ki, label="stockTotqySttus")
-            time.sleep(sleep)
-            shares, stlm = parse_shares(payload)
-            if shares and stlm:
-                out.append((shares, stlm, receipt_date(payload) or stlm))
-                break
+        point = await _fetch_shares_with_rotation(scrapers, keys, ki, ticker, year)
+        await asyncio.sleep(sleep)
+        if point:
+            out.append(point)
     return out
 
 
@@ -305,8 +226,94 @@ def _write(con, records: list[tuple]) -> int:
     if not records:
         return 0
     from .storage import _upsert
-    return _upsert(con, "shares_outstanding_history", SHARES_SOURCE_COLS, records,
-                   on_conflict="nothing")
+    return _upsert(con, "shares_outstanding_history",
+                   ["code", "date", "shares_outstanding", "knowledge_date", "source"],
+                   records, on_conflict="nothing")
+
+
+async def _run(args: argparse.Namespace) -> int:
+    from .config import mask_dsn
+    from .dart_earnings import collect_keys
+
+    keys = collect_keys()
+    if not keys:
+        raise SystemExit("환경변수 DART_API_KEY 필요")
+
+    # **대상을 먼저 센다.** corp_map 로드(수 MB zip)는 그 다음이다(스크레이퍼가
+    # 첫 fetch 때 알아서 지연 로드한다).
+    #
+    # 순서가 반대였을 때: 이 수집기는 마커 덕에 정상 상태에서 대상이 0이라 몇 초
+    # 만에 끝나야 하는데, 할 일이 없어도 corp_map 을 먼저 받다가 DART 가 잠깐
+    # 불안정하면 그대로 실패했다. 실측 2026-08-28 — 대상 0종목인 상태에서
+    # `RuntimeError: DART corpCode 오류 (status='800')` (800 = 시스템 점검)으로 죽었다.
+    # 월간 유지보수 DAG 가 "할 일 없음"을 벤더 가용성에 의존해 알아내면 안 된다.
+    con = connect(args.db or default_db_path())
+    if args.listed:
+        targets = _listed_targets(con, from_year=args.from_year, to_year=args.to_year)
+    else:
+        targets = _targets(con, refetch=args.refetch)
+    if args.limit:
+        targets = targets[: args.limit]
+    if not targets:
+        con.close()
+        print("대상 0종목 — 받을 게 없다(백필 완료 상태). corp_map 로드 없이 종료.",
+              flush=True)
+        return 0
+
+    scrapers = {key: DartScraper(api_key=key) for key in keys}
+    print(f"🔌 {mask_dsn(args.db)} | 대상 {len(targets)}종목"
+          f"{' | DRY-RUN' if args.dry_run else ''}", flush=True)
+
+    # 키 인덱스는 종목 루프 전체에서 공유한다 — 종목마다 [0] 으로 되돌리면
+    # 이미 소진된 키에 매번 한 번씩 더 부딪힌다.
+    ki = [0]
+    found = missing = written = 0
+    # 이번 회차에 "DART 에 자료 없음"으로 판명된 코드 — 끝에 한 번에 마킹한다.
+    # (corp_code 매핑이 없는 경우도 fetch_shares_outstanding이 None을 돌려주므로
+    # missing과 구분하지 않는다 — 어차피 재조회 대상에서 빠지는 처리는 동일하다.)
+    exhausted: list[str] = []
+    t0 = time.time()
+    try:
+        for i, (code, first, last) in enumerate(targets, 1):
+            first_year, last_year = int(first[:4]), int(last[:4])
+            if args.listed:
+                first_year = max(first_year, args.from_year)
+                last_year = min(last_year, args.to_year)
+            series = await shares_series(scrapers, keys, code, first_year, last_year,
+                                          ki=ki, sleep=args.sleep)
+            if not series:
+                missing += 1
+                exhausted.append(code)
+                continue
+            found += 1
+            if not args.dry_run:
+                written += _write(con, [(code, stlm, shares, rcept, "dart")
+                                        for shares, stlm, rcept in series])
+            if i % 50 == 0 or i == len(targets):
+                el = time.time() - t0
+                rate = i / el if el else 0
+                print(f"  [{i}/{len(targets)}] 확보={found} 못찾음={missing} "
+                      f"기록={written}행 | {rate:.1f}종목/s "
+                      f"ETA {(len(targets)-i)/rate/60 if rate else 0:.1f}분", flush=True)
+    finally:
+        for scraper in scrapers.values():
+            await scraper.close()
+
+    # 마커는 (code, source) 테이블이라 상장·폐지가 같은 경로를 쓴다. 예전엔 이게
+    # delisted_stocks 의 컬럼이라 --listed 는 남길 자리가 없었고, 그래서 자료가 없는
+    # 60종목을 매 회차 다시 조회했다.
+    if not args.dry_run:
+        source = CHECKED_DART_SHARES_LISTED if args.listed else CHECKED_DART_SHARES
+        mark_checked(con, source, exhausted, time.strftime("%Y-%m-%d"))
+    con.close()
+    print(f"DONE targets={len(targets)} 확보={found} "
+          f"못찾음={missing} 기록={written}행 "
+          # --listed 는 마킹하지 않는다(위 참고). 그런데 이 줄이 그걸 반영하지
+          # 않아 실행 결과에 `완료표시=60` 이 찍혔다 — 한 건도 안 찍었는데.
+          # 로그가 하지도 않은 일을 보고하면 다음 사람이 "왜 또 조회하지?" 를
+          # 코드가 아니라 DB 에서 찾게 된다.
+          f"완료표시={len(exhausted) if not args.dry_run else 0}")
+    return 0
 
 
 def main() -> int:
@@ -328,85 +335,7 @@ def main() -> int:
     ap.add_argument("--to-year", type=int, default=2025, help="--listed 백필 종료 연도")
     args = ap.parse_args()
 
-    from .config import mask_dsn
-    from .dart_earnings import collect_keys
-
-    keys = collect_keys()
-    if not keys:
-        raise SystemExit("환경변수 DART_API_KEY 필요")
-
-    # **대상을 먼저 센다.** corp_map 로드(수 MB zip)는 그 다음이다.
-    #
-    # 순서가 반대였을 때: 이 수집기는 마커 덕에 정상 상태에서 대상이 0이라 몇 초
-    # 만에 끝나야 하는데, 할 일이 없어도 corp_map 을 먼저 받다가 DART 가 잠깐
-    # 불안정하면 그대로 실패했다. 실측 2026-08-28 — 대상 0종목인 상태에서
-    # `RuntimeError: DART corpCode 오류 (status='800')` (800 = 시스템 점검)으로 죽었다.
-    # 월간 유지보수 DAG 가 "할 일 없음"을 벤더 가용성에 의존해 알아내면 안 된다.
-    con = connect(args.db or default_db_path())
-    if args.listed:
-        targets = _listed_targets(con, from_year=args.from_year, to_year=args.to_year)
-    else:
-        targets = _targets(con, refetch=args.refetch)
-    if args.limit:
-        targets = targets[: args.limit]
-    if not targets:
-        con.close()
-        print("대상 0종목 — 받을 게 없다(백필 완료 상태). corp_map 로드 없이 종료.",
-              flush=True)
-        return 0
-
-    corp = load_corp_map_with_rotation(keys)
-    print(f"🔌 {mask_dsn(args.db)} | 대상 {len(targets)}종목 | corp_map {len(corp)}"
-          f"{' | DRY-RUN' if args.dry_run else ''}", flush=True)
-
-    # 키 인덱스는 종목 루프 전체에서 공유한다 — 종목마다 [0] 으로 되돌리면
-    # 이미 소진된 키에 매번 한 번씩 더 부딪힌다.
-    ki = [0]
-    found = no_corp = missing = written = 0
-    # 이번 회차에 "DART 에 자료 없음"으로 판명된 코드 — 끝에 한 번에 마킹한다.
-    exhausted: list[str] = []
-    t0 = time.time()
-    for i, (code, first, last) in enumerate(targets, 1):
-        cc = corp.get(code)
-        if not cc:
-            no_corp += 1
-            exhausted.append(code)
-            continue
-        first_year, last_year = int(first[:4]), int(last[:4])
-        if args.listed:
-            first_year = max(first_year, args.from_year)
-            last_year = min(last_year, args.to_year)
-        series = shares_series(keys, cc, first_year, last_year, ki=ki, sleep=args.sleep)
-        if not series:
-            missing += 1
-            exhausted.append(code)
-            continue
-        found += 1
-        if not args.dry_run:
-            written += _write(con, [(code, stlm, shares, rcept, "dart")
-                                    for shares, stlm, rcept in series])
-        if i % 50 == 0 or i == len(targets):
-            el = time.time() - t0
-            rate = i / el if el else 0
-            print(f"  [{i}/{len(targets)}] 확보={found} corp없음={no_corp} 못찾음={missing} "
-                  f"기록={written}행 | {rate:.1f}종목/s "
-                  f"ETA {(len(targets)-i)/rate/60 if rate else 0:.1f}분", flush=True)
-
-    # 마커는 (code, source) 테이블이라 상장·폐지가 같은 경로를 쓴다. 예전엔 이게
-    # delisted_stocks 의 컬럼이라 --listed 는 남길 자리가 없었고, 그래서 자료가 없는
-    # 60종목을 매 회차 다시 조회했다.
-    if not args.dry_run:
-        source = CHECKED_DART_SHARES_LISTED if args.listed else CHECKED_DART_SHARES
-        mark_checked(con, source, exhausted, time.strftime("%Y-%m-%d"))
-    con.close()
-    print(f"DONE targets={len(targets)} 확보={found} corp없음={no_corp} "
-          f"못찾음={missing} 기록={written}행 "
-          # --listed 는 마킹하지 않는다(위 참고). 그런데 이 줄이 그걸 반영하지
-          # 않아 실행 결과에 `완료표시=60` 이 찍혔다 — 한 건도 안 찍었는데.
-          # 로그가 하지도 않은 일을 보고하면 다음 사람이 "왜 또 조회하지?" 를
-          # 코드가 아니라 DB 에서 찾게 된다.
-          f"완료표시={len(exhausted) if not args.dry_run else 0}")
-    return 0
+    return asyncio.run(_run(args))
 
 
 if __name__ == "__main__":

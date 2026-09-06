@@ -1,60 +1,39 @@
-"""폐지 종목 상장주식수 백필 — 파싱·대상선정·기록 (네트워크 불요).
+"""폐지 종목 상장주식수 백필 — 시계열 조립·대상선정·기록 (네트워크 불요).
 
-시가총액의 분모라 틀리면 유니버스 편입이 통째로 어긋난다. 특히 **어느 필드를 쓰느냐**가
-조용한 오차의 원천이다 — 유통주식수(자기주식 제외)를 쓰면 시총이 과소 계상된다.
+시가총액의 분모라 틀리면 유니버스 편입이 통째로 어긋난다. fetch/parse(어느
+필드를 쓰는지, 보고서 폴백 등)는 krx-fundamentals-client의
+``DartScraper.fetch_shares_outstanding``으로 옮겼다(2026-09-06, 그쪽 테스트
+스위트가 검증) — 여기서는 이 파일이 여전히 맡는 시계열 조립·키 로테이션·대상
+선정·DB 적재만 다룬다.
 """
 
 from __future__ import annotations
 
+import asyncio
+
+from krx_fundamentals_client import DartQuotaExceededError, DartScraper, SharesOutstanding
+
 import collectors.dart_shares as ds
-from collectors.storage import connect, mark_checked
-
-# 삼성전자 2025 사업보고서 형태(발췌). 합계 행에는 우선주가 섞여 있다.
-PAYLOAD = {
-    "status": "000",
-    "list": [
-        {"se": "보통주", "rcept_no": "20260310002820", "stlm_dt": "2025-12-31",
-         "isu_stock_totqy": "20,000,000,000", "istc_totqy": "5,919,637,922",
-         "tesstk_co": "91,828,987", "distb_stock_co": "5,827,808,935"},
-        {"se": "우선주", "rcept_no": "20260310002820", "stlm_dt": "2025-12-31",
-         "isu_stock_totqy": "5,000,000,000", "istc_totqy": "822,886,700",
-         "tesstk_co": "20,515,497", "distb_stock_co": "802,371,203"},
-        {"se": "합계", "rcept_no": "20260310002820", "stlm_dt": "2025-12-31",
-         "istc_totqy": "6,742,524,622", "distb_stock_co": "6,630,180,138"},
-    ],
-}
+from collectors.storage import CHECKED_DART_SHARES_LISTED, checked_codes, connect, mark_checked
 
 
-def test_uses_issued_shares_not_distributed():
-    """유통주식수(자기주식 제외)를 쓰면 시가총액이 과소 계상된다."""
-    shares, stlm = ds.parse_shares(PAYLOAD)
-    assert shares == 5_919_637_922      # istc_totqy (발행주식총수)
-    assert shares != 5_827_808_935      # distb_stock_co (유통주식수)
-    assert stlm == "2025-12-31"
+def _run(coro):
+    return asyncio.run(coro)
 
 
-def test_ignores_preferred_and_total_rows():
-    """합계 행은 우선주를 포함한다 — 보통주 기준 유니버스의 시총을 부풀린다."""
-    shares, _ = ds.parse_shares(PAYLOAD)
-    assert shares != 6_742_524_622
+def _shares(ticker, year, shares=5_919_637_922, stlm="20251231", knowledge="20260310"):
+    return SharesOutstanding(
+        ticker=ticker, year=year, shares_outstanding=shares,
+        stlm_dt=stlm, knowledge_date=knowledge,
+    )
 
 
-def test_receipt_date_is_the_disclosure_day_not_the_reference_day():
-    """기준일과 공시일이 다르다 — PIT 를 물으면 공시일을 봐야 한다."""
-    assert ds.receipt_date(PAYLOAD) == "2026-03-10"
-    assert ds.parse_shares(PAYLOAD)[1] == "2025-12-31"
+def test_dashed_converts_yyyymmdd():
+    assert ds._dashed("20251231") == "2025-12-31"
 
 
-def test_error_and_empty_payloads_yield_nothing():
-    for p in ({}, {"status": "013", "message": "조회된 데이타가 없습니다."},
-              {"status": "000", "list": []},
-              {"status": "000", "list": [{"se": "보통주", "istc_totqy": "-"}]}):
-        assert ds.parse_shares(p) == (None, None)
-
-
-def _payload_for(stlm: str) -> dict:
-    row = {**PAYLOAD["list"][0], "stlm_dt": stlm}
-    return {"status": "000", "list": [row]}
+def test_dashed_leaves_already_dashed_alone():
+    assert ds._dashed("2025-12-31") == "2025-12-31"
 
 
 def test_series_covers_every_year_of_the_trading_life(monkeypatch):
@@ -63,43 +42,101 @@ def test_series_covers_every_year_of_the_trading_life(monkeypatch):
     종목당 1점만 있으면(그것도 폐지일보다 뒤인 경우가 실측 35%) 그 종목의 모든
     거래일에서 시총이 NULL 이 된다. 거래 기간을 가로지르는 점들이 있어야 한다.
     """
-    monkeypatch.setattr(ds, "fetch",
-                        lambda key, cc, year, rc, **kw: _payload_for(f"{year}-12-31"))
-    got = ds.shares_series(["k"], "c", 2018, 2021, sleep=0)
+    async def fake(self, ticker, year, on_status=None):
+        return _shares(ticker, year, stlm=f"{year}1231")
+
+    monkeypatch.setattr(DartScraper, "fetch_shares_outstanding", fake)
+    scrapers = {"k": DartScraper(api_key="k")}
+    got = _run(ds.shares_series(scrapers, ["k"], "005930", 2018, 2021, sleep=0))
     assert [stlm for _, stlm, _ in got] == [
         "2018-12-31", "2019-12-31", "2020-12-31", "2021-12-31"]
 
 
-def test_series_falls_back_to_quarterly_when_annual_is_missing(monkeypatch):
-    """폐지 직전 해엔 사업보고서를 못 낸 경우가 많다."""
-    calls = []
+def test_series_skips_years_with_no_filing(monkeypatch):
+    """일부 연도만 자료가 있어도 있는 연도만 시계열에 담는다."""
+    async def fake(self, ticker, year, on_status=None):
+        return _shares(ticker, year, stlm=f"{year}0930") if year != 2020 else None
 
-    def fake(key, cc, year, rc, **kw):
-        calls.append((year, rc))
-        return _payload_for(f"{year}-09-30") if rc == "11014" else {"status": "013"}
-
-    monkeypatch.setattr(ds, "fetch", fake)
-    got = ds.shares_series(["k"], "c", 2020, 2020, sleep=0)
-    assert len(got) == 1 and got[0][1] == "2020-09-30"
-    assert calls[0] == (2020, "11011"), "사업보고서를 먼저 시도해야 한다"
-
-
-def test_series_takes_one_point_per_year(monkeypatch):
-    """연 1점이면 충분하다 — 분기 전부는 4배 비싸고 주식수는 분기 내 잘 안 변한다."""
-    calls = []
-
-    def fake(key, cc, year, rc, **kw):
-        calls.append((year, rc))
-        return _payload_for(f"{year}-12-31")
-
-    monkeypatch.setattr(ds, "fetch", fake)
-    ds.shares_series(["k"], "c", 2019, 2021, sleep=0)
-    assert len(calls) == 3, "연도마다 첫 성공에서 멈춰야 한다"
+    monkeypatch.setattr(DartScraper, "fetch_shares_outstanding", fake)
+    scrapers = {"k": DartScraper(api_key="k")}
+    got = _run(ds.shares_series(scrapers, ["k"], "005930", 2019, 2021, sleep=0))
+    assert [stlm for _, stlm, _ in got] == ["2019-09-30", "2021-09-30"]
 
 
 def test_series_empty_when_nothing_is_filed(monkeypatch):
-    monkeypatch.setattr(ds, "fetch", lambda *a, **k: {"status": "013"})
-    assert ds.shares_series(["k"], "x", 2019, 2021, sleep=0) == []
+    async def fake(self, ticker, year, on_status=None):
+        return None
+
+    monkeypatch.setattr(DartScraper, "fetch_shares_outstanding", fake)
+    scrapers = {"k": DartScraper(api_key="k")}
+    assert _run(ds.shares_series(scrapers, ["k"], "x", 2019, 2021, sleep=0)) == []
+
+
+def test_series_dates_are_dashed_for_string_comparison_with_existing_rows(monkeypatch):
+    """shares_outstanding_history.date 는 기존 행과 문자열 비교로 as-of 되므로
+    라이브러리가 주는 대시 없는 YYYYMMDD를 그대로 적재하면 안 된다."""
+    async def fake(self, ticker, year, on_status=None):
+        return _shares(ticker, year, stlm="20251231", knowledge="20260310")
+
+    monkeypatch.setattr(DartScraper, "fetch_shares_outstanding", fake)
+    scrapers = {"k": DartScraper(api_key="k")}
+    got = _run(ds.shares_series(scrapers, ["k"], "005930", 2025, 2025, sleep=0))
+    assert got == [(5_919_637_922, "2025-12-31", "2026-03-10")]
+
+
+def test_shares_series_rotates_to_next_key_on_quota(monkeypatch):
+    """일한도(020)를 만나면 다음 키로 넘어간다 — 예전엔 keys[0] 하나뿐이었다.
+
+    그 제약이 상장분 백필(2,595종목 × ~9.5콜)을 하루 한도 밖으로 밀어냈고,
+    이틀로 나눈 분할이 정렬과 겹쳐 시대별로 기울어진 중간 상태를 만들었다.
+    """
+    seen = []
+
+    async def fake(self, ticker, year, on_status=None):
+        seen.append(self.api_key)
+        if self.api_key == "k1":
+            raise DartQuotaExceededError("한도초과")
+        return _shares(ticker, year)
+
+    monkeypatch.setattr(DartScraper, "fetch_shares_outstanding", fake)
+    scrapers = {"k1": DartScraper(api_key="k1"), "k2": DartScraper(api_key="k2")}
+    ki = [0]
+    out = _run(ds.shares_series(scrapers, ["k1", "k2"], "005930", 2020, 2020, ki=ki, sleep=0))
+
+    assert seen[:2] == ["k1", "k2"]     # 소진 즉시 다음 키로
+    assert ki == [1]                    # 인덱스가 유지된다(다음 종목은 k2 로 시작)
+    assert out and out[0][0] == 5_919_637_922
+
+
+def test_shares_series_key_index_is_shared_across_calls(monkeypatch):
+    """ki 를 넘기면 종목 간에 유지된다 — 안 그러면 종목마다 소진된 키를 또 친다."""
+    seen = []
+
+    async def fake(self, ticker, year, on_status=None):
+        seen.append(self.api_key)
+        if self.api_key == "k1":
+            raise DartQuotaExceededError("한도초과")
+        return _shares(ticker, year)
+
+    monkeypatch.setattr(DartScraper, "fetch_shares_outstanding", fake)
+    scrapers = {"k1": DartScraper(api_key="k1"), "k2": DartScraper(api_key="k2")}
+    ki = [0]
+    _run(ds.shares_series(scrapers, ["k1", "k2"], "a", 2020, 2020, ki=ki, sleep=0))
+    seen.clear()
+    _run(ds.shares_series(scrapers, ["k1", "k2"], "b", 2020, 2020, ki=ki, sleep=0))
+    assert "k1" not in seen        # 두 번째 종목은 소진된 키를 다시 치지 않는다
+
+
+def test_fetch_no_rotation_when_single_key_limited(monkeypatch):
+    """키 하나뿐인데 020이면 로테이션 불가 → 빈 결과(스킵), 무한루프 없음."""
+    async def always_exhausted(self, ticker, year, on_status=None):
+        raise DartQuotaExceededError("한도초과")
+
+    monkeypatch.setattr(DartScraper, "fetch_shares_outstanding", always_exhausted)
+    scrapers = {"only": DartScraper(api_key="only")}
+    ki = [0]
+    assert _run(ds.shares_series(scrapers, ["only"], "005930", 2020, 2020, ki=ki, sleep=0)) == []
+    assert ki[0] == 0
 
 
 def test_targets_skip_codes_that_already_have_shares(tmp_path):
@@ -169,7 +206,6 @@ def test_markers_are_per_source_not_per_column(tmp_path):
     없었다**(그 테이블에 상장 종목이 없다). 그래서 --listed 가 자료 없는 60종목을
     매 회차 다시 조회했다.
     """
-    from collectors.storage import CHECKED_DART_SHARES_LISTED, checked_codes
     con = connect(tmp_path / "t.db")
     mark_checked(con, ds.CHECKED_DART_SHARES, ["A"], "2026-08-25")
     mark_checked(con, CHECKED_DART_SHARES_LISTED, ["B"], "2026-08-28")
@@ -181,46 +217,3 @@ def test_markers_are_per_source_not_per_column(tmp_path):
     assert checked_codes(con, CHECKED_DART_SHARES_LISTED) == {"A", "B"}
     assert checked_codes(con, ds.CHECKED_DART_SHARES) == {"A"}
     con.close()
-
-
-def test_shares_series_rotates_to_next_key_on_quota(monkeypatch):
-    """일한도(020)를 만나면 다음 키로 넘어간다 — 예전엔 keys[0] 하나뿐이었다.
-
-    그 제약이 상장분 백필(2,595종목 × ~9.5콜)을 하루 한도 밖으로 밀어냈고,
-    이틀로 나눈 분할이 정렬과 겹쳐 시대별로 기울어진 중간 상태를 만들었다.
-    """
-    seen = []
-
-    def fake_fetch(key, corp_code, year, reprt_code):
-        seen.append(key)
-        if key == "k1":
-            return {"status": "020"}          # 한도 소진
-        return {"status": "000", "list": [
-            {"se": "보통주", "istc_totqy": "1,000", "stlm_dt": f"{year}-12-31"}]}
-
-    monkeypatch.setattr(ds, "fetch", fake_fetch)
-    ki = [0]
-    out = ds.shares_series(["k1", "k2"], "c", 2020, 2020, ki=ki, sleep=0)
-
-    assert seen[:2] == ["k1", "k2"]     # 소진 즉시 다음 키로
-    assert ki == [1]                    # 인덱스가 유지된다(다음 종목은 k2 로 시작)
-    assert out and out[0][0] == 1000
-
-
-def test_shares_series_key_index_is_shared_across_calls(monkeypatch):
-    """ki 를 넘기면 종목 간에 유지된다 — 안 그러면 종목마다 소진된 키를 또 친다."""
-    seen = []
-
-    def fake_fetch(key, corp_code, year, reprt_code):
-        seen.append(key)
-        if key == "k1":
-            return {"status": "020"}
-        return {"status": "000", "list": [
-            {"se": "보통주", "istc_totqy": "1", "stlm_dt": f"{year}-12-31"}]}
-
-    monkeypatch.setattr(ds, "fetch", fake_fetch)
-    ki = [0]
-    ds.shares_series(["k1", "k2"], "a", 2020, 2020, ki=ki, sleep=0)
-    seen.clear()
-    ds.shares_series(["k1", "k2"], "b", 2020, 2020, ki=ki, sleep=0)
-    assert "k1" not in seen        # 두 번째 종목은 소진된 키를 다시 치지 않는다
