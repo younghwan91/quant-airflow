@@ -90,6 +90,28 @@ def test_upsert_uses_on_conflict_for_postgres_connection():
     fake_con.commit.assert_called_once()
 
 
+def test_upsert_falls_back_to_do_nothing_when_all_columns_are_the_pk():
+    """news_article_tickers처럼 컬럼 전부가 pk_cols인 순수 연결 테이블 대비.
+
+    update_cols가 비어 "DO UPDATE SET " 뒤에 대입식이 없으면 Postgres가
+    "syntax error at end of input"으로 죽는다(2026-09-06 daily_news
+    collect_toss_news 실측) — DO NOTHING으로 폴백해야 한다.
+    """
+    fake_con = MagicMock()
+    fake_cursor = MagicMock()
+    fake_con.cursor.return_value.__enter__.return_value = fake_cursor
+    records = [("art1", "005930")]
+
+    with patch("psycopg2.extras.execute_values") as execute_values:
+        n = _upsert(fake_con, "news_article_tickers", ["article_id", "ticker"],
+                    records, pk_cols=("article_id", "ticker"))
+
+    assert n == 1
+    sql = execute_values.call_args[0][1]
+    assert "ON CONFLICT (article_id,ticker) DO NOTHING" in sql
+    assert "DO UPDATE SET" not in sql
+
+
 def _bar(code, date, close):
     values = {"code": code, "date": date, "open": close, "high": close,
               "low": close, "close": close, "volume": 0, "trade_value": 0}
