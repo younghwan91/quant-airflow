@@ -160,6 +160,8 @@ CREATE TABLE IF NOT EXISTS news_judgments (
     model_id            TEXT NOT NULL,
     prompt_version      TEXT NOT NULL,
     knowledge_date      DATE NOT NULL,   -- 판단이 실제로 이뤄진 날 (백필 없음)
+    confidence          INTEGER CHECK (confidence IS NULL OR (confidence BETWEEN 0 AND 100)),  -- LLM 자체 확신도 0~100 (013)
+    judged_at           TIMESTAMPTZ,     -- generate() 응답 시각(UTC), 레이턴시 측정용 (013)
     PRIMARY KEY (source_type, source_id, ticker, prompt_version)
 );
 CREATE INDEX IF NOT EXISTS idx_news_judgments_ticker ON news_judgments(ticker);

@@ -281,6 +281,8 @@ CREATE TABLE IF NOT EXISTS news_judgments (
     model_id            TEXT NOT NULL,
     prompt_version      TEXT NOT NULL,
     knowledge_date      TEXT NOT NULL,
+    confidence          INTEGER,          -- LLM 자체 확신도 0~100 (013, NULL=013 이전 행)
+    judged_at           TEXT,             -- generate() 응답 시각 UTC ISO (013, NULL=013 이전 행)
     PRIMARY KEY (source_type, source_id, ticker, prompt_version)
 );
 CREATE INDEX IF NOT EXISTS idx_news_judgments_ticker ON news_judgments(ticker);
@@ -789,6 +791,7 @@ _NEWS_JUDGMENTS_COLS = [
     "source_type", "source_id", "ticker", "event_type", "sentiment_direction",
     "related_codes", "is_stale_repeat", "first_seen_date", "price_impact_likely",
     "rationale", "model_id", "prompt_version", "knowledge_date",
+    "confidence", "judged_at",
 ]
 
 

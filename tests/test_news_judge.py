@@ -36,27 +36,29 @@ def test_parse_judgment_valid_response():
     response = '''{"event_type": "실적", "sentiment_direction": 1,
         "related_codes": ["000660", "005935"], "is_stale_repeat": false,
         "first_seen_date": null, "price_impact_likely": true,
-        "rationale": "영업이익 서프라이즈"}'''
+        "rationale": "영업이익 서프라이즈", "confidence": 80}'''
     j = parse_judgment(response)
     assert j == Judgment(
         event_type="실적", sentiment_direction=1,
         related_codes=["000660", "005935"], is_stale_repeat=False,
         first_seen_date=None, price_impact_likely=True,
-        rationale="영업이익 서프라이즈",
+        rationale="영업이익 서프라이즈", confidence=80,
     )
 
 
 def test_parse_judgment_rejects_unknown_event_type():
     response = '{"event_type": "존재안함", "sentiment_direction": 0, ' \
                '"related_codes": [], "is_stale_repeat": false, ' \
-               '"first_seen_date": null, "price_impact_likely": false, "rationale": ""}'
+               '"first_seen_date": null, "price_impact_likely": false, "rationale": "", ' \
+               '"confidence": 50}'
     assert parse_judgment(response) is None
 
 
 def test_parse_judgment_rejects_out_of_range_sentiment():
     response = '{"event_type": "기타", "sentiment_direction": 5, ' \
                '"related_codes": [], "is_stale_repeat": false, ' \
-               '"first_seen_date": null, "price_impact_likely": false, "rationale": ""}'
+               '"first_seen_date": null, "price_impact_likely": false, "rationale": "", ' \
+               '"confidence": 50}'
     assert parse_judgment(response) is None
 
 
@@ -72,7 +74,24 @@ def test_parse_judgment_rejects_missing_field():
 def test_parse_judgment_rejects_boolean_sentiment():
     response = '{"event_type": "기타", "sentiment_direction": true, ' \
                '"related_codes": [], "is_stale_repeat": false, ' \
-               '"first_seen_date": null, "price_impact_likely": false, "rationale": ""}'
+               '"first_seen_date": null, "price_impact_likely": false, "rationale": "", ' \
+               '"confidence": 50}'
+    assert parse_judgment(response) is None
+
+
+def test_parse_judgment_rejects_out_of_range_confidence():
+    response = '{"event_type": "기타", "sentiment_direction": 0, ' \
+               '"related_codes": [], "is_stale_repeat": false, ' \
+               '"first_seen_date": null, "price_impact_likely": false, "rationale": "", ' \
+               '"confidence": 101}'
+    assert parse_judgment(response) is None
+
+
+def test_parse_judgment_rejects_boolean_confidence():
+    response = '{"event_type": "기타", "sentiment_direction": 0, ' \
+               '"related_codes": [], "is_stale_repeat": false, ' \
+               '"first_seen_date": null, "price_impact_likely": false, "rationale": "", ' \
+               '"confidence": true}'
     assert parse_judgment(response) is None
 
 
@@ -82,13 +101,14 @@ def test_judge_item_returns_parsed_judgment_on_valid_response():
         return ('{"event_type": "실적", "sentiment_direction": 1, '
                 '"related_codes": [], "is_stale_repeat": false, '
                 '"first_seen_date": null, "price_impact_likely": true, '
-                '"rationale": "테스트"}')
+                '"rationale": "테스트", "confidence": 70}')
 
     item = {"ticker": "005930", "title": "제목", "content": "본문",
             "published_at": "2026-09-06T08:30:00"}
     j = judge_item(fake_generate, item, prior_context=[])
     assert j is not None
     assert j.event_type == "실적"
+    assert j.confidence == 70
 
 
 def test_judge_item_returns_none_on_unparseable_response():
@@ -106,7 +126,7 @@ def test_collect_judges_new_disclosure_and_upserts(tmp_path):
         return ('{"event_type": "기타", "sentiment_direction": 0, '
                 '"related_codes": [], "is_stale_repeat": false, '
                 '"first_seen_date": null, "price_impact_likely": false, '
-                '"rationale": "테스트"}')
+                '"rationale": "테스트", "confidence": 60}')
 
     stats = collect(con, fake_generate, model_id="gemini-test", today="20260906")
     assert stats == {"target": 1, "judged": 1, "parse_failures": 0, "api_failures": 0}
@@ -121,7 +141,7 @@ def test_collect_skips_already_judged_at_same_prompt_version(tmp_path):
     _seed_disclosure(con)
     upsert_news_judgments(con, [(
         "disclosure", "dart:x", "005930", "기타", 0, "[]", 0, None, False,
-        "기존 판단", "gemini-test", "v1", "20260906",
+        "기존 판단", "gemini-test", "v1", "20260906", 60, "2026-09-06T00:00:00+00:00",
     )])
 
     calls = []
@@ -175,7 +195,7 @@ def test_parse_judgment_accepts_valid_yyyymmdd_first_seen_date():
     response = ('{"event_type": "기타", "sentiment_direction": 0, '
                 '"related_codes": [], "is_stale_repeat": true, '
                 '"first_seen_date": "20260901", "price_impact_likely": false, '
-                '"rationale": ""}')
+                '"rationale": "", "confidence": 50}')
     j = parse_judgment(response)
     assert j is not None
     assert j.first_seen_date == "20260901"
@@ -228,7 +248,7 @@ def test_collect_writes_each_judgment_immediately_surviving_a_later_failure(tmp_
             return ('{"event_type": "기타", "sentiment_direction": 0, '
                      '"related_codes": [], "is_stale_repeat": false, '
                      '"first_seen_date": null, "price_impact_likely": false, '
-                     '"rationale": "첫 건"}')
+                     '"rationale": "첫 건", "confidence": 55}')
         raise RuntimeError("rate limited")
 
     stats = collect(con, flaky_generate, model_id="gemini-test", today="20260906")
