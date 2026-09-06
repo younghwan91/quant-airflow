@@ -151,11 +151,12 @@ flowchart LR
 | `premarket_news_judgment` | 평일 08:45 | daily_news와 동일 수집 — 개장 전 시가 진입 판단용 |
 | `earnings_backfill` | 일 10:00 | DART 실적 전체 이력 백필 |
 | `weekly_history_backfill` | 일 11:00 | 업종지수·공매도·신용 히스토리 깊이 재수집 |
-| `weekly_listed_shares` | 화 10:10 | 키움 상장주식수 스냅샷 |
+| `monthly_listed_shares_backfill` | 매월 1일 10:20 | DART 상장주식수 과거 백필(2016~2025, 생존편향 3층 중 "주식수"를 채우는 실제 DAG) |
+| `weekly_listed_shares` | 화 10:10 | 키움 상장주식수 스냅샷(2026년 이후분, 과거 백필 불가) |
 | `weekly_delisted_stocks` | 토 10:05 | 폐지 마스터 + 과거 일봉 + 상장주식수 백필(위 3층) |
 | `weekly_price_adjust` | 토 10:40 | 폐지 시세 백필 후 조정가 재생성 |
 
-나머지 DAG(월간 백필, KRX 수동 백업 등)는 `dags/` 코드 참고.
+나머지 DAG(`daily_krx_shares` — KRX 소스가 로그인 벽으로 막혀 현재 paused, 수동 트리거 전용 등)는 `dags/` 코드 참고.
 
 ## 더 자세히
 
