@@ -4,17 +4,29 @@
 
 ## 머신 가동은 cron 이 관리한다
 
-스페어 PC 를 24시간 켜 두지 않는다. **창 셋으로 나눠 띄운다** — 오전 창은 매일,
-저녁 창은 평일용과 토요일용이 따로 있어 하루에 최대 두 창이 뜬다.
+스페어 PC 를 24시간 켜 두지 않는다. **창 넷으로 나눠 띄운다** — 장전 창과 오전 창은
+평일/매일, 저녁 창은 평일용과 토요일용이 따로 있어 하루에 최대 세 창이 뜬다.
 
 | 창 | 기동 | 대상 |
 |---|---|---|
+| 0 — 장전 판단 | 평일 08:40 (지평선 09:00) | premarket_news_judgment(08:45) — 시가 진입 판단용 LLM 뉴스/공시 판단, 09:00 개장 전 완료 필요 |
 | 1 — 오전 수집 | 매일 10:00 (지평선 11:30) | catchup · short_credit · listed_shares · 주간/월간 백필 |
 | 2 — 평일 저녁 | 평일 15:55 | daily_collection(16:00) · earnings(16:00) · price_adjust(16:55) · consensus(17:00) · sharadar(화~금 17:30) |
 | 3 — 토요일 저녁 | 토 17:20 | sharadar(17:30) 하나 |
 
 각 창은 `scripts/wait_and_stop.sh` 가 "그 지평선까지 예정된 DAG 가 전부 끝났는가"를
 Airflow 메타DB 에 물어 조기 종료한다(안전장치 포함).
+
+**창 0 은 코드 배포만으로는 안 돈다.** `premarket_news_judgment` DAG(08:45,
+`dags/premarket_news_judgment.py`)를 실제로 09:00 개장 전에 돌리려면 이 창을 여는
+crontab 항목을 **호스트에 직접 추가**해야 한다 — 이 레포는 크론 자체를 관리하지
+않는다(창 1~3 도 마찬가지로 호스트 크론에만 있다). 창 1~3 과 같은 패턴으로
+`docker compose up -d && ./scripts/wait_and_stop.sh --until 09:00` 을 평일 08:40 에
+실행하도록 등록한다. 이걸 빠뜨리면 `premarket_news_judgment` 는 Airflow 스케줄러가
+꺼져 있는 시각에 예약된 채로 있다가, 10:00 창이 열릴 때 `catchup=False` 로 **가장
+최근 놓친 회차 하나**만 돌아 `daily_news`(10:05)와 사실상 같은 시각에 중복 실행되고,
+정작 장전 판단이라는 목적은 달성하지 못한다(2026-09-06 최종 리뷰에서 발견 — 배포
+전 반드시 크론 등록 여부를 확인할 것).
 
 **왜 한 창이 아닌가.** 예전엔 10:00 기동 → 마지막 DAG 까지 한 창이었는데, 실측 가동
 521분 중 작업이 138분(27%)이고 **380분(73%)이 오전 수집과 저녁 수집 사이의 유휴**였다.
@@ -51,7 +63,7 @@ TimescaleDB 접속 정보(`TIMESCALE_*`)는 LAN 내부용이라 평문 컨테이
 ## 저장소 구조
 
 ```
-dags/                  # 14개 DAG — run_collector()로 `python -m collectors.X` 실행
+dags/                  # 16개 DAG — run_collector()로 `python -m collectors.X` 실행
   _common.py           #   공유 헬퍼: timescale_dsn()/kiwoom_env()/dart_env()/run_collector()
 collectors/            # 수집 로직 자체 보유 (kr_quant 런타임 의존 없음)
   storage.py           #   스키마 + upsert 전체 (sqlite/Postgres 듀얼 백엔드)

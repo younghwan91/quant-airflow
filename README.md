@@ -8,7 +8,7 @@
 **한국 주식**(코스피·코스닥)의 시세·수급·실적·컨센서스를 TimescaleDB 에 쌓고,
 **미국 주식**(Sharadar)은 벤더가 주는 벌크 스냅샷으로 DuckDB 스토어를 거래일마다 새로 짓는다.
 
-- **오케스트레이션**: Airflow(LocalExecutor) — 14개 DAG
+- **오케스트레이션**: Airflow(LocalExecutor) — 16개 DAG
 - **데이터 소스**: DART(실적·공시) · 키움 REST(시세·수급·공매도·신용·상장주식수) · KRX(상장폐지) · 네이버(컨센서스·폐지종목 시세) · Sharadar(미국) · 토스증권(뉴스, krx-news-client)
 - **스토어**: TimescaleDB(hypertable + 압축) — LAN 에 열어 메인 PC 가 읽기 전용으로 질의
 
@@ -82,7 +82,8 @@ spare PC (Ubuntu, 이 저장소)                                 main PC
 | `daily_price_adjust` | 평일 16:55 | `daily_bars_adjusted` 재생성 |
 | `daily_consensus` | 평일 17:00 | 네이버 컨센서스(월요일만 전종목) |
 | `daily_sharadar` | 화~토 17:30 | 미국 벌크 스냅샷 → 스토어 재구축 → 검증 → 원자적 공개 |
-| `daily_news` | 평일 10:05 · 16:05 | 토스증권 뉴스 + DART 공시([krx-news-client](https://github.com/younghwan91/krx-news-client)) — 백테스팅+실매매용 |
+| `daily_news` | 평일 10:05 · 16:05 | 토스증권 뉴스 + DART 공시([krx-news-client](https://github.com/younghwan91/krx-news-client)) — 백테스팅+실매매용, 뒤이어 LLM 판단(news_judgments) |
+| `premarket_news_judgment` | 평일 08:45 | daily_news와 같은 수집 + LLM 판단 — 09:00 개장 전 시가 진입 판단용. **호스트 crontab 에 08:40 창 등록 필요**(docs/operations.md 창 0) |
 | `earnings_backfill` | 일 10:00 | DART 실적 전체 이력 백필(resume, krx-fundamentals-client) |
 | `weekly_history_backfill` | 일 11:00 | 업종지수·공매도·신용 히스토리 깊이 재수집 |
 | `weekly_listed_shares` | 화 10:10 | 키움 상장주식수 스냅샷 |
