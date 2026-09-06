@@ -474,10 +474,15 @@ def _upsert(
     if _is_pg(con):
         import psycopg2.extras  # noqa: PLC0415 — optional dep, only needed for this path
 
-        if on_conflict == "nothing":
+        update_cols = [c for c in cols if c not in pk_cols]
+        if on_conflict == "nothing" or not update_cols:
+            # update_cols가 비면(모든 컬럼이 pk_cols인 순수 연결 테이블, 예:
+            # news_article_tickers) "DO UPDATE SET " 뒤에 대입식이 하나도 안
+            # 남아 SQL 자체가 깨진다("syntax error at end of input", 2026-09-06
+            # daily_news collect_toss_news 실측) — 갱신할 컬럼이 없으니
+            # DO NOTHING이 의미상으로도 맞다.
             action = "DO NOTHING"
         else:
-            update_cols = [c for c in cols if c not in pk_cols]
             action = "DO UPDATE SET " + ",".join(f"{c}=EXCLUDED.{c}" for c in update_cols)
         sql = (
             f"INSERT INTO {table}({','.join(cols)}) VALUES %s "
