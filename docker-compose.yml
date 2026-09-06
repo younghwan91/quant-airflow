@@ -68,7 +68,10 @@ x-airflow-common: &airflow-common
     # 미국(Sharadar) 파이프라인 — daily_sharadar / weekly_sharadar_universe.
     # kr-quant 와 같은 방식: 코드는 ro 로 마운트만 하고 pip install 하지 않으며
     # PYTHONPATH(src 레이아웃)로 찾는다(_common.sharadar_env).
-    - ../opt_portfolio:/opt/opt-portfolio:ro
+    # opt_portfolio 저장소가 portfolio-research 로 개명됐다(2026-09-05) — 옛 경로로
+    # 마운트하면 호스트에 없는 디렉터리를 Docker 가 root 소유 빈 폴더로 자동 생성해
+    # 버려서 ModuleNotFoundError 가 나고 그게 눈에 안 띈다(2026-09-06 실측).
+    - ../portfolio-research:/opt/opt-portfolio:ro
     # 스토어(us_micro.duckdb, 2.7GB)만 rw. 레포 전체를 rw 로 열 이유가 없다 —
     # DAG 가 쓰는 건 이 DuckDB 파일 하나다.
     - ${US_DATA_DIR:-/home/young/data}:/opt/us-data
