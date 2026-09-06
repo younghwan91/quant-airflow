@@ -21,13 +21,18 @@ TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
 cd "$REPO"
-set -a; . ./.env; set +a
+# .env 를 통째로 export(set -a)하지 않는다 — KIWOOM_APP_KEY/DART_API_KEY 같은
+# 시크릿까지 rclone·gzip·docker 같은 무관한 자식 프로세스에 넘어간다.
+# docs/operations.md 는 "수집 subprocess 에만 주입" 이 원칙이다. 필요한
+# TIMESCALE_* 는 스크립트 안에서 변수로만 쓰고, docker exec 에는 -e 로 명시 전달한다.
+. ./.env
 
 DBUSER="$TIMESCALE_USER"
 DBPASS="$TIMESCALE_PASSWORD"
 DBNAME="$TIMESCALE_DB"
 
 DATE="$(date +%F)"
+DOW="$(date +%u)"
 HEAVY_TABLES=(minute_bars quotes ticks)
 
 # ⚠️ TimescaleDB 하이퍼테이블은 실데이터가 부모 테이블이 아니라
@@ -50,9 +55,18 @@ dump_core() {
   local out="$TMPDIR/core-$DATE.sql.gz"
   local excludes=()
   for t in "${HEAVY_TABLES[@]}"; do excludes+=(--exclude-table="$t"); done
+  # process substitution(< <(...))의 실패는 set -e 로 안 잡힌다 — 여기서 chunk
+  # 조회가 죽으면 while 루프는 그냥 빈 스트림을 본 것처럼 넘어가고, core 덤프가
+  # 위 3개 정적 이름만으로 진행돼 실제 청크(_hyper_*_chunk)를 하나도 못 뺀다.
+  # 명령 치환으로 바꿔 실패를 여기서 끊는다.
+  local chunks
+  chunks="$(heavy_chunk_excludes)" || {
+    echo "[$(date '+%F %T')] ⚠️ heavy chunk 조회 실패 — core 백업 중단 (안전을 위해)" >&2
+    return 1
+  }
   while IFS= read -r chunk; do
     [ -n "$chunk" ] && excludes+=(--exclude-table="$chunk")
-  done < <(heavy_chunk_excludes)
+  done <<< "$chunks"
   docker exec -e PGPASSWORD="$DBPASS" "$CONTAINER" \
     pg_dump -U "$DBUSER" -d "$DBNAME" "${excludes[@]}" | gzip > "$out"
   rclone copyto "$out" "$REMOTE/core/core-$DATE.sql.gz"
@@ -71,11 +85,21 @@ SHARADAR_DIR="/home/young/data"
 
 dump_sharadar_duckdb() {
   local dest="$REMOTE/sharadar/duckdb/$DATE"
+  local copied=0
   for f in us.duckdb us_micro.duckdb us_micro.duckdb.manifest.json; do
     local src="$SHARADAR_DIR/$f"
-    [ -f "$src" ] && rclone copyto "$src" "$dest/$f"
+    if [ -f "$src" ]; then
+      rclone copyto "$src" "$dest/$f"
+      copied=$((copied + 1))
+    fi
   done
-  echo "[$(date '+%F %T')] sharadar duckdb 백업 완료 — $dest"
+  # 파일이 하나도 없는데 "완료" 를 찍으면 daily_sharadar 재빌드 실패를 백업
+  # 성공으로 위장하는 꼴이다("초록불 = 성공 아니다", CLAUDE.md §5).
+  if [ "$copied" -eq 0 ]; then
+    echo "[$(date '+%F %T')] ⚠️ sharadar duckdb 파일 없음 — daily_sharadar 결과물 확인 필요 (백업 스킵)" >&2
+    return 1
+  fi
+  echo "[$(date '+%F %T')] sharadar duckdb 백업 완료 (${copied}개 파일) — $dest"
 }
 
 dump_sharadar_bulk() {
@@ -88,8 +112,11 @@ dump_sharadar_bulk() {
 dump_core
 dump_sharadar_duckdb
 
-# 일요일(요일번호 7)에만 무거운 전체 덤프 + 벌크 zip 동기화
-if [ "$(date +%u)" = "7" ]; then
+# 일요일(요일번호 7)에만 무거운 전체 덤프 + 벌크 zip 동기화. $DOW 는 스크립트
+# 시작 시점에 $DATE 와 함께 고정해뒀다 — 여기서 다시 date +%u 를 부르면 앞의
+# 두 덤프가 자정을 넘겨 걸릴 때 $DATE(전날)와 요일 판정(다음날 기준)이 어긋나
+# 주간 전체 덤프가 조용히 스킵되거나 날짜가 안 맞는 파일명으로 올라갈 수 있다.
+if [ "$DOW" = "7" ]; then
   dump_full
   dump_sharadar_bulk
 fi
