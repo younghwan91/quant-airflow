@@ -1,0 +1,137 @@
+# simnode 전용 — Airflow 4종(메타DB·init·webserver·scheduler)만 있다. timescaledb 는
+# 여기 없다(docker-compose.timescale.yml, trader 24/7 상시). 그래서 이 파일은
+# 단독으로 24/7 상시 기동해도 된다 — 예전처럼 하루 4번 cron 으로 올렸다 내릴
+# 필요가 없다(2026-09-11 분리 전까지는 timescaledb 를 같은 스택에 껴서 내리는
+# 바람에 장중에 옆 레포 scalp-it 의 틱 수집기가 DB 순단으로 죽는 위험이 있었다 —
+# docs/operations.md 참고).
+#
+# TIMESCALE_HOST 기본값은 도커 네트워크 서비스명 `timescaledb` — 한 대에서
+# docker-compose.timescale.yml 과 합쳐 띄울 때만 그대로 통한다:
+#   docker compose -f docker-compose.timescale.yml -f docker-compose.airflow.yml up -d
+# simnode 단독 운영에서는 .env 의 TIMESCALE_HOST 를 trader LAN IP 로 override 한다
+# (예: TIMESCALE_HOST=192.168.45.70). pg_hba 는 이미 `host all all all
+# scram-sha-256`라 원격 접속에 추가 설정이 필요 없다(2026-09-11 확인).
+#
+# depends_on 에 timescaledb 가 없는 이유: 이 파일 단독 실행 시 그 서비스가
+# 존재하지 않아 Compose 검증에서 깨진다. 대신 airflow-init 이 자체적으로
+# pg_isready 로 원격 DB 를 기다린다.
+
+x-airflow-common-env: &airflow-common-env
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_META_USER}:${AIRFLOW_META_PASSWORD}@airflow-meta-db/${AIRFLOW_META_DB}
+  AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+  AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  # 새 DAG 는 켜진 채로 등록된다 — CLAUDE.md §4, 2026-09-01 사고 참고.
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+  # simnode 는 유휴 자원이 넉넉해 폴링 주기를 N100 시절처럼 늘려둘 필요가 없다.
+  # 다만 기존 값을 그대로 둔다 — 검증된 설정을 바꿀 이유가 없다(운영 중 창을
+  # 자를 수 있는 값이라 CLAUDE.md §1 "승인 없이 하지 않는 것"에 해당).
+  AIRFLOW__SCHEDULER__SCHEDULER_HEARTBEAT_SEC: "30"
+  AIRFLOW__SCHEDULER__PROCESSOR_POLL_INTERVAL: "30"
+  AIRFLOW__SCHEDULER__SCHEDULER_IDLE_SLEEP_TIME: "15"
+  AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "1800"
+  AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "600"
+  AIRFLOW__WEBSERVER__WORKERS: "1"
+  AIRFLOW__WEBSERVER__WORKER_REFRESH_INTERVAL: "1800"
+  AIRFLOW__CORE__PARALLELISM: "5"
+  KR_QUANT_SQLITE_PATH: ${KR_QUANT_SQLITE_PATH}
+  TIMESCALE_HOST: ${TIMESCALE_HOST:-timescaledb}
+  TIMESCALE_PORT: ${TIMESCALE_PORT:-5432}
+  TIMESCALE_DB: ${TIMESCALE_DB}
+  TIMESCALE_USER: ${TIMESCALE_USER}
+  TIMESCALE_PASSWORD: ${TIMESCALE_PASSWORD}
+
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  environment:
+    <<: *airflow-common-env
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./collectors:/opt/airflow/collectors
+    - ./scripts:/opt/airflow/scripts
+    - ./logs:/opt/airflow/logs
+    - ../kr-quant:/opt/kr-quant:ro
+    - ../portfolio-research:/opt/opt-portfolio:ro
+    - ${US_DATA_DIR:-/home/young/data}:/opt/us-data
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    airflow-meta-db:
+      condition: service_healthy
+
+services:
+  airflow-meta-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${AIRFLOW_META_USER}
+      POSTGRES_PASSWORD: ${AIRFLOW_META_PASSWORD}
+      POSTGRES_DB: ${AIRFLOW_META_DB}
+    volumes:
+      - airflow-meta-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${AIRFLOW_META_USER}"]
+      interval: 30s
+      retries: 10
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    environment:
+      <<: *airflow-common-env
+      KIWOOM_APP_KEY: ${KIWOOM_APP_KEY}
+      KIWOOM_APP_SECRET: ${KIWOOM_APP_SECRET}
+      DART_API_KEY: ${DART_API_KEY:-}
+      DART_API_KEY_2: ${DART_API_KEY_2:-}
+      DART_API_KEY_3: ${DART_API_KEY_3:-}
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        # timescaledb 가 이 컴포즈 파일에 없다(원격, trader). 네트워크로
+        # 붙는 남의 DB 라 healthcheck 로 못 걸고, 직접 pg_isready 로 기다린다.
+        echo "TimescaleDB($$TIMESCALE_HOST:$$TIMESCALE_PORT) 대기 중..."
+        for i in $$(seq 1 60); do
+          pg_isready -h "$$TIMESCALE_HOST" -p "$$TIMESCALE_PORT" -U "$$TIMESCALE_USER" -q && break
+          sleep 2
+        done
+        pg_isready -h "$$TIMESCALE_HOST" -p "$$TIMESCALE_PORT" -U "$$TIMESCALE_USER" -q \
+          || { echo "TimescaleDB 연결 실패 — trader 가 켜져 있는지, docker-compose.timescale.yml 이 떠 있는지 확인"; exit 1; }
+        airflow db migrate
+        airflow users create --username "${AIRFLOW_ADMIN_USER}" --password "${AIRFLOW_ADMIN_PASSWORD}" \
+          --firstname kr-quant --lastname admin --role Admin --email admin@example.com || true
+        airflow variables set KIWOOM_APP_KEY "$$KIWOOM_APP_KEY"
+        airflow variables set KIWOOM_APP_SECRET "$$KIWOOM_APP_SECRET"
+        if [ -n "$$DART_API_KEY" ]; then airflow variables set DART_API_KEY "$$DART_API_KEY"; fi
+        if [ -n "$$DART_API_KEY_2" ]; then airflow variables set DART_API_KEY_2 "$$DART_API_KEY_2"; fi
+        if [ -n "$$DART_API_KEY_3" ]; then airflow variables set DART_API_KEY_3 "$$DART_API_KEY_3"; fi
+        for f in /opt/airflow/dags/*.py; do
+          d=$$(basename "$$f" .py)
+          [ "$$d" = "_common" ] && continue
+          airflow dags unpause "$$d" >/dev/null 2>&1 || true
+        done
+
+  # simnode 는 상시 켜두는 게 전제라 UI 도 늘 띄워둔다 — trader 시절엔 상시 RSS
+  # 657MB 가 아까워 `profiles: ["ui"]` 로 빼뒀지만, simnode 61GB RAM 에선 무시할
+  # 수준이다. 필요하면 여전히 `--profile ui` 없이 기본 up 에 포함되도록 profiles
+  # 를 제거했다 — 웹 UI 로 DAG unpause 등 사람 조작을 할 창구가 항상 열려 있어야
+  # 한다.
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    depends_on:
+      - airflow-init
+    restart: unless-stopped
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    depends_on:
+      - airflow-init
+    restart: unless-stopped
+
+volumes:
+  airflow-meta-db-data:

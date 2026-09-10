@@ -1,0 +1,22 @@
+# simnode 전용 — TimescaleDB 읽기 전용 스트리밍 리플리카.
+#
+# 원본(trader)은 이 파일을 모른다 — 원본 쪽 변경은 pg_hba.conf 에 replication
+# 라인 하나 추가 + pg_reload_conf() 뿐(재시작 없음, 2026-09-11 적용). 여기서는
+# `pg_basebackup` 으로 최초 1회 시딩한 뒤 `standby.signal` + `primary_conninfo`
+# 로 계속 WAL 을 받는다.
+#
+# 연구 쿼리는 여기(포트 5433)로 붙는다 — 61GB 램에 전체가 캐시되고, 원본에
+# 부하도 안 준다. 쓰기는 절대 안 된다(hot_standby, 읽기 전용) — 실수로 여기
+# 붙어 쓰려 하면 그냥 에러난다. primary 는 여전히 :5432(trader).
+services:
+  timescaledb-replica:
+    image: timescale/timescaledb:2.17.2-pg16
+    ports:
+      - "5433:5432"
+    volumes:
+      - timescale-replica-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  timescale-replica-data:
+    external: true

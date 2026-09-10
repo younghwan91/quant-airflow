@@ -1,0 +1,37 @@
+# trader 전용 — 실시간 틱 수집기(scalp-it)가 물리적으로 같은 호스트에 있어야
+# DB 순단 시 재연결 실패로 죽지 않는다(2026-09-11 분리 근거, docs/operations.md
+# 참고). 그래서 이 파일은 절대 껐다 켰다 하지 않고 24/7 상시 기동한다 —
+# Airflow(docker-compose.airflow.yml)처럼 cron 으로 올렸다 내리는 대상이 아니다.
+#
+# 볼륨은 분리 이전 quant-airflow_timescale-data 를 그대로 참조한다(external).
+# 이 파일이 처음 `up` 될 때 기존 컨테이너와 설정이 완전히 같으므로 Compose 가
+# 컨테이너를 재생성하지 않는다 — 무중단 전환.
+#
+# 한 대에서 Airflow 까지 같이 테스트하려면:
+#   docker compose -f docker-compose.timescale.yml -f docker-compose.airflow.yml up -d
+# (TIMESCALE_HOST 기본값이 도커 네트워크 서비스명 `timescaledb`라 그대로 붙는다)
+#
+# 운영(2대 분리)에서는 trader 에서 이 파일만:
+#   docker compose -f docker-compose.timescale.yml up -d
+services:
+  timescaledb:
+    image: timescale/timescaledb:2.17.2-pg16
+    ports:
+      - "${TIMESCALE_PORT:-5432}:5432"
+    environment:
+      POSTGRES_USER: ${TIMESCALE_USER}
+      POSTGRES_PASSWORD: ${TIMESCALE_PASSWORD}
+      POSTGRES_DB: ${TIMESCALE_DB}
+    volumes:
+      - timescale-data:/var/lib/postgresql/data
+      - ./sql/init_timescale.sql:/docker-entrypoint-initdb.d/init_timescale.sql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${TIMESCALE_USER}"]
+      interval: 30s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  timescale-data:
+    external: true
+    name: quant-airflow_timescale-data
