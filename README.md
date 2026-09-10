@@ -14,12 +14,21 @@
 
 ## 두 호스트로 나뉜 배치 (2026-09-11)
 
-Airflow 와 TimescaleDB 는 이제 **같은 스택이 아니다.** 실시간 틱 수집기(scalp-it)가
-DB 와 물리적으로 같은 호스트에 있어야 순단 재연결 실패로 안 죽으므로, DB 는 그
-호스트(이 문서에서 "DB 호스트")에 24/7 상시로 남고, Airflow(스케줄러·웹서버·메타DB)는
-자원이 넉넉한 별도 호스트("Airflow 호스트")로 옮겨 역시 24/7 상시로 돈다. 예전엔
-하나였던 걸 하루 4번 껐다 켰다 했는데(`docs/operations.md` 의 옛 "가동 창" 참고),
-Airflow 호스트가 상시 구동을 버틸 만큼 여유로우면 그 창 자체가 필요 없다.
+Airflow 와 TimescaleDB 는 이제 **같은 스택이 아니다.** DB 는 24/7 상시(이 문서에서
+"DB 호스트"), Airflow(스케줄러·웹서버·메타DB)는 자원이 넉넉한 별도 호스트("Airflow
+호스트")에서 역시 24/7 상시로 돈다. 예전엔 하나였던 걸 하루 4번 껐다 켰다 했는데
+(`docs/operations.md` 의 옛 "가동 창" 참고), Airflow 호스트가 상시 구동을 버틸
+만큼 여유로우면 그 창 자체가 필요 없다.
+
+> **DB 호스트는 고정된 물리적 위치가 아니다 — PRIMARY 인 쪽이 DB 호스트다.**
+> 최초 분리(2026-09-11 오전)는 실시간 틱 수집기(scalp-it)와 물리적으로 같은
+> 호스트에 PRIMARY 를 두는 설계였다(순단 재연결 실패 회피). 같은 날 저녁,
+> collector 에 재연결+디스크 스풀이 들어가 LAN 순단을 스스로 버티는 게 실전
+> 검증되면서 PRIMARY 를 자원이 넉넉한 호스트로 승격(`pg_promote()`)했다 — 수집기는
+> 원래 호스트에 그대로 두고, LAN 너머 새 PRIMARY 에 쓴다. 옛 PRIMARY 는 새
+> PRIMARY 의 리플리카로 재구성했다(`docker-compose.timescale.yml` — 파일 이름은
+> 안 바꿨지만 내용이 role 을 명시한다). **어느 쪽이 지금 PRIMARY 인지는 코드가
+> 아니라 상태다** — `pg_is_in_recovery()` 로 확인한다(false = PRIMARY).
 
 ```bash
 git clone <this-repo> quant-airflow
@@ -29,8 +38,8 @@ cd quant-airflow
 cp .env.example .env   # 아래 필수값 채우기
 ```
 
-**DB 호스트**에서 (틱 수집기와 같은 머신, `db_guard.sh` 등 형제 레포 scalp-it 이
-쓰는 그 컨테이너):
+**DB 호스트**에서 (지금 PRIMARY 를 맡을 호스트 — 위 안내 상자 참고. `pg_is_in_recovery()`
+가 false 로 나와야 PRIMARY):
 
 ```bash
 docker compose -f docker-compose.timescale.yml up -d
@@ -59,8 +68,10 @@ docker compose -f docker-compose.timescale.yml -f docker-compose.airflow.yml up 
 | `TIMESCALE_*` / `AIRFLOW_*` | DB 접속 정보·Airflow 시크릿(`.env.example` 에 생성법 주석 포함). Airflow 호스트에서는 `TIMESCALE_HOST` 를 DB 호스트 LAN IP 로 override |
 | `US_DATA_DIR` | Sharadar DuckDB 스토어(`us_micro.duckdb`)가 있는 호스트 디렉터리 — Airflow 호스트 쪽에 있어야 한다. 없으면 `daily_sharadar` 가 돌지 않는다 |
 
-TimescaleDB 는 DB 호스트에서 `:5432` 로 LAN 에 열려 있고 메인 PC 와 Airflow 호스트
-양쪽이 여기에 질의한다.
+TimescaleDB 는 지금 PRIMARY 인 호스트에서 LAN 에 열려 있고 메인 PC 와 Airflow
+호스트 양쪽이 여기에 질의한다. 포트는 호스트마다 다를 수 있다(트래픽 정리 편의상
+바꾸지 않고 그대로 둠) — 실제 값은 `kr-quant/.env` 의 `KR_QUANT_DB`, 이
+레포 `.env` 의 `TIMESCALE_HOST`/`TIMESCALE_PORT` 를 확인한다.
 
 ## 데이터 읽는 법
 

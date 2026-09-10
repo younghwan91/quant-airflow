@@ -1,18 +1,23 @@
-# trader 전용 — 실시간 틱 수집기(scalp-it)가 물리적으로 같은 호스트에 있어야
-# DB 순단 시 재연결 실패로 죽지 않는다(2026-09-11 분리 근거, docs/operations.md
-# 참고). 그래서 이 파일은 절대 껐다 켰다 하지 않고 24/7 상시 기동한다 —
-# Airflow(docker-compose.airflow.yml)처럼 cron 으로 올렸다 내리는 대상이 아니다.
+# trader 전용 — 2026-09-11 부터 **읽기 전용 스트리밍 리플리카**다(원본 이름은
+# 그대로 뒀지만 역할이 바뀌었다 — 아래 참고). PRIMARY 는 이제 simnode
+# (docker-compose.timescale.yml, simnode 쪽 사본 — 파일 이름이 같아서 헷갈리면
+# `pg_is_in_recovery()` 로 확인: 여기는 true 가 나와야 정상이다).
 #
-# 볼륨은 분리 이전 quant-airflow_timescale-data 를 그대로 참조한다(external).
-# 이 파일이 처음 `up` 될 때 기존 컨테이너와 설정이 완전히 같으므로 Compose 가
-# 컨테이너를 재생성하지 않는다 — 무중단 전환.
+# 왜 뒤집혔나: 실시간 틱 수집기(scalp-it)와 같은 호스트에 PRIMARY 를 두는 게
+# 원래 설계였는데, collector.py 에 재연결+디스크 스풀(spool_dir)이 들어가
+# LAN 순단을 스스로 버티는 게 실전 검증(2026-09-11, trader DB 로 왕복 insert
+# 확인)됐다. 그래서 PRIMARY 를 자원이 넉넉한 simnode 로 승격(`pg_promote()`)
+# 하고, trader 는 리플리카로 재구성했다 — collector 는 여전히 trader 에서
+# 돌지만 이제 LAN 너머 simnode:5433 에 쓴다.
 #
-# 한 대에서 Airflow 까지 같이 테스트하려면:
-#   docker compose -f docker-compose.timescale.yml -f docker-compose.airflow.yml up -d
-# (TIMESCALE_HOST 기본값이 도커 네트워크 서비스명 `timescaledb`라 그대로 붙는다)
+# 24/7 상시(restart: unless-stopped) — cron 으로 올렸다 내리는 대상이 아니다.
+# 볼륨은 quant-airflow_timescale-data(외부, pg_basebackup 으로 시딩됨).
 #
-# 운영(2대 분리)에서는 trader 에서 이 파일만:
-#   docker compose -f docker-compose.timescale.yml up -d
+# ⚠️ 여기에 쓰기를 시도하면 항상 실패한다(read-only standby) — collector 의
+# DSN 은 kr-quant/.env 의 KR_QUANT_DB(simnode:5433)를 봐야 한다. 이 파일의
+# POSTGRES_USER/PASSWORD/DB 는 최초 initdb 때만 쓰이고 지금은 무시된다(디스크에
+# 이미 리플리카 데이터가 있어 엔트리포인트가 init 를 건너뛴다) — 남겨둔 이유는
+# 이 리플리카가 죽어 볼륨을 통째로 새로 시딩해야 할 때 문서 역할을 하도록.
 services:
   timescaledb:
     image: timescale/timescaledb:2.17.2-pg16

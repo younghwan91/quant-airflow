@@ -1,13 +1,20 @@
-# simnode 전용 — TimescaleDB 읽기 전용 스트리밍 리플리카.
+# simnode 전용 — 파일 이름은 "replica" 지만 **2026-09-11 pg_promote() 이후 이
+# 컨테이너가 PRIMARY 다.** 이름을 바꾸지 않은 이유는 볼륨 이름
+# (quant-airflow_timescale-replica-data)과 포트(5433)가 이미 kr-quant/.env,
+# quant-airflow/.env 등 여러 곳의 DSN 에 박혀 있어서 — 이름 하나 맞추자고
+# 그 전부를 또 바꾸는 게 더 위험하다고 판단했다. `pg_is_in_recovery()` 로
+# 실제 역할을 확인할 것 (여기는 false 가 나와야 정상 — primary).
 #
-# 원본(trader)은 이 파일을 모른다 — 원본 쪽 변경은 pg_hba.conf 에 replication
-# 라인 하나 추가 + pg_reload_conf() 뿐(재시작 없음, 2026-09-11 적용). 여기서는
-# `pg_basebackup` 으로 최초 1회 시딩한 뒤 `standby.signal` + `primary_conninfo`
-# 로 계속 WAL 을 받는다.
+# 왜 뒤집혔나: 원래 설계는 실시간 틱 수집기(scalp-it, trader)와 같은 호스트에
+# PRIMARY 를 두는 것이었는데, collector.py 에 재연결+디스크 스풀(spool_dir)이
+# 들어가 LAN 순단을 스스로 버티는 게 실전 검증(2026-09-11, trader DB 로 왕복
+# insert 확인)됐다. 그래서 PRIMARY 를 자원이 넉넉한 여기(simnode)로 승격하고,
+# trader 는 리플리카로 재구성했다(docker-compose.timescale.yml, trader 쪽 사본).
 #
-# 연구 쿼리는 여기(포트 5433)로 붙는다 — 61GB 램에 전체가 캐시되고, 원본에
-# 부하도 안 준다. 쓰기는 절대 안 된다(hot_standby, 읽기 전용) — 실수로 여기
-# 붙어 쓰려 하면 그냥 에러난다. primary 는 여전히 :5432(trader).
+# 연구 쿼리도 이제 여기가 정본이다 — 61GB 램에 전체가 캐시된다. trader 의
+# docker-compose.timescale.yml(포트 5432)은 이제 읽기 전용 리플리카고, 원본
+# 쪽 pg_hba.conf 에 replication 라인이 있어야 trader 가 여기 붙을 수 있다
+# (2026-09-11 추가함 — 192.168.45.0/24).
 services:
   timescaledb-replica:
     image: timescale/timescaledb:2.17.2-pg16
