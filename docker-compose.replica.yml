@@ -19,4 +19,5 @@ services:
 
 volumes:
   timescale-replica-data:
+    name: quant-airflow_timescale-replica-data
     external: true
