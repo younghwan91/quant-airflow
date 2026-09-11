@@ -15,6 +15,16 @@
 # docker-compose.timescale.yml(포트 5432)은 이제 읽기 전용 리플리카고, 원본
 # 쪽 pg_hba.conf 에 replication 라인이 있어야 trader 가 여기 붙을 수 있다
 # (2026-09-11 추가함 — 192.168.45.0/24).
+#
+# 2026-09-11 밤 — trader 리플리카가 WAL 세그먼트 삭제(`max_slot_wal_keep_size`
+# 100GB 초과)로 스트리밍이 끊겨 죽었었다. 2026-09-12 새벽 `pg_basebackup -R -C
+# -S trader_replica` 로 전체 재시딩 완료 — streaming 재개, replay_lsn 이 primary
+# sent_lsn 과 일치, ticks 카운트 원본=리플리카 정확히 일치(14,318,563) 검증됨.
+#
+# 재발 방지 메모: `max_slot_wal_keep_size`(현재 100GB, 디스크는 832GB 여유)는
+# trader 리플리카가 그만큼 뒤처지는 동안 아무도 못 알아채면 여전히 뚫린다 —
+# 이 파일의 재시딩 절차는 남아있지만, 근본적으로는 복제 지연/슬롯 비활성 상태를
+# 감시하는 알림이 없다는 게 진짜 구멍이다(아직 미해결).
 services:
   timescaledb-replica:
     image: timescale/timescaledb:2.17.2-pg16
