@@ -73,6 +73,17 @@ TimescaleDB 는 지금 PRIMARY 인 호스트에서 LAN 에 열려 있고 메인 
 바꾸지 않고 그대로 둠) — 실제 값은 `kr-quant/.env` 의 `KR_QUANT_DB`, 이
 레포 `.env` 의 `TIMESCALE_HOST`/`TIMESCALE_PORT` 를 확인한다.
 
+**scalp-it(실시간 틱 수집기) 쪽은 이 레포를 통째로 clone 하지 않는다** — 필요한 건
+`docker-compose.timescale.yml`(리플리카 기동)과 `scripts/backup_to_gdrive.sh` 뿐이라
+`git sparse-checkout set`으로 두 파일만 받는다. 전체 레포(DAG·수집기 등)는 항상 Airflow
+호스트 쪽 clone 이 정본이다 — 같은 레포가 양쪽 호스트에 있다고 양쪽 다 "찐"인 게
+아니라는 점에 주의(구성 파일 수정은 Airflow 호스트에서 하고 push, scalp-it 쪽은 pull 만).
+
+**리플리카가 WAL 스트리밍 끊김으로 죽으면** (`could not receive data from WAL stream:
+requested WAL segment ... has already been removed` — `max_slot_wal_keep_size` 한도를
+넘겨 리플리카가 못 따라잡은 경우, 증분 복구 불가) `docker-compose.replica.yml` 파일
+헤더 주석에 재시딩(`pg_basebackup -R -C -S <slot>`) 절차가 적혀 있다.
+
 ## 데이터 읽는 법
 
 ```python
