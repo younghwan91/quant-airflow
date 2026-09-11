@@ -85,6 +85,8 @@ services:
       DART_API_KEY: ${DART_API_KEY:-}
       DART_API_KEY_2: ${DART_API_KEY_2:-}
       DART_API_KEY_3: ${DART_API_KEY_3:-}
+      SHARADAR_API_KEY: ${SHARADAR_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     entrypoint: /bin/bash
     command:
       - -c
@@ -106,6 +108,16 @@ services:
         if [ -n "$$DART_API_KEY" ]; then airflow variables set DART_API_KEY "$$DART_API_KEY"; fi
         if [ -n "$$DART_API_KEY_2" ]; then airflow variables set DART_API_KEY_2 "$$DART_API_KEY_2"; fi
         if [ -n "$$DART_API_KEY_3" ]; then airflow variables set DART_API_KEY_3 "$$DART_API_KEY_3"; fi
+        # SHARADAR_API_KEY(daily_sharadar)·ANTHROPIC_API_KEY(premarket_news_judgment,
+        # daily_news 의 judge_news)는 원래 이 스크립트에 없었다 — trader 시절
+        # 메타DB 에 웹 UI 로 수동 등록돼 있었는데, 2026-09-11 메타DB 를 새로
+        # 시작하면서 자동 시딩 목록에 없던 이 둘만 조용히 빠졌다(daily_sharadar·
+        # premarket_news_judgment·daily_news 가 KeyError 로 실패한 뒤 발견 —
+        # airflow-init 로그가 아니라 각 DAG 자체 실패로만 드러난다는 게 함정).
+        # 옛 meta-db 볼륨(quant-airflow_airflow-meta-db-data, 보존해둠)에서
+        # 같은 FERNET_KEY 로 복호화해 .env 에 옮겨왔다 — 이제 자동 시딩된다.
+        if [ -n "$$SHARADAR_API_KEY" ]; then airflow variables set SHARADAR_API_KEY "$$SHARADAR_API_KEY"; fi
+        if [ -n "$$ANTHROPIC_API_KEY" ]; then airflow variables set ANTHROPIC_API_KEY "$$ANTHROPIC_API_KEY"; fi
         for f in /opt/airflow/dags/*.py; do
           d=$$(basename "$$f" .py)
           [ "$$d" = "_common" ] && continue
