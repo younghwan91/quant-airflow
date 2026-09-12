@@ -103,8 +103,38 @@ report_replication() {
     return 0
 }
 
+report_theme_freshness() {
+    # scalp-it-7c 설계(2026-09-13, scalp-it-f4 경유 전달) — 09-11 저녁
+    # scalp-theme-snapshot 이 레포 이전 도중 DSN 을 못 찾아 빈 값으로 exit 0
+    # 나며 조용히 죽었던 사고의 재발 감지. theme_members 가 하루라도 밀리면
+    # 월요일 08:55 짝꿍 선정(cli_pair_detect.py)이 묵은 테마로 대장을 고른다.
+    #
+    # 거래일 판정에 별도 캘린더/공휴일 목록을 쓰지 않는다 — daily_bars 자체가
+    # 거래일에만 행이 생기는 사실상의 거래일 달력이라, "오늘이 거래일인가"를
+    # 묻는 대신 daily_bars 최신일과 theme_members 최신일의 **차이**만 본다.
+    # 공휴일 다음날도 bars_max 가 같이 안 올라가 있으면 gap 이 그대로 0이라
+    # 오탐이 원천적으로 안 난다. daily_bars 자체가 밀리는 경우는 report_coverage
+    # 가 따로 잡는다(이중 방어).
+    local row theme_max bars_max gap
+    row=$(docker exec quant-airflow-timescaledb-replica-1 psql -U "$ts_user" -d "$ts_db" -tAc "
+SELECT coalesce((SELECT max(snapshot_date)::date FROM theme_members)::text, ''),
+       coalesce((SELECT max(date)::date FROM daily_bars)::text, ''),
+       coalesce(((SELECT max(date)::date FROM daily_bars) - (SELECT max(snapshot_date)::date FROM theme_members))::text, '')
+" 2>/dev/null)
+    IFS='|' read -r theme_max bars_max gap <<< "$row"
+    if [ -z "$theme_max" ] || [ -z "$bars_max" ] || [ -z "$gap" ]; then
+        log "⚠️ 테마 스냅샷 신선도 점검 실패 (DB 연결 안 됨? theme_members/daily_bars 조회 불가)"
+    elif [ "$gap" -gt 0 ] 2>/dev/null; then
+        log "⚠️ theme_members: 최신 $theme_max · daily_bars 최신 $bars_max 보다 ${gap}일 묵었다"
+    else
+        log "theme_members 신선도: 최신 $theme_max (daily_bars $bars_max 와 일치)"
+    fi
+    return 0
+}
+
 report_coverage
 report_failures
 report_paused
 report_replication
+report_theme_freshness
 exit 0
