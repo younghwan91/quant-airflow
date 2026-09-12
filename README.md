@@ -74,10 +74,17 @@ TimescaleDB 는 지금 PRIMARY 인 호스트에서 LAN 에 열려 있고 메인 
 레포 `.env` 의 `TIMESCALE_HOST`/`TIMESCALE_PORT` 를 확인한다.
 
 **scalp-it(실시간 틱 수집기) 쪽은 이 레포를 통째로 clone 하지 않는다** — 필요한 건
-`docker-compose.timescale.yml`(리플리카 기동)과 `scripts/backup_to_gdrive.sh` 뿐이라
-`git sparse-checkout set`으로 두 파일만 받는다. 전체 레포(DAG·수집기 등)는 항상 Airflow
-호스트 쪽 clone 이 정본이다 — 같은 레포가 양쪽 호스트에 있다고 양쪽 다 "찐"인 게
-아니라는 점에 주의(구성 파일 수정은 Airflow 호스트에서 하고 push, scalp-it 쪽은 pull 만).
+`docker-compose.timescale.yml`(리플리카 기동)뿐이라 `git sparse-checkout set`으로 그
+파일만 받는다. 전체 레포(DAG·수집기 등)는 항상 Airflow 호스트 쪽 clone 이 정본이다 —
+같은 레포가 양쪽 호스트에 있다고 양쪽 다 "찐"인 게 아니라는 점에 주의(구성 파일
+수정은 Airflow 호스트에서 하고 push, scalp-it 쪽은 pull 만).
+
+**구글 드라이브 백업(`scripts/backup_to_gdrive.sh`)은 Airflow 호스트에서만 돈다.**
+2026-09-13 에 scalp-it 호스트의 19:00 크론을 지웠다 — 양쪽이 같은 시각에 돌고 있었고
+스크립트가 날짜 기반 파일명(`core/core-<날짜>.sql.gz`, `sharadar/duckdb/<날짜>/`)을
+쓰기 때문에 나중에 끝난 쪽이 먼저 끝난 쪽을 덮어썼다. 09-11 이후 DB PRIMARY 와
+`daily_sharadar` 산출물이 모두 Airflow 호스트에 있으므로, scalp-it 쪽에서 돌면 낡은
+스탠바이 덤프와 낡은 미국 데이터가 그날 파일이 된다.
 
 **리플리카가 WAL 스트리밍 끊김으로 죽으면** (`could not receive data from WAL stream:
 requested WAL segment ... has already been removed` — `max_slot_wal_keep_size` 한도를
