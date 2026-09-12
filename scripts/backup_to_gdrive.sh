@@ -19,7 +19,6 @@ set -euo pipefail
 # 죽었고, 그 바람에 09-12 19:00 백업이 `cd: No such file or directory` 로
 # 조용히 실패했다(크론 로그에 한 줄만 남는다). 경로를 다시 옮겨도 안 깨지게.
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONTAINER="quant-airflow-timescaledb-1"
 REMOTE="gdrive:2.4. 트레이딩/3. stocks 주식/quant-airflow-backup"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
@@ -34,6 +33,15 @@ cd "$REPO"
 DBUSER="$TIMESCALE_USER"
 DBPASS="$TIMESCALE_PASSWORD"
 DBNAME="$TIMESCALE_DB"
+
+# 덤프를 뜰 컨테이너. 호스트마다 이름이 다르다 — trader 는
+# `quant-airflow-timescaledb-1`(docker-compose.timescale.yml), simnode 는
+# `quant-airflow-timescaledb-replica-1`(docker-compose.replica.yml — 이름은
+# replica 지만 2026-09-11 pg_promote 이후 실제로 PRIMARY 인 그것). 그대로 옮기면
+# `no such container` 로 죽는다. `.env` 에 BACKUP_DB_CONTAINER 를 넣어 덮어쓴다
+# (그래서 이 줄은 `.env` 소싱 **뒤**에 있어야 한다 — 앞에 두면 .env 값이 안 먹는다).
+# 기본값은 예전부터 돌던 trader 쪽 이름이라 기존 동작은 안 바뀐다.
+CONTAINER="${BACKUP_DB_CONTAINER:-quant-airflow-timescaledb-1}"
 
 DATE="$(date +%F)"
 DOW="$(date +%u)"
