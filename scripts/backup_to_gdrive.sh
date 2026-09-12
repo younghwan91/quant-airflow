@@ -14,7 +14,11 @@
 # 보존기간 없음(Drive 5TB 중 4.8TB 여유 — 사용자 확인, 2026-09-06) — 자동 삭제 안 함.
 set -euo pipefail
 
-REPO="/home/young/Documents/git/quant-airflow"
+# 레포 경로는 이 스크립트 위치에서 유도한다 — 2026-09-11 레포를
+# ~/Documents/git 에서 ~/git 으로 옮기면서 여기 하드코딩돼 있던 옛 경로가
+# 죽었고, 그 바람에 09-12 19:00 백업이 `cd: No such file or directory` 로
+# 조용히 실패했다(크론 로그에 한 줄만 남는다). 경로를 다시 옮겨도 안 깨지게.
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONTAINER="quant-airflow-timescaledb-1"
 REMOTE="gdrive:2.4. 트레이딩/3. stocks 주식/quant-airflow-backup"
 TMPDIR="$(mktemp -d)"
