@@ -20,8 +20,6 @@ set -euo pipefail
 # 조용히 실패했다(크론 로그에 한 줄만 남는다). 경로를 다시 옮겨도 안 깨지게.
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REMOTE="gdrive:2.4. 트레이딩/3. stocks 주식/quant-airflow-backup"
-TMPDIR="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR"' EXIT
 
 cd "$REPO"
 # .env 를 통째로 export(set -a)하지 않는다 — KIWOOM_APP_KEY/DART_API_KEY 같은
@@ -42,6 +40,14 @@ DBNAME="$TIMESCALE_DB"
 # (그래서 이 줄은 `.env` 소싱 **뒤**에 있어야 한다 — 앞에 두면 .env 값이 안 먹는다).
 # 기본값은 예전부터 돌던 trader 쪽 이름이라 기존 동작은 안 바뀐다.
 CONTAINER="${BACKUP_DB_CONTAINER:-quant-airflow-timescaledb-1}"
+
+# 덤프를 임시로 쓸 위치. **디스크여야 한다** — simnode 의 `/tmp` 는 tmpfs(RAM,
+# 31GB)라 ticks_full 통짜 덤프를 거기에 쓰면 RAM 을 먹고, 같은 호스트에서 도는
+# PRIMARY DB 의 페이지 캐시를 밀어낸다(전체를 램에 캐시하는 게 DB 를 이 호스트로
+# 옮긴 이유였다). `.env` 의 BACKUP_STAGING_PARENT 로 디스크 경로를 준다. 없으면
+# 기존대로 mktemp 기본값(/tmp)을 쓴다 — trader 처럼 /tmp 가 디스크인 호스트용.
+TMPDIR="$(mktemp -d ${BACKUP_STAGING_PARENT:+-p "$BACKUP_STAGING_PARENT"})"
+trap 'rm -rf "$TMPDIR"' EXIT
 
 DATE="$(date +%F)"
 DOW="$(date +%u)"
