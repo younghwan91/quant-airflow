@@ -1,7 +1,7 @@
 # Collectors (./collectors, bind-mounted like dags/scripts) are self-contained
-# and no longer need kr-quant installed — see docker/entrypoint-wrapper.sh and
-# collectors/storage.py. kr-quant is still bind-mounted at
-# /opt/kr-quant for the 1 DAG that intentionally runs its analysis code in-place
+# and no longer need swing-it(구 kr-quant) installed — see docker/entrypoint-wrapper.sh and
+# collectors/storage.py. swing-it(구 kr-quant) is still bind-mounted at
+# /opt/swing-it for the 1 DAG that intentionally runs its analysis code in-place
 # (weekly_price_adjust.py), reached via PYTHONPATH/sys.path rather than a
 # package install.
 FROM apache/airflow:2.10.5-python3.11

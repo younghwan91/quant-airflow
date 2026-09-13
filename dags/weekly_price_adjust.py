@@ -1,6 +1,6 @@
 """daily_bars 기업행동(액면분할·무상증자) 백조정 → daily_bars_adjusted 테이블 재생성.
 
-research/HANDOFF.md가 지적한 갭: `kr_quant.price_adjust.adjust_prices()`는
+research/HANDOFF.md가 지적한 갭: `swing_it.price_adjust.adjust_prices()`는
 sepa_experiment.py 전략 하나에서만 호출되고 다른 여러 연구 스크립트는
 daily_bars 원자료(미조정)를 직접 읽는다 — 분할이 가짜 −68% 손실로 잡혀
 백테스트 절대수익률이 왜곡되는 정확히 그 버그(리더 시스템 CAGR +20.9%→
@@ -26,11 +26,11 @@ daily_bars 원자료(미조정)를 직접 읽는다 — 분할이 가짜 −68% 
 
 무인증(DB만), Kiwoom/DART 자격증명 불필요.
 
-kr_quant.price_adjust의 핵심 로직(adjust_prices/diagnose)은 kr-quant의 백테스트
-전략들이 in-process import하므로 kr-quant에 계속 남아 있다 — 콜렉터 이전과 무관.
-그래서 이 DAG는 /opt/kr-quant 마운트를 통해 계속 kr_quant를
-실행한다. 다만 collectors/ 이전 이후 kr-quant의 editable pip install은 더 이상 하지
-않으므로(entrypoint-wrapper.sh), PYTHONPATH로 대신 kr_quant를 찾게 한다.
+swing_it.price_adjust의 핵심 로직(adjust_prices/diagnose)은 swing-it(구 kr-quant)의 백테스트
+전략들이 in-process import하므로 swing-it(구 kr-quant)에 계속 남아 있다 — 콜렉터 이전과 무관.
+그래서 이 DAG는 /opt/swing-it 마운트를 통해 계속 swing_it를
+실행한다. 다만 collectors/ 이전 이후 swing-it(구 kr-quant)의 editable pip install은 더 이상 하지
+않으므로(entrypoint-wrapper.sh), PYTHONPATH로 대신 swing_it를 찾게 한다.
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ from _common import DEFAULT_TASK_KW, run_collector, timescale_dsn
     start_date=pendulum.datetime(2026, 7, 12, tz="Asia/Seoul"),
     catchup=False,
     max_active_runs=1,
-    tags=["kr-quant", "maintenance", "price-adjust"],
+    tags=["swing-it", "maintenance", "price-adjust"],
 )
 def weekly_price_adjust():
 
@@ -91,12 +91,12 @@ def weekly_price_adjust():
     def rebuild_adjusted() -> None:
         run_collector(
             [
-                sys.executable, "-m", "kr_quant.price_adjust",
+                sys.executable, "-m", "swing_it.price_adjust",
                 "--rebuild-db", "--db", timescale_dsn(),
             ],
-            # editable install 없이 kr_quant 패키지를 찾도록 PYTHONPATH 주입 (src/ 레이아웃)
-            env={**os.environ, "PYTHONPATH": "/opt/kr-quant/src"},
-            cwd="/opt/kr-quant",
+            # editable install 없이 swing_it 패키지를 찾도록 PYTHONPATH 주입 (src/ 레이아웃)
+            env={**os.environ, "PYTHONPATH": "/opt/swing-it/src"},
+            cwd="/opt/swing-it",
         )
 
     wait_for_delisted_bars >> rebuild_adjusted()

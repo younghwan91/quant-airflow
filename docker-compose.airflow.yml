@@ -53,7 +53,7 @@ x-airflow-common: &airflow-common
     - ./collectors:/opt/airflow/collectors
     - ./scripts:/opt/airflow/scripts
     - ./logs:/opt/airflow/logs
-    - ../kr-quant:/opt/kr-quant:ro
+    - ../swing-it:/opt/swing-it:ro
     - ../portfolio-research:/opt/opt-portfolio:ro
     - ${US_DATA_DIR:-/home/young/data}:/opt/us-data
   user: "${AIRFLOW_UID:-50000}:0"

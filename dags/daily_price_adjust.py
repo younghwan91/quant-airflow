@@ -75,7 +75,7 @@ from _common import DEFAULT_TASK_KW, run_collector, timescale_dsn
     start_date=pendulum.datetime(2026, 8, 27, tz="Asia/Seoul"),
     catchup=False,
     max_active_runs=1,
-    tags=["kr-quant", "maintenance", "price-adjust"],
+    tags=["swing-it", "maintenance", "price-adjust"],
 )
 def daily_price_adjust():
 
@@ -102,12 +102,12 @@ def daily_price_adjust():
     def rebuild_adjusted() -> None:
         run_collector(
             [
-                sys.executable, "-m", "kr_quant.price_adjust",
+                sys.executable, "-m", "swing_it.price_adjust",
                 "--rebuild-db", "--db", timescale_dsn(),
             ],
-            # editable install 없이 kr_quant 패키지를 찾도록 PYTHONPATH 주입 (src/ 레이아웃)
-            env={**os.environ, "PYTHONPATH": "/opt/kr-quant/src"},
-            cwd="/opt/kr-quant",
+            # editable install 없이 swing_it 패키지를 찾도록 PYTHONPATH 주입 (src/ 레이아웃)
+            env={**os.environ, "PYTHONPATH": "/opt/swing-it/src"},
+            cwd="/opt/swing-it",
         )
 
     wait_for_daily_bars >> rebuild_adjusted()
