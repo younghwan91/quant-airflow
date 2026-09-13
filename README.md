@@ -233,19 +233,21 @@ flowchart LR
 
 버그·질문은 [Issues](https://github.com/younghwan91/quant-airflow/issues)로.
 
-## 관련 프로젝트
+## 관련 프로젝트 — 오픈소스 퀀트 스택
 
-이 파이프라인이 직접 쓰거나(클라이언트 라이브러리) 소비하는(컨슈머) 저장소.
+한국·미국 주식과 암호화폐를 아우르는 오픈소스 스택입니다. 각 저장소는 독립적으로 쓸 수 있습니다.
 
-| 프로젝트 | 관계 |
-|---|---|
-| **[kiwoom-client](https://github.com/younghwan91/kiwoom-client)** | 키움증권 REST API 클라이언트 — 시세·수급 수집에 사용 (`pip install kiwoom-client`) |
-| **[krx-fundamentals-client](https://github.com/younghwan91/krx-fundamentals-client)** | DART·KRX·네이버 펀더멘탈 클라이언트 — 실적 수집에 사용 |
-| **[krx-news-client](https://github.com/younghwan91/krx-news-client)** | DART·토스 뉴스/공시 클라이언트 — 뉴스 수집에 사용 |
-| **[kr-quant](https://github.com/younghwan91/kr-quant)** | 이 저장소의 TimescaleDB 를 읽어 코스피·코스닥 알파를 리서치 |
-| **[portfolio-research](https://github.com/younghwan91/portfolio-research)** | 이 저장소의 Sharadar/DuckDB 스토어를 읽어 미국주식 팩터를 리서치 |
-
-전체 오픈소스 퀀트 스택은 [프로필](https://github.com/younghwan91)에서 볼 수 있습니다.
+| 축 | 프로젝트 | 설명 |
+|---|---|---|
+| 🇰🇷 한국 주식 | **[kiwoom-client](https://github.com/younghwan91/kiwoom-client)** | 키움증권 REST API Python 라이브러리 — 국내주식 엔드포인트 전수·실시간 WebSocket, sync + async (`pip install kiwoom-client`) |
+| 🇰🇷 한국 주식 | **[krx-fundamentals-client](https://github.com/younghwan91/krx-fundamentals-client)** | 국내 기업 펀더멘탈 Python 클라이언트 라이브러리 — 재무제표·투자지표·배당·종목 스크리닝 (DART + KRX + 네이버) |
+| 🇰🇷 한국 주식 | **[krx-news-client](https://github.com/younghwan91/krx-news-client)** | 한국 주식 뉴스·공시 수집 Python 클라이언트 라이브러리 (DART + 한국경제 + 더벨 + 토스) |
+| 🇰🇷 한국 주식 | **[krx-quant-core](https://github.com/younghwan91/krx-quant-core)** | 한국 주식 퀀트 시스템 공통 Python 코어 — KRX 호가·가격제한폭·세션 규칙, 시행일별 거래세 비용모델, 키움 주문 가드, DART 중대공시 위험 분류, 체결 시뮬레이션, Deflated Sharpe·purged CV 통계 |
+| 🇰🇷 한국 주식 | **[fin-checkup](https://github.com/younghwan91/fin-checkup)** | 관심종목 위험 공시 텔레그램 알림 + DART·SEC 재무 건강검진 — 측정값과 사실만 전달한다 |
+| 🇰🇷 한국 주식 | **[swing-it](https://github.com/younghwan91/swing-it)** | 코스피·코스닥 알파 심사 프레임워크 — 개별 트레이드 분포로 판정하고 랜덤 음성대조·purged CV·Deflated Sharpe 를 CI 가드레일로 강제 |
+| 🇺🇸 미국 주식 | **[portfolio-research](https://github.com/younghwan91/portfolio-research)** | 미국주식 팩터 엔진 — point-in-time·생존편향 보정 데이터 위에서 walk-forward 를 Deflated Sharpe·PBO 로 게이팅 (+ ETF 전술배분 TAA — 9개 사전등록, 채택 0) |
+| 🇺🇸 미국 주식 | **[automated-stock-trading-systems](https://github.com/younghwan91/automated-stock-trading-systems)** | Bensdorp 의 7개 비상관 트레이딩 시스템 백테스터 (교육용 재구현) |
+| ₿ 암호화폐 | **[binance-quant-engine](https://github.com/younghwan91/binance-quant-engine)** | 암호화폐 선물 백테스트·실행 엔진 — 룩어헤드 0, 백테스트↔실거래 일체화 |
 
 ## 만든 사람
 
