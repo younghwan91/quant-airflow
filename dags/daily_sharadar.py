@@ -58,7 +58,15 @@ STORE = "/opt/us-data/us_micro.duckdb"
     # 그래도 17:30 을 앞당길 수 없다 — 벤더 드롭이 그날 다 끝나야 받을 게 있고,
     # 관측된 최악값이 17:28 이었다(2026-08-25). 앞당기면 그날 치를 통째로 놓친다.
     # 토요일은 이 DAG 때문에 스택이 10:40 대신 18:15 까지 뜬다.
-    schedule="30 17 * * 2-6",
+    #
+    # ⛔ **2026-09-14 부로 끔 — Sharadar 구독을 해지했다.** 09-12(토) 런부터
+    # 테이블 14개가 전부 `HTTP Error 403: Forbidden` 이었다. UI pause 대신 코드에
+    # 끈다(CLAUDE.md §4 — pause 는 다음 기동에 되살아난다). 스토어
+    # (`us_micro.duckdb`)는 09-11 빌드 그대로 남아 있고 더는 갱신되지 않는다.
+    #
+    # 구독을 되살리면 아래 주석을 풀고 `schedule=None` 을 지운다 — 위 근거는 그대로다.
+    # schedule="30 17 * * 2-6",
+    schedule=None,
     start_date=pendulum.datetime(2026, 8, 15, tz="Asia/Seoul"),
     catchup=False,
     max_active_runs=1,

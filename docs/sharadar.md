@@ -2,12 +2,17 @@
 
 [← README](../README.md)
 
+> ⛔ **2026-09-14 부로 중단 — Sharadar 구독 해지.** 09-12 런부터 전 테이블이
+> `403 Forbidden` 이라 `daily_sharadar` 를 `schedule=None` 으로 껐다. 스토어는
+> 09-11 빌드에서 멈춰 있다. 구독을 되살리면 DAG 의 `schedule` 주석대로 되돌린다.
+> 아래 내용은 그때를 위한 기록으로 남긴다.
+
 이 저장소에서 유일한 비한국 파이프라인이다. 한국 파이프라인과 스케줄러·인프라를
 공유한다 — 저장소 이름이 `quant-airflow` 인 이유다.
 
 | DAG | 스케줄(KST) | 하는 일 |
 |---|---|---|
-| `daily_sharadar` | 화~토 17:30 | 벌크 스냅샷 동기화 → 스토어 재구축 → 검증 → 원자적 공개. 테이블별로 실패를 격리해 **한 개가 죽어도 나머지 13개의 상태 표는 남는다** |
+| `daily_sharadar` | **꺼짐** (`schedule=None`, 원래 화~토 17:30) | 벌크 스냅샷 동기화 → 스토어 재구축 → 검증 → 원자적 공개. 테이블별로 실패를 격리해 **한 개가 죽어도 나머지 13개의 상태 표는 남는다** |
 
 설계 근거는
 [`docs/superpowers/specs/2026-08-15-sharadar-bulk-rebuild-design.md`](superpowers/specs/2026-08-15-sharadar-bulk-rebuild-design.md).

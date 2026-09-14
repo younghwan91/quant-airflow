@@ -37,6 +37,9 @@ DAG 스케줄(`schedule="0 16 * * 1-5"` 등)은 전부 `pendulum.datetime(..., t
 | 2 — 평일 저녁 | 평일 15:55 | daily_collection(16:00) · earnings(16:00) · price_adjust(16:55) · consensus(17:00) · sharadar(화~금 17:30) |
 | 3 — 토요일 저녁 | 토 17:20 | sharadar(17:30) 하나 |
 
+> 2026-09-14 부로 `daily_sharadar` 는 구독 해지로 꺼져 있다(`schedule=None`) —
+> 위 표의 sharadar 항목은 과거 창 구성의 기록이다.
+
 각 창은 `scripts/wait_and_stop.sh` 가 "그 지평선까지 예정된 DAG 가 전부 끝났는가"를
 Airflow 메타DB 에 물어 조기 종료했다(레거시 스크립트, 지금은 어느 크론도 안 부른다
 — 필요하면 되살릴 수 있게 지우지 않고 남겨둔다).
