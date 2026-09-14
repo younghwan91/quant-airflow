@@ -1,0 +1,20 @@
+# 이 파일은 dotfiles 의 cron-install 이 simnode 의 사용자 crontab 에 설치한다.
+# 매일 07:50 동기화(pull-all --ci-gate → cron-install)가 origin/main 기준으로 반영한다.
+# 크론을 바꾸려면 crontab -e 가 아니라 이 파일을 고쳐 커밋·푸시할 것 — 손으로 고친 건 다음 설치에 덮인다.
+
+# --- quant-airflow 헬스체크 (2026-09-13 신설) ---
+# wait_and_stop.sh 의 report_coverage/report_failures/report_paused 가
+# 24/7 상시 구동 전환(09-11) 이후 shutdown 경로에 묶인 채 죽어 있던 걸
+# scripts/daily_health_check.sh 로 분리해 독립 실행한다. 컨테이너를 내리지
+# 않는다 — 읽고 로그만 남긴다. 시각은 옛 오전/저녁 창 마감 무렵을 그대로 썼다.
+35 11 * * * /home/young/git/quant-airflow/scripts/daily_health_check.sh >> /home/young/logs/quant-airflow/daily_health_check.log 2>&1
+10 18 * * * /home/young/git/quant-airflow/scripts/daily_health_check.sh >> /home/young/logs/quant-airflow/daily_health_check.log 2>&1
+
+# swing-it(구 kr-quant) DB + Sharadar 미국 데이터 → 구글 드라이브 백업 (매일 19:00).
+# 2026-09-13 trader 에서 여기로 옮겼다 — 데이터가 둘 다 simnode 에 있다:
+# DB PRIMARY(pg_promote 09-11)와 daily_sharadar 가 매일 재빌드하는 us_micro.duckdb.
+# trader 에서 돌던 동안은 (a) 한국 DB 를 리플리카 경유로 우회 덤프했고
+# (b) 미국 데이터는 trader 의 낡은 사본(09-10)을 올려 최신본이 백업 누락됐다.
+# .env 의 BACKUP_DB_CONTAINER(여기 컨테이너명은 ...-replica-1 이지만 실제 PRIMARY)와
+# BACKUP_STAGING_PARENT(/tmp 가 tmpfs 31GB 라 디스크로 뺐다)가 필요하다.
+0 19 * * * /home/young/git/quant-airflow/scripts/backup_to_gdrive.sh >> /home/young/logs/quant-airflow/backup_to_gdrive.cron.log 2>&1
