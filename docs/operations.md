@@ -104,13 +104,26 @@ docker-compose.airflow.yml   # Airflow 호스트 전용 — 스케줄러·웹서
 수 있는 DSN 비밀번호를 마스킹한다(`collectors/config.py` 의 `mask_dsn` 을 재사용하는
 단일 소스).
 
-## kr-quant 와의 경계
+## swing-it(구 kr-quant) 와의 경계
 
-수집(이 저장소)과 분석([kr-quant](https://github.com/younghwan91/kr-quant))은
+수집(이 저장소)과 분석([swing-it](https://github.com/younghwan91/swing-it))은
 프로세스도 저장소도 분리돼 있다. 분석 세션에서 실수로 수집기를 직접 실행해 DB
-정합성이 깨지는 일을 막기 위해서다. `collectors/` 는 `kr_quant` 패키지에 대한 런타임
+정합성이 깨지는 일을 막기 위해서다. `collectors/` 는 `swing_it` 패키지에 대한 런타임
 의존이 전혀 없다(자체 `storage.py`·`config.py` 를 갖는다).
 
-> **예외** — kr-quant 는 여전히 `/opt/kr-quant` 에 읽기 전용으로 마운트된다.
-> `weekly_price_adjust`(백조정 로직)가 kr-quant 의 분석 코드를 in-place 로 실행하기
-> 때문이다(패키지 설치가 아니라 PYTHONPATH/sys.path 기반).
+> **예외** — swing-it 은 여전히 `../swing-it:/opt/swing-it:ro` 로 마운트된다.
+> `daily_price_adjust`·`weekly_price_adjust`(백조정 로직)가 swing-it 의 **작업 트리**를
+> `PYTHONPATH=/opt/swing-it/src` 로 in-place 실행하기 때문이다(패키지 설치가 아니다).
+
+### ⚠️ 이 결합이 뜻하는 것
+
+- **swing-it 에서 커밋·브랜치 전환하는 순간 다음 DAG 런에 그대로 반영된다.** 버전 핀도
+  배포 단계도 없다.
+- **swing-it `pyproject.toml` 의 의존성은 Airflow 이미지에 설치되지 않는다.**
+  `swing_it/price_adjust.py` 가 새 패키지를 import 하면 swing-it 쪽 테스트는 통과하고
+  여기서만 죽는다.
+- 실제 사고(2026-09-14): swing-it `eb2bf13` 이 가격제한 상수를 `krx_quant_core` import 로
+  바꿔 16:55 런이 `No module named 'krx_quant_core'` 로 실패, `daily_bars_adjusted` 가
+  09-11 에서 멈췄다. swing-it `ca93f6e` 에서 상수를 되돌리고 모듈에 "numpy·pandas 외
+  의존성을 늘리지 않는다" 는 주석을 남겼다.
+- 근본 해결(미적용): swing-it 을 태그로 핀해 이미지에 설치하고 라이브 마운트를 끊는다.
