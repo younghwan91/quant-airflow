@@ -22,9 +22,9 @@
 # sent_lsn 과 일치, ticks 카운트 원본=리플리카 정확히 일치(14,318,563) 검증됨.
 #
 # 재발 방지 메모: `max_slot_wal_keep_size`(현재 100GB, 디스크는 832GB 여유)는
-# trader 리플리카가 그만큼 뒤처지는 동안 아무도 못 알아채면 여전히 뚫린다 —
-# 이 파일의 재시딩 절차는 남아있지만, 근본적으로는 복제 지연/슬롯 비활성 상태를
-# 감시하는 알림이 없다는 게 진짜 구멍이다(아직 미해결).
+# trader 리플리카가 그만큼 뒤처지는 동안 아무도 못 알아채면 여전히 뚫린다.
+# 2026-09-13 부터 scripts/daily_health_check.sh 의 report_replication 이 슬롯
+# 상태를 하루 두 번 로그에 남기지만, 알림(푸시·실패 exit)은 아직 없다.
 services:
   timescaledb-replica:
     image: timescale/timescaledb:2.17.2-pg16

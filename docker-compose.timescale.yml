@@ -1,14 +1,8 @@
 # trader 전용 — 2026-09-11 부터 **읽기 전용 스트리밍 리플리카**다(원본 이름은
-# 그대로 뒀지만 역할이 바뀌었다 — 아래 참고). PRIMARY 는 이제 simnode
-# (docker-compose.timescale.yml, simnode 쪽 사본 — 파일 이름이 같아서 헷갈리면
-# `pg_is_in_recovery()` 로 확인: 여기는 true 가 나와야 정상이다).
-#
-# 왜 뒤집혔나: 실시간 틱 수집기(scalp-it)와 같은 호스트에 PRIMARY 를 두는 게
-# 원래 설계였는데, collector.py 에 재연결+디스크 스풀(spool_dir)이 들어가
-# LAN 순단을 스스로 버티는 게 실전 검증(2026-09-11, trader DB 로 왕복 insert
-# 확인)됐다. 그래서 PRIMARY 를 자원이 넉넉한 simnode 로 승격(`pg_promote()`)
-# 하고, trader 는 리플리카로 재구성했다 — collector 는 여전히 trader 에서
-# 돌지만 이제 LAN 너머 simnode:5433 에 쓴다.
+# 그대로 뒀지만 역할이 바뀌었다). PRIMARY 는 이제 simnode 의
+# docker-compose.replica.yml 이다 — 헷갈리면 `pg_is_in_recovery()` 로 확인: 여기는
+# true 가 나와야 정상이다. 뒤집힌 경위는 docker-compose.replica.yml 헤더 참고.
+# scalp-it collector 는 여전히 trader 에서 돌지만 LAN 너머 simnode:5433 에 쓴다.
 #
 # 24/7 상시(restart: unless-stopped) — cron 으로 올렸다 내리는 대상이 아니다.
 # 볼륨은 quant-airflow_timescale-data(외부, pg_basebackup 으로 시딩됨).

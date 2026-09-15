@@ -8,10 +8,13 @@ Airflow 와 TimescaleDB 를 **분리된 호스트에서 각각 상시 구동**�
 unless-stopped`, cron 으로 껐다 켜는 대상이 아니다). 아래 "왜 창을 나눴었나"는
 그 이전(한 호스트에 다 얹혀 있던 시절)의 기록이다 — 지금은 해당하지 않는다.
 
-- **DB 호스트**: `docker-compose.timescale.yml` 만, 24/7. 실시간 틱 수집기와 같은
-  머신이어야 한다(순단 재연결 실패 회피, `collectors/` 아님 — scalp-it 소관).
-- **Airflow 호스트**: `docker-compose.airflow.yml` 만, 24/7. DB 호스트와 자원을
-  다투지 않는, 별도의 넉넉한 머신.
+| 호스트 | 스택 | 역할 |
+|---|---|---|
+| **simnode** | `docker-compose.airflow.yml` + `docker-compose.replica.yml` | Airflow · TimescaleDB **PRIMARY**(:5433, 이름만 replica — 2026-09-11 `pg_promote()`) · 백업 · 헬스체크 |
+| **trader** (N100) | `docker-compose.timescale.yml` + scalp-it | 읽기 전용 스트리밍 리플리카(`trader_replica` 슬롯) · 실시간 틱 수집기(LAN 너머 simnode:5433 에 쓴다) |
+
+역할 확인은 이름이 아니라 `SELECT pg_is_in_recovery();`(PRIMARY=false)로 한다.
+뒤집힌 경위는 `docker-compose.replica.yml` 헤더에 있다.
 
 DAG 스케줄(`schedule="0 16 * * 1-5"` 등)은 전부 `pendulum.datetime(..., tz="Asia/Seoul")`
 로 tz-aware 하게 박혀 있어 Airflow 호스트의 OS 타임존과 무관하게 KST 로 해석된다
@@ -26,7 +29,7 @@ DAG 스케줄(`schedule="0 16 * * 1-5"` 등)은 전부 `pendulum.datetime(..., t
 <details>
 <summary>왜 창을 나눴었나 (2026-08-25 ~ 2026-09-10, 한 호스트 시절의 기록)</summary>
 
-스페어 PC(현재의 DB 호스트, N100) 하나에 Airflow 까지 얹혀 있던 시절엔 24시간
+스페어 PC(N100, 지금의 trader) 하나에 Airflow 까지 얹혀 있던 시절엔 24시간
 켜 두지 않고 **창 넷으로 나눠 띄웠다** — 장전 창과 오전 창은 평일/매일, 저녁 창은
 평일용과 토요일용이 따로 있어 하루에 최대 세 창이 떴다.
 
@@ -95,8 +98,9 @@ scripts/
 sql/init_timescale.sql # hypertable 스키마 + 청크/압축 정책 (신규 DB용)
 sql/migrations/        # 기존 DB 변경분 — 001~013, docs/schema.md 참고
 docker/Dockerfile      # collectors/ 의존성만 설치 (kr-quant editable install 없음)
-docker-compose.timescale.yml # DB 호스트 전용 — TimescaleDB 하나, 24/7
-docker-compose.airflow.yml   # Airflow 호스트 전용 — 스케줄러·웹서버·init·메타 Postgres, 24/7
+docker-compose.replica.yml   # simnode — TimescaleDB PRIMARY(:5433, 이름만 replica), 24/7
+docker-compose.timescale.yml # trader — 읽기 전용 리플리카, 24/7
+docker-compose.airflow.yml   # simnode — 스케줄러·웹서버·init·메타 Postgres, 24/7
 ```
 
 **`dags/_common.py`** — DAG 마다 중복되던 DSN·자격증명 헬퍼를 한곳에 모았다.

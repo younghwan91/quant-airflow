@@ -32,14 +32,12 @@ DBUSER="$TIMESCALE_USER"
 DBPASS="$TIMESCALE_PASSWORD"
 DBNAME="$TIMESCALE_DB"
 
-# 덤프를 뜰 컨테이너. 호스트마다 이름이 다르다 — trader 는
-# `quant-airflow-timescaledb-1`(docker-compose.timescale.yml), simnode 는
-# `quant-airflow-timescaledb-replica-1`(docker-compose.replica.yml — 이름은
-# replica 지만 2026-09-11 pg_promote 이후 실제로 PRIMARY 인 그것). 그대로 옮기면
-# `no such container` 로 죽는다. `.env` 에 BACKUP_DB_CONTAINER 를 넣어 덮어쓴다
-# (그래서 이 줄은 `.env` 소싱 **뒤**에 있어야 한다 — 앞에 두면 .env 값이 안 먹는다).
-# 기본값은 예전부터 돌던 trader 쪽 이름이라 기존 동작은 안 바뀐다.
-CONTAINER="${BACKUP_DB_CONTAINER:-quant-airflow-timescaledb-1}"
+# 덤프를 뜰 컨테이너 = PRIMARY. 2026-09-13 부터 백업은 simnode 에서만 돈다
+# (deploy/crontab.simnode) — 기본값은 simnode 의 PRIMARY 인
+# `quant-airflow-timescaledb-replica-1`(docker-compose.replica.yml, 이름만 replica).
+# 다른 호스트로 옮기면 `.env` 의 BACKUP_DB_CONTAINER 로 덮어쓴다(daily_health_check.sh
+# 도 같은 키를 본다). 이 줄은 `.env` 소싱 **뒤**에 있어야 한다.
+CONTAINER="${BACKUP_DB_CONTAINER:-quant-airflow-timescaledb-replica-1}"
 
 # 덤프를 임시로 쓸 위치. **디스크여야 한다** — simnode 의 `/tmp` 는 tmpfs(RAM,
 # 31GB)라 ticks_full 통짜 덤프를 거기에 쓰면 RAM 을 먹고, 같은 호스트에서 도는

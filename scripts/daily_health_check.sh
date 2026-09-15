@@ -16,14 +16,26 @@ cd "$(dirname "$0")/.."
 today=$(date +%Y-%m-%d)
 log() { echo "[$(date '+%F %T')] $*"; }
 
-meta_user=$(grep '^AIRFLOW_META_USER' .env | cut -d= -f2)
-meta_db=$(grep '^AIRFLOW_META_DB' .env | cut -d= -f2)
-ts_user=$(grep '^TIMESCALE_USER' .env | cut -d= -f2)
-ts_db=$(grep '^TIMESCALE_DB' .env | cut -d= -f2)
+# .env 전체를 source 하지 않는다 — 필요한 키만 읽는다. -f2- 인 이유: 값에 '=' 가
+# 들어간 키(base64 비밀번호 등)가 있어 -f2 로는 잘린다.
+env_get() { grep "^$1=" .env | cut -d= -f2-; }
+meta_user=$(env_get AIRFLOW_META_USER)
+meta_db=$(env_get AIRFLOW_META_DB)
+ts_user=$(env_get TIMESCALE_USER)
+ts_db=$(env_get TIMESCALE_DB)
+# simnode 의 PRIMARY 컨테이너(docker-compose.replica.yml — 이름만 replica).
+# backup_to_gdrive.sh 와 같은 .env 키를 본다.
+ts_container=$(env_get BACKUP_DB_CONTAINER)
+ts_container=${ts_container:-quant-airflow-timescaledb-replica-1}
 
 meta_q() {
     docker exec quant-airflow-airflow-meta-db-1 \
         psql -U "$meta_user" -d "$meta_db" -tAc "$1" 2>/dev/null
+}
+
+# 인자는 psql 옵션 그대로(-c "..." 또는 -tAc "...").
+ts_psql() {
+    docker exec "$ts_container" psql -U "$ts_user" -d "$ts_db" "$@"
 }
 
 report_coverage() {
@@ -36,8 +48,15 @@ report_coverage() {
         log "=== 커버리지 점검 ($today) === 주말이라 건너뜀 (dow=$dow)"
         return
     fi
+    # 같은 이유로 오전 실행(11:35)도 건너뛴다 — daily_collection 이 16:00 이라
+    # 그 전엔 daily_bars·supply_demand 가 매일 전종목(2648) 누락으로 찍혔다
+    # (2026-09-14·15 11:35 로그 실측). 18:10 실행만 본다.
+    if [ "$(date +%H)" -lt 17 ]; then
+        log "=== 커버리지 점검 ($today) === 16:00 수집 전이라 건너뜀"
+        return
+    fi
     log "=== 커버리지 점검 ($today) ==="
-    docker exec quant-airflow-timescaledb-replica-1 psql -U "$ts_user" -d "$ts_db" -c "
+    ts_psql -c "
 SELECT 'daily_bars' AS tbl, COUNT(*) AS missing_today FROM stocks s
     WHERE NOT EXISTS (SELECT 1 FROM daily_bars d WHERE d.code=s.code AND d.date='$today')
 UNION ALL
@@ -50,7 +69,7 @@ UNION ALL
 SELECT 'short_selling', COUNT(*) FROM stocks s
     WHERE NOT EXISTS (SELECT 1 FROM short_selling d WHERE d.code=s.code AND d.date='$today')
 UNION ALL
-SELECT 'sector_index', COUNT(*) FROM (SELECT DISTINCT code FROM sector_index) si
+SELECT 'sector_index', COUNT(*) FROM (SELECT DISTINCT code FROM sector_index WHERE date >= current_date - 30) si
     WHERE NOT EXISTS (SELECT 1 FROM sector_index x WHERE x.code=si.code AND x.date='$today')
 UNION ALL
 SELECT 'shares_outstanding', COUNT(*) FROM stocks s
@@ -91,7 +110,7 @@ report_replication() {
     # 2026-09-11~12 사고의 근본 원인이었다. 슬롯이 죽어 있거나(active=f) WAL
     # 이 안전 여유 없이 쌓이면 다음 사고 전에 여기서 잡는다.
     local slot
-    slot=$(docker exec quant-airflow-timescaledb-replica-1 psql -U "$ts_user" -d "$ts_db" -tAc \
+    slot=$(ts_psql -tAc \
         "SELECT slot_name || ':active=' || active || ':wal_status=' || wal_status FROM pg_replication_slots;" 2>/dev/null)
     if [ -z "$slot" ]; then
         log "⚠️ 복제 슬롯 조회 실패 (DB 연결 안 됨?)"
@@ -116,10 +135,10 @@ report_theme_freshness() {
     # 오탐이 원천적으로 안 난다. daily_bars 자체가 밀리는 경우는 report_coverage
     # 가 따로 잡는다(이중 방어).
     local row theme_max bars_max gap
-    row=$(docker exec quant-airflow-timescaledb-replica-1 psql -U "$ts_user" -d "$ts_db" -tAc "
-SELECT coalesce((SELECT max(snapshot_date)::date FROM theme_members)::text, ''),
-       coalesce((SELECT max(date)::date FROM daily_bars)::text, ''),
-       coalesce(((SELECT max(date)::date FROM daily_bars) - (SELECT max(snapshot_date)::date FROM theme_members))::text, '')
+    row=$(ts_psql -tAc "
+WITH m AS (SELECT (SELECT max(snapshot_date)::date FROM theme_members) AS t,
+                  (SELECT max(date)::date FROM daily_bars) AS b)
+SELECT coalesce(t::text, ''), coalesce(b::text, ''), coalesce((b - t)::text, '') FROM m
 " 2>/dev/null)
     IFS='|' read -r theme_max bars_max gap <<< "$row"
     if [ -z "$theme_max" ] || [ -z "$bars_max" ] || [ -z "$gap" ]; then
