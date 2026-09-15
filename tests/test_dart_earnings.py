@@ -330,6 +330,134 @@ def test_a_quarter_with_no_filing_is_not_a_failure():
     assert failures == []
 
 
+def _patch_multi(monkeypatch, fn):
+    monkeypatch.setattr(dart_earnings, "_fetch_multi_with_rotation", fn)
+
+
+def test_filing_without_net_income_keeps_revenue_and_op_income(monkeypatch):
+    """주요계정(fnlttMultiAcnt)에 당기순이익 계정이 아예 없는 회사가 있다.
+
+    2026-09-15 실측: 대성미생물(036480)·테라사이언스(073640)·형지글로벌(308100)·
+    리센스메디컬(394420)은 08-14 에 반기보고서를 냈지만 응답 IS 계정이 매출액·
+    영업이익·법인세차감전 순이익·총포괄손익뿐이었다. 예전엔 ``ni is None`` 이면
+    행 전체를 버려서 매출·영업이익까지 사라졌고, done_periods 에도 안 들어가
+    매일 다시 묻고 매일 버렸다. 순이익은 NULL(모름)로 두고 나머지는 남긴다.
+    """
+    async def revenue_only(scrapers, keys, ki, tickers, year, quarter):
+        return {t: (None, None, 6.0, 7.0, -1.0, 2.0) for t in tickers}, None
+
+    _patch_multi(monkeypatch, revenue_only)
+    rows = _run(collect_all_financials_batched(
+        {"k1": None}, ["k1"], {"036480": "00177320"}, [(2026, 2)], sleep=0.0, today="20991231"))
+    assert len(rows) == 1
+    assert rows[0][4:] == (None, None, 6.0, 7.0, -1.0, 2.0)
+
+
+def test_corrected_filing_is_refetched_even_if_already_done(monkeypatch):
+    """정정공시가 난 (code, period) 는 done_periods 에 있어도 다시 받아야 한다.
+
+    예전엔 done_periods 스킵 때문에 한 번 수집된 분기는 DART 에 다시 묻지 않았다 —
+    ``upsert_earnings`` 의 '바뀐 값만 새 knowledge_date 로 쌓는다' 가 발동할 기회가
+    없었다. 2026-09-15 실측: 엠디바이스(226590) 09-08 기재정정으로 전년동기
+    순이익이 1,134,731,569 → 1,392,881,023 으로 바뀌었는데 DB 는 원본 그대로였다.
+    """
+    calls = []
+
+    async def fake(scrapers, keys, ki, tickers, year, quarter):
+        calls.extend(tickers)
+        return {t: (1.0, 2.0, 3.0, 4.0, 5.0, 6.0) for t in tickers}, None
+
+    _patch_multi(monkeypatch, fake)
+    rows = _run(collect_all_financials_batched(
+        {"k1": None}, ["k1"], {"226590": "x", "005930": "y"}, [(2026, 2)], sleep=0.0,
+        done_periods={("226590", "2026Q2"), ("005930", "2026Q2")},
+        refetch={("226590", "2026Q2")}, today="20991231"))
+    assert calls == ["226590"]
+    assert [r[0] for r in rows] == ["226590"]
+
+
+@pytest.mark.parametrize(("report_nm", "expected"), [
+    ("[기재정정]반기보고서 (2026.06)", "2026Q2"),
+    ("[첨부정정]분기보고서 (2026.03)", "2026Q1"),
+    ("[기재정정]분기보고서 (2026.09)", "2026Q3"),
+    ("[기재정정]사업보고서 (2025.12)", "2025Q4"),
+    ("반기보고서 (2026.06)", None),              # 원본은 정정이 아니다
+    ("[기재정정]분기보고서 (2026.06)", None),     # 3월 결산사의 1분기 — 달력 분기와 안 맞음
+    ("[기재정정]사업보고서 (2026.06)", None),     # 6월 결산사
+    ("[기재정정]증권신고서(지분증권)", None),
+])
+def test_corrected_period_from_report_name(report_nm, expected):
+    assert dart_earnings._corrected_period(report_nm) == expected
+
+
+class _Resp:
+    def __init__(self, data):
+        self._data = data
+
+    def json(self):
+        return self._data
+
+
+def _list_page(items, total_page=1, status="000"):
+    return {"status": status, "total_page": total_page, "list": items}
+
+
+def test_corrected_filings_pages_and_filters(monkeypatch):
+    pages = {
+        "1": _list_page([
+            {"stock_code": "226590", "report_nm": "[기재정정]반기보고서 (2026.06)"},
+            {"stock_code": "005930", "report_nm": "반기보고서 (2026.06)"},
+            {"stock_code": " ", "report_nm": "[기재정정]반기보고서 (2026.06)"},  # 비상장
+        ], total_page=2),
+        "2": _list_page([
+            {"stock_code": "001680", "report_nm": "[기재정정]반기보고서 (2026.06)"},
+            {"stock_code": "000020", "report_nm": "[기재정정]사업보고서 (2025.12)"},  # 이번 periods 밖
+        ], total_page=2),
+    }
+    seen = []
+
+    async def fake_fetch(self, url, params=None, **kw):
+        seen.append((url.rsplit("/", 1)[-1], params["pblntf_ty"], params["bgn_de"], params["end_de"]))
+        return _Resp(pages[params["page_no"]])
+
+    monkeypatch.setattr(DartScraper, "fetch", fake_fetch)
+    scrapers = {"k1": DartScraper(api_key="k1")}
+    out, failure = _run(dart_earnings._corrected_filings(
+        scrapers, ["k1"], [0], {"2026Q2", "2026Q3"}, days=45, today="20260915"))
+    assert failure is None
+    assert out == {("226590", "2026Q2"), ("001680", "2026Q2")}
+    assert seen == [("list.json", "A", "20260801", "20260915")] * 2
+
+
+def test_corrected_filings_no_data_is_not_failure(monkeypatch):
+    async def fake_fetch(self, url, params=None, **kw):
+        return _Resp({"status": "013", "message": "조회된 데이타가 없습니다."})
+
+    monkeypatch.setattr(DartScraper, "fetch", fake_fetch)
+    out, failure = _run(dart_earnings._corrected_filings(
+        {"k1": DartScraper(api_key="k1")}, ["k1"], [0], {"2026Q2"}, days=7, today="20260915"))
+    assert out == set() and failure is None
+
+
+def test_corrected_filings_rotates_on_quota_and_reports_other_errors(monkeypatch):
+    calls = []
+
+    async def fake_fetch(self, url, params=None, **kw):
+        calls.append(self.api_key)
+        if self.api_key == "k1":
+            return _Resp({"status": "020", "message": "한도 초과"})
+        return _Resp({"status": "800", "message": "시스템 점검"})
+
+    monkeypatch.setattr(DartScraper, "fetch", fake_fetch)
+    ki = [0]
+    out, failure = _run(dart_earnings._corrected_filings(
+        {"k1": DartScraper(api_key="k1"), "k2": DartScraper(api_key="k2")}, ["k1", "k2"], ki,
+        {"2026Q2"}, days=7, today="20260915"))
+    assert calls == ["k1", "k2"] and ki[0] == 1
+    assert out == set()
+    assert failure == "800", "정정 목록을 못 받았으면 조용히 성공으로 넘기면 안 된다"
+
+
 def test_period_placeholders_are_valid_pyformat():
     """2026-08-27 daily_earnings 를 두 번 죽인 회귀.
 

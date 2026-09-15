@@ -672,7 +672,10 @@ _EARNINGS_COLS = [
 
 
 _EARNINGS_KEY_COLS = ("code", "period", "knowledge_date")
-_EARNINGS_VALUE_COLS = [c for c in _EARNINGS_COLS if c not in _EARNINGS_KEY_COLS]
+#: 버전 판단(upsert_earnings)에 쓰는 수치 컬럼. avail_date 는 뺀다 — period 에서
+#: 결정되는 파생값이고, Postgres 는 date 객체로·수집기는 "YYYYMMDD" 로 들고 와서
+#: 넣어두면 운영 DB 에선 항상 '바뀜' 이 된다(2026-09-15, 동일값 107건이 새 버전으로).
+_EARNINGS_VALUE_COLS = [c for c in _EARNINGS_COLS if c not in (*_EARNINGS_KEY_COLS, "avail_date")]
 
 
 def _latest_earnings(con: Any, periods: set[str]) -> dict[tuple[str, str], tuple]:

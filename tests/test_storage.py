@@ -154,6 +154,21 @@ def test_upsert_earnings_does_not_add_a_version_when_nothing_changed(tmp_path):
     con.close()
 
 
+def test_upsert_earnings_unchanged_check_ignores_avail_date_representation(tmp_path):
+    """Postgres 는 ``avail_date`` 를 ``date`` 로 돌려주고 수집기는 ``"20260814"`` 를 넘긴다.
+
+    2026-09-15 실측: 비교 대상에 avail_date 가 들어 있어 운영 DB 에선 항상 '바뀜'
+    으로 판정됐다 — 정정공시 재조회 107건이 값이 같아도 전부 새 버전으로 쌓였다
+    (sqlite 는 둘 다 문자열이라 위 테스트가 못 잡았다). avail_date 는 period 에서
+    결정되는 파생값이라 버전 판단엔 수치만 본다. 여기선 표현만 다르게 넣어 재현한다.
+    """
+    con = connect(tmp_path / "t.db")
+    upsert_earnings(con, [_earnings("005930", "2024Q1", "2024-05-15", "20240515", 6.6e12)])
+    assert upsert_earnings(con, [_earnings("005930", "2024Q1", "20240515", "20240516", 6.6e12)]) == 0
+    assert con.execute("SELECT count(*) FROM earnings").fetchone()[0] == 1
+    con.close()
+
+
 def test_news_judgments_table_exists():
     from collectors.storage import connect
     con = connect(":memory:")

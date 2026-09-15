@@ -56,6 +56,15 @@ def daily_earnings():
                 # done_periods로 스킵돼 차이가 없지만, 실적 시즌엔 종목별 루프가
                 # 2,635종목×2분기 ≈ 5,270콜이 되는 걸 ~54콜로 줄인다.
                 "--db-table", "--multi-batch", "--all-codes", "--recent-quarters", "2",
+                # 정정공시분은 이미 수집됐어도 다시 받는다 — 없으면 한 번 들어간
+                # (code, period) 는 다시 안 물어서 정정이 영영 반영되지 않았다
+                # (2026-09-15 실측: 반기 시즌 상장사 정정 110건, 엠디바이스 226590
+                # 전년동기 순이익 변경 누락). 45일 = 분기 공시기한과 같은 폭이라
+                # 하루 이틀 실패해도 같은 정정이 다음 날 다시 잡힌다. list.json
+                # 정기공시 필터라 성수기에도 ~30콜. 값이 같으면 upsert 가 안 쓴다.
+                # earnings_backfill 엔 넣지 않는다 — 거긴 knowledge_date=avail 이라
+                # 정정값이 원 공시일로 찍혀 lookahead 가 된다.
+                "--corrections-days", "45",
                 "--db", timescale_dsn(),
             ],
             env=dart_env(),

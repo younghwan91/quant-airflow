@@ -26,8 +26,9 @@ import argparse
 import asyncio
 import csv
 import os
+import re
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import pandas as pd
@@ -83,6 +84,19 @@ def _statement_to_tuple(
         stmt.revenue, stmt.revenue_prior,
         stmt.operating_income, stmt.operating_income_prior,
     )
+
+
+def _has_figures(values: tuple[float | None, ...]) -> bool:
+    """저장할 값이 하나라도 있는가.
+
+    예전 기준은 ``net_income is not None`` 이었다. 그런데 주요계정 API 에 당기순이익
+    계정 자체가 없는 회사가 있다(2026-09-15 실측: 036480·073640·308100·394420 은
+    반기보고서를 냈지만 IS 계정이 매출액·영업이익·법인세차감전 순이익·총포괄손익
+    뿐). 그 기준으로는 매출·영업이익까지 통째로 버려졌고, done_periods 에도 안
+    들어가 매일 다시 묻고 매일 버렸다. 순이익은 NULL(모름)로 남긴다 — 총포괄손익
+    등으로 대신 채우지 않는다(정의가 다르다). all-None(013 미제출·실패)은 여전히 버린다.
+    """
+    return any(v is not None for v in values)
 
 
 def collect_keys() -> list[str]:
@@ -178,6 +192,79 @@ async def _fetch_multi_with_rotation(
     return six_tuples, failure
 
 
+#: 정정공시 report_nm 의 보고서 종류 → (달력 분기, 그 분기의 기준월). 기준월이
+#: 안 맞으면(3월·6월 결산사 등) 달력 분기로 수집하는 이 수집기의 period 와
+#: 대응하지 않으므로 무시한다.
+_REPORT_KIND_QUARTERS: dict[str, dict[str, int]] = {
+    "분기보고서": {"03": 1, "09": 3},
+    "반기보고서": {"06": 2},
+    "사업보고서": {"12": 4},
+}
+_CORRECTED_REPORT_RE = re.compile(r"^\[[^\]]*정정\]\s*(분기보고서|반기보고서|사업보고서)\s*\((\d{4})\.(\d{2})\)")
+
+
+def _corrected_period(report_nm: str) -> str | None:
+    """``[기재정정]반기보고서 (2026.06)`` → ``"2026Q2"``. 정정 정기보고서가 아니면 ``None``."""
+    m = _CORRECTED_REPORT_RE.match(report_nm.strip())
+    if not m:
+        return None
+    kind, year, month = m.groups()
+    q = _REPORT_KIND_QUARTERS[kind].get(month)
+    return f"{year}Q{q}" if q else None
+
+
+async def _corrected_filings(
+    scrapers: dict[str, DartScraper], keys: list[str], ki: list[int],
+    periods: set[str], *, days: int, today: str,
+) -> tuple[set[tuple[str, str]], str | None]:
+    """최근 ``days``일 DART 정기공시(``list.json``, pblntf_ty=A) 중 정정분의 ``{(code, period)}``.
+
+    **왜 필요한가:** 수집은 ``done_periods`` 로 이미 있는 (code, period) 를 건너뛴다.
+    그래서 정정공시로 DART 값이 바뀌어도 다시 묻지 않았고, ``upsert_earnings`` 의
+    '바뀐 값만 새 knowledge_date 로 쌓는다' 가 발동할 기회가 없었다(2026-09-15
+    실측: 이번 반기 시즌 상장사 정정 110건, 엠디바이스 226590 은 전년동기 순이익이
+    실제로 바뀌었는데 DB 는 원본 그대로). 여기서 뽑은 조합을 done_periods 에서
+    빼서 다시 받게 한다 — 값이 같으면 upsert 가 쓰지 않는다.
+
+    창을 넓게(DAG 는 45일) 두는 이유: 하루 실패해도 다음 날 같은 정정이 다시
+    잡힌다. 조회 비용은 정기공시만 필터해 성수기에도 ~30페이지(콜)다.
+
+    Returns:
+        ``(정정 조합, 실패 status 또는 None)``. 013(해당 기간 공시 없음)은 정상.
+        그 외 실패는 호출부가 exit 1 로 올린다 — 목록을 못 받았는데 성공으로
+        기록되면 정정 누락이 다시 조용해진다.
+    """
+    bgn = (datetime.strptime(today, "%Y%m%d") - timedelta(days=days)).strftime("%Y%m%d")
+    out: set[tuple[str, str]] = set()
+    page = 1
+    while True:
+        scraper = scrapers[keys[ki[0]]]
+        resp = await scraper.fetch(f"{scraper.base_url}/list.json", params={
+            "crtfc_key": scraper.api_key, "bgn_de": bgn, "end_de": today,
+            "pblntf_ty": "A", "page_no": str(page), "page_count": "100",
+        })
+        data = resp.json()
+        status = data.get("status")
+        if status == "013":
+            return out, None
+        if status == "020":
+            if ki[0] + 1 >= len(keys):
+                return out, "020"
+            ki[0] += 1
+            print(f"DART 키 일한도(020) 도달 → 키{ki[0] + 1}로 로테이션 (list.json)", flush=True)
+            continue
+        if status != "000":
+            return out, str(status)
+        for item in data.get("list", []):
+            code = (item.get("stock_code") or "").strip()
+            period = _corrected_period(item.get("report_nm") or "")
+            if code and period in periods:
+                out.add((code, period))
+        if page >= int(data.get("total_page", 1)):
+            return out, None
+        page += 1
+
+
 async def collect_all_financials_batched(
     scrapers: dict[str, DartScraper],
     keys: list[str],
@@ -187,6 +274,7 @@ async def collect_all_financials_batched(
     sleep: float = 0.25,
     batch_size: int = MULTI_BATCH_SIZE,
     done_periods: set[tuple[str, str]] | None = None,
+    refetch: set[tuple[str, str]] | None = None,
     today: str | None = None,
     knowledge_date: str = "today",
     failures: list[tuple[str, str]] | None = None,
@@ -208,6 +296,8 @@ async def collect_all_financials_batched(
         sleep: Delay between batch calls (politeness, not needed for the quota itself).
         batch_size: Companies per call (frozen at the DART-documented cap of 100).
         done_periods: ``{(code, period)}`` already collected — skipped (resume support).
+        refetch: ``{(code, period)}`` to fetch even if in ``done_periods`` — 정정공시분
+            (:func:`_corrected_filings`).
         today: ``YYYYMMDD`` for the avail_date look-ahead guard (defaults to now).
         knowledge_date: ``"today"`` (기본) 또는 ``"avail"``.
 
@@ -221,11 +311,12 @@ async def collect_all_financials_batched(
             ``knowledge_date = avail_date`` 로 채운 것과 같은 규약이다.
 
     Returns:
-        Rows ready for :func:`.storage.upsert_earnings` — one per
-        (code, period) with a non-``None`` net income, ``avail_date`` ≤ ``today``.
+        Rows ready for :func:`.storage.upsert_earnings` — one per (code, period)
+        with at least one non-``None`` figure (:func:`_has_figures`),
+        ``avail_date`` ≤ ``today``.
     """
     today = today or datetime.now().strftime("%Y%m%d")
-    done_periods = done_periods or set()
+    done_periods = (done_periods or set()) - (refetch or set())
     stock_codes = list(corp_map.keys())
     ki = [0]
     rows: list[tuple] = []
@@ -244,7 +335,7 @@ async def collect_all_financials_batched(
                 failures.append((period, failure))
             for sc in batch_codes:
                 ni, nip, rev, revp, oi, oip = result[sc]
-                if ni is None:
+                if not _has_figures(result[sc]):
                     continue
                 kd = avail if knowledge_date == "avail" else today
                 rows.append((sc, period, avail, kd, ni, nip, rev, revp, oi, oip))
@@ -333,6 +424,17 @@ async def _run(args: argparse.Namespace, keys: list[str], con: Any,
         else:
             con.close()
 
+        # 정정공시분은 done_periods 에 있어도 다시 받는다 — _corrected_filings 참고.
+        refetch: set[tuple[str, str]] = set()
+        corrections_failure: str | None = None
+        if args.db_table and periods and args.corrections_days:
+            refetch, corrections_failure = await _corrected_filings(
+                scrapers, keys, [0], {f"{y}Q{q}" for y, q in periods},
+                days=args.corrections_days, today=today)
+            print(f"정정공시 {len(refetch)}건 재조회 (최근 {args.corrections_days}일, "
+                  f"이미 수집분 {len(refetch & done_periods)}건)", flush=True)
+            done_periods -= refetch
+
         done: set[str] = set()
         if args.out and os.path.exists(args.out):
             for r in csv.reader(open(args.out)):
@@ -350,9 +452,12 @@ async def _run(args: argparse.Namespace, keys: list[str], con: Any,
                 done_periods=done_periods, today=today,
                 knowledge_date=args.knowledge_date, failures=failures)
             from .storage import upsert_earnings
-            upsert_earnings(con, rows)
+            # rows=받아온 행, written=실제로 쓴 행(값이 같은 재조회분은 upsert 가 건너뜀)
+            written = upsert_earnings(con, rows)
             con.close()
-            print(f"DONE rows={len(rows)} (multi-batch)", flush=True)
+            print(f"DONE rows={len(rows)} written={written} (multi-batch)", flush=True)
+            if corrections_failure:
+                failures.append(("list.json", corrections_failure))
             if failures:
                 # **실패를 성공으로 보고하지 않는다.** 예전엔 네트워크/한도 실패가
                 # 조용히 all-None 을 만들고 → `if ni is None: continue` 가 조용히
@@ -383,7 +488,7 @@ async def _run(args: argparse.Namespace, keys: list[str], con: Any,
                     continue
                 ni, nip, rev, revp, oi, oip = await _fetch_with_rotation(scrapers, keys, ki, code, year, q)
                 await asyncio.sleep(args.sleep)
-                if ni is None:
+                if not _has_figures((ni, nip, rev, revp, oi, oip)):
                     continue
                 if args.db_table:
                     _write_row_db(con, code, period, avail, today, ni, nip, rev, revp, oi, oip)
@@ -399,6 +504,9 @@ async def _run(args: argparse.Namespace, keys: list[str], con: Any,
         if args.db_table:
             con.close()
         print(f"DONE rows={n}", flush=True)
+        if corrections_failure:
+            print(f"❌ DART 정정공시 목록 조회 실패 (status={corrections_failure})", file=sys.stderr, flush=True)
+            return 1
         return 0
     finally:
         for scraper in scrapers.values():
@@ -423,11 +531,17 @@ def main() -> int:
     ap.add_argument("--multi-batch", action="store_true",
                     help="fnlttMultiAcnt로 최대 100개씩 묶어 수집 (전종목 백필용, "
                          "회사당 1콜 대신 ~1/100로 콜 수 절감). --db-table과 함께 사용.")
+    ap.add_argument("--corrections-days", type=int, default=None,
+                    help="최근 N일 정정 정기보고서의 (종목, 분기)는 이미 수집됐어도 다시 받는다 "
+                         "(값이 바뀐 경우만 새 knowledge_date 로 쌓임). --db-table 전용.")
     args = ap.parse_args()
     if not args.db_table and not args.out:
         ap.error("--out is required unless --db-table is set")
     if args.multi_batch and not args.db_table:
         ap.error("--multi-batch requires --db-table (batched rows are upserted directly)")
+    if args.corrections_days and args.knowledge_date == "avail":
+        # 정정값에 avail(원 공시 기준 가용일)을 찍으면 정정 전 시점 as-of 조회에 정정값이 보인다.
+        ap.error("--corrections-days 는 --knowledge-date avail 과 함께 쓸 수 없다 (lookahead)")
 
     keys = collect_keys()
     if not keys:
