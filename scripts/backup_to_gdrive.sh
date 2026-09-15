@@ -49,7 +49,8 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 DATE="$(date +%F)"
 DOW="$(date +%u)"
-HEAVY_TABLES=(minute_bars quotes ticks)
+# quote_events — scalp-it 가 2026-09-16 부터 0D 수신 전부를 쌓는다(quotes 의 ~2.7배 행).
+HEAVY_TABLES=(minute_bars quotes quote_events ticks)
 
 # ⚠️ TimescaleDB 하이퍼테이블은 실데이터가 부모 테이블이 아니라
 # _timescaledb_internal._hyper_*_chunk 에 쪼개져 들어간다. pg_dump 의
