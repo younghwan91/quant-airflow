@@ -56,25 +56,78 @@ report_coverage() {
         return
     fi
     log "=== 커버리지 점검 ($today) ==="
+    # 세 가지를 여기서 바로잡는다 — 셋 다 "매일 울리는 늑대소년" 유형이라
+    # 주말·오전 건너뛰기와 같은 계보다(2026-09-23 실측).
+    #
+    # (1) **유니버스에서 상폐 종목을 뺀다.** stocks 는 키움 전종목 목록의
+    #     upsert 라 상폐돼도 행이 안 지워진다 — 09-22 기준 26종목이 stocks 와
+    #     delisted_stocks 양쪽에 있다(더존비즈온·현대홈쇼핑·신세계푸드 등
+    #     6~9월 상폐분). 이것들은 앞으로 영원히 일봉이 안 들어오므로
+    #     missing_today 가 상폐될 때마다 한 칸씩 커지는 누적 잡음이 된다
+    #     (09-21 26 → 09-22 29). 빼고 나면 29 → 3 으로 떨어지고, 남는 3은
+    #     "아직 delisted 리스트에 안 잡힌 거래정지" 라 실제로 볼 값이다.
+    #
+    # (2) **credit_balance 는 전 거래일로 묻는다.** daily_short_credit 은
+    #     화~토 10:00 에 전날치를 받는다(공시가 T+1~2 지연) — 그런데 18:10
+    #     점검이 '$today' 로 물어 **매 영업일 전종목(2651) 누락**으로 찍혔다.
+    #     100% 오보였다. 거래일 달력은 따로 두지 않고 daily_bars 를 쓴다
+    #     (report_theme_freshness 와 같은 규약) — 공휴일이 끼어도 저절로 맞는다.
+    #
+    # (3) **short_selling 은 종목 누락으로 못 센다.** KRX 는 그날 공매도가
+    #     실제로 있었던 종목만 공시해서 전종목의 80% 언저리(2,076~2,255행)만
+    #     나온다 — 전거래일 기준으로 고쳐도 422종목이 "누락" 으로 남는데 그게
+    #     정상이다. 그래서 여기서 빼고 아래 report_short_selling 에서 행 수로 본다.
     ts_psql -c "
-SELECT 'daily_bars' AS tbl, COUNT(*) AS missing_today FROM stocks s
+WITH univ AS (
+    SELECT s.code FROM stocks s
+     WHERE NOT EXISTS (SELECT 1 FROM delisted_stocks x WHERE x.code = s.code)
+), prev AS (
+    SELECT MAX(date) AS d FROM daily_bars WHERE date < '$today'
+)
+SELECT 'daily_bars' AS tbl, '$today' AS asof, COUNT(*) AS missing FROM univ s
     WHERE NOT EXISTS (SELECT 1 FROM daily_bars d WHERE d.code=s.code AND d.date='$today')
 UNION ALL
-SELECT 'supply_demand', COUNT(*) FROM stocks s
+SELECT 'supply_demand', '$today', COUNT(*) FROM univ s
     WHERE NOT EXISTS (SELECT 1 FROM supply_demand d WHERE d.code=s.code AND d.date='$today')
 UNION ALL
-SELECT 'credit_balance', COUNT(*) FROM stocks s
-    WHERE NOT EXISTS (SELECT 1 FROM credit_balance d WHERE d.code=s.code AND d.date='$today')
+SELECT 'credit_balance', (SELECT d::text FROM prev), COUNT(*) FROM univ s
+    WHERE NOT EXISTS (SELECT 1 FROM credit_balance d WHERE d.code=s.code AND d.date=(SELECT d FROM prev))
 UNION ALL
-SELECT 'short_selling', COUNT(*) FROM stocks s
-    WHERE NOT EXISTS (SELECT 1 FROM short_selling d WHERE d.code=s.code AND d.date='$today')
-UNION ALL
-SELECT 'sector_index', COUNT(*) FROM (SELECT DISTINCT code FROM sector_index WHERE date >= current_date - 30) si
+SELECT 'sector_index', '$today', COUNT(*) FROM (SELECT DISTINCT code FROM sector_index WHERE date >= current_date - 30) si
     WHERE NOT EXISTS (SELECT 1 FROM sector_index x WHERE x.code=si.code AND x.date='$today')
 UNION ALL
-SELECT 'shares_outstanding', COUNT(*) FROM stocks s
+SELECT 'shares_outstanding', '최근7일', COUNT(*) FROM univ s
     WHERE NOT EXISTS (SELECT 1 FROM shares_outstanding_history d WHERE d.code=s.code AND d.date >= current_date - interval '7 days');
 " 2>&1 || log "커버리지 점검 실패 (DB 연결 안 됨?)"
+}
+
+report_short_selling() {
+    # 위 (3) 의 짝 — 종목 누락 대신 "전 거래일 행 수" 로 본다. 절대 임계값
+    # 대신 최근 10거래일 중앙값의 50% 를 바닥으로 쓴다: 공매도 행 수는
+    # 2,076~2,255 사이에서 평소에도 10% 가까이 출렁여 고정 임계값이면 튜닝을
+    # 계속 해야 한다. 수집기가 죽거나(0행) 소스가 반쪽만 주는 경우를 잡는 게
+    # 목적이지 일상 변동을 보려는 게 아니다.
+    local row n med
+    row=$(ts_psql -tAc "
+WITH prev AS (SELECT MAX(date) AS d FROM daily_bars WHERE date < '$today'),
+     recent AS (SELECT date, COUNT(*) c FROM short_selling
+                 WHERE date >= (SELECT d FROM prev) - interval '20 days'
+                   AND date <= (SELECT d FROM prev) GROUP BY 1)
+SELECT coalesce((SELECT d::text FROM prev), ''),
+       coalesce((SELECT c FROM recent WHERE date = (SELECT d FROM prev)), 0),
+       coalesce((SELECT round(percentile_cont(0.5) WITHIN GROUP (ORDER BY c)) FROM recent), 0)
+" 2>/dev/null)
+    IFS='|' read -r asof n med <<< "$row"
+    if [ -z "${asof:-}" ]; then
+        log "⚠️ 공매도 점검 실패 (DB 연결 안 됨?)"
+    elif [ "$n" -eq 0 ] 2>/dev/null; then
+        log "⚠️ 공매도: $asof 행이 0 — daily_short_credit 이 안 돌았거나 소스가 막혔다"
+    elif [ $((n * 2)) -lt "$med" ] 2>/dev/null; then
+        log "⚠️ 공매도: $asof ${n}행 — 최근 중앙값 ${med}행의 절반 미만이라 반쪽 수집 의심"
+    else
+        log "공매도: $asof ${n}행 (최근 중앙값 ${med}행)"
+    fi
+    return 0
 }
 
 report_failures() {
@@ -152,6 +205,10 @@ SELECT coalesce(t::text, ''), coalesce(b::text, ''), coalesce((b - t)::text, '')
 }
 
 report_coverage
+# report_coverage 와 달리 주말·오전에도 돈다 — 전 거래일을 보는 점검이라
+# "오늘 장이 섰나" 와 무관하고, 토 10:00 의 daily_short_credit 실행분(금요일치)도
+# 그날 안에 확인된다.
+report_short_selling
 report_failures
 report_paused
 report_replication
