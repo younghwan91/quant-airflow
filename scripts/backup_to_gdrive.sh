@@ -51,7 +51,20 @@ CONTAINER="${BACKUP_DB_CONTAINER:-quant-airflow-timescaledb-replica-1}"
 # 옮긴 이유였다). `.env` 의 BACKUP_STAGING_PARENT 로 디스크 경로를 준다. 없으면
 # 기존대로 mktemp 기본값(/tmp)을 쓴다 — trader 처럼 /tmp 가 디스크인 호스트용.
 TMPDIR="$(mktemp -d ${BACKUP_STAGING_PARENT:+-p "$BACKUP_STAGING_PARENT"})"
-trap 'rm -rf "$TMPDIR"' EXIT
+# 비정상 종료는 사람에게 간다. 2026-09-12 의 `cd: No such file` 처럼 크론 로그에
+# 한 줄 남고 끝나던 실패가 이 레포 사고의 전형이었다(spec 2026-10-05). rc 를 **먼저**
+# 잡는다 — rm 이 성공하면 $? 가 0 으로 덮인다. 본문은 자기 stdout 을 모을 수 없어
+# (크론이 파일로 보낸다) 크론 줄이 넘겨준 BACKUP_LOG 의 꼬리를 읽는다; 없으면 제목만.
+# set -e 아래라 트랩 안의 실패가 다시 트랩을 부르지 않게 전부 `|| true` 다.
+on_exit() {
+  local rc=$?
+  rm -rf "$TMPDIR"
+  if [ "$rc" -ne 0 ]; then
+    { [ -n "${BACKUP_LOG:-}" ] && [ -r "$BACKUP_LOG" ] && tail -n 30 "$BACKUP_LOG"; } 2>/dev/null \
+      | "$REPO/scripts/alert.sh" error "백업 실패 (rc=$rc, BACKUP_ONLY=${BACKUP_ONLY:-all})" || true
+  fi
+}
+trap on_exit EXIT
 
 DATE="$(date +%F)"
 DOW="$(date +%u)"
