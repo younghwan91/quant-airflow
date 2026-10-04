@@ -474,6 +474,30 @@ def _upsert(
     if _is_pg(con):
         import psycopg2.extras  # noqa: PLC0415 — optional dep, only needed for this path
 
+        # 한 배치에 같은 충돌키가 두 번 들어오면 Postgres 는 그 문장 전체를
+        # 거절한다 — "ON CONFLICT DO UPDATE command cannot affect row a second
+        # time"(CardinalityViolation). 행 하나가 배치 전체를 날리고, 소스가 같은
+        # 응답을 주는 동안엔 재시도도 똑같이 터진다: 2026-09-29 16:05
+        # daily_news.collect_dart_disclosures 가 attempt 1·2 를 같은 예외로
+        # 실패했다(DART list.json 이 같은 rcept_no 를 한 응답에 두 번 줬다 —
+        # published_at 은 날짜 단위라 (id, published_at) 이 그대로 겹친다).
+        #
+        # 뒤에 온 행을 살린다 — DO UPDATE/INSERT OR REPLACE 의 "나중 값이 이긴다"
+        # 와 같은 규약이라 배치를 쪼개 넣었을 때와 결과가 같다.
+        #
+        # 왜 콜렉터가 아니라 여기인가: 중복을 줄 수 있는 건 DART 뿐이 아니고
+        # (키움 전종목 스윕도 같은 종목을 두 번 담을 수 있다), 한 군데서 막으면
+        # 새 콜렉터가 이 함정을 다시 밟지 않는다. sqlite 경로는 손대지 않는다 —
+        # executemany 는 중복을 그냥 받고, 테이블마다 실제 PK 가 pk_cols 와
+        # 다를 수 있다(disclosures 는 sqlite 에서 id 단독 PK).
+        pk_idx = [cols.index(c) for c in pk_cols if c in cols]
+        if pk_idx:
+            by_key = {tuple(r[i] for i in pk_idx): r for r in records}
+            if len(by_key) != len(records):
+                print(f"⚠️ {table}: 배치 안 중복 충돌키 {len(records) - len(by_key)}건"
+                      " — 나중 값으로 합쳤다", flush=True)
+                records = list(by_key.values())
+
         update_cols = [c for c in cols if c not in pk_cols]
         if on_conflict == "nothing" or not update_cols:
             # update_cols가 비면(모든 컬럼이 pk_cols인 순수 연결 테이블, 예:

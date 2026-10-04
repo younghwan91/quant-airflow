@@ -112,6 +112,46 @@ def test_upsert_falls_back_to_do_nothing_when_all_columns_are_the_pk():
     assert "DO UPDATE SET" not in sql
 
 
+def test_upsert_collapses_duplicate_conflict_keys_within_one_batch():
+    """같은 충돌키가 한 배치에 두 번 오면 합쳐 보낸다 — 안 그러면 문장 전체가 죽는다.
+
+    Postgres 는 ``ON CONFLICT DO UPDATE`` 문장 안에서 같은 키를 두 번 건드리면
+    CardinalityViolation("cannot affect row a second time")으로 **배치 전체**를
+    거절한다. 2026-09-29 16:05 daily_news.collect_dart_disclosures 가 이걸로
+    attempt 1·2 를 같은 예외로 실패했다(DART list.json 이 같은 rcept_no 를 한
+    응답에 두 번 줬다) — 소스가 같은 응답을 주는 동안 재시도가 무의미하다.
+    """
+    fake_con = MagicMock()
+    fake_cursor = MagicMock()
+    fake_con.cursor.return_value.__enter__.return_value = fake_cursor
+    records = [
+        ("005930", "20260706", 100),
+        ("000660", "20260706", 200),
+        ("005930", "20260706", 150),  # 같은 (code, date) — 나중 값이 이긴다
+    ]
+
+    with patch("psycopg2.extras.execute_values") as execute_values:
+        n = _upsert(fake_con, "daily_bars", ["code", "date", "close"], records)
+
+    sent = execute_values.call_args[0][2]
+    assert sent == [("005930", "20260706", 150), ("000660", "20260706", 200)]
+    assert n == 2  # 보고하는 행 수도 실제로 보낸 수여야 한다
+
+
+def test_upsert_keeps_rows_that_only_look_duplicated_outside_the_conflict_key():
+    """충돌키가 다르면 합치지 않는다 — pk 아닌 컬럼이 같은 건 중복이 아니다."""
+    fake_con = MagicMock()
+    fake_cursor = MagicMock()
+    fake_con.cursor.return_value.__enter__.return_value = fake_cursor
+    records = [("005930", "20260706", 100), ("005930", "20260707", 100)]
+
+    with patch("psycopg2.extras.execute_values") as execute_values:
+        n = _upsert(fake_con, "daily_bars", ["code", "date", "close"], records)
+
+    assert execute_values.call_args[0][2] == records
+    assert n == 2
+
+
 def _bar(code, date, close):
     values = {"code": code, "date": date, "open": close, "high": close,
               "low": close, "close": close, "volume": 0, "trade_value": 0}
