@@ -63,6 +63,35 @@ Airflow 메타DB 에 물어 조기 종료했다(레거시 스크립트, 지금�
 
 </details>
 
+## 배포 — 푸시 한 번이 두 호스트에 닿는 경로
+
+도구는 전부 dotfiles 에 있다(`git/hooks/*`, `bin/pull-all`, `bin/cron-install`, 각
+호스트 `deploy/crontab.<host>`). 이 절은 "내가 푸시하면 무엇이 어디까지 자동인가" 다.
+
+```
+git push (어느 호스트에서든)
+ ├ pre-push: 커밋 신원 가드 → ci-local (이 레포 .github/workflows/ci.yml 을 전용
+ │           워크트리에서 그대로 실행 — Install·Lint·DAG 파싱·시크릿 스캔·Test).
+ │           sparse 메인에서 만든 워크트리는 스스로 un-sparse 한다.
+ ├ 원격 반영 확인(최대 2분) → 푸시한 호스트에서 cron-install
+ └ 상대 호스트에 ssh → pull-all (trader 는 --ci-gate: GitHub 체크가 초록일 때만,
+   보류면 60초 간격 최대 10분 재시도) → cron-install
+   실패·보류·미반영은 scripts/alert.sh 로 알림(~/.cache/push-sync.log 에도 남는다)
+안전망: 양쪽 07:50 pull-all --ci-gate + cron-install, 08:50 pull-all --check —
+        둘 다 cron_run.sh 로 감싸 ⏸/✗/behind 가 알림으로 간다.
+```
+
+**받은 코드가 언제 효력을 갖나** (simnode):
+
+| 바뀐 것 | 효력 |
+|---|---|
+| `dags/` · `collectors/` · `scripts/` | 즉시 — bind-mount. DAG 파일은 스케줄러 재파싱(최대 30분, `MIN_FILE_PROCESS_INTERVAL=1800`) 뒤, 콜렉터는 다음 태스크부터 |
+| `deploy/crontab.simnode` | push-sync 의 cron-install 직후 |
+| `docker-compose.airflow.yml` env · `docker/requirements.txt` · `Dockerfile` | **자동 아님** — `docker compose -f docker-compose.airflow.yml up -d [--build]` 가 필요하고 그건 스케줄러 재생성이라 CLAUDE.md §1 승인 대상 |
+| `sql/migrations/*.sql` | **자동 아님** — 손으로 적용(마이그레이션 파일 하단 절차) |
+
+trader 는 sparse 체크아웃(README "scalp-it 쪽")이라 compose·sql·알림 전송기만 받는다.
+
 ## 알림 — 사고는 로그가 아니라 사람에게 간다
 
 설계: `docs/superpowers/specs/2026-10-05-alert-channel-design.md`. 전송기는
