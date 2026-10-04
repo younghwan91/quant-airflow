@@ -58,7 +58,7 @@ TMPDIR="$(mktemp -d ${BACKUP_STAGING_PARENT:+-p "$BACKUP_STAGING_PARENT"})"
 # set -e 아래라 트랩 안의 실패가 다시 트랩을 부르지 않게 전부 `|| true` 다.
 on_exit() {
   local rc=$?
-  rm -rf "$TMPDIR"
+  rm -rf "$TMPDIR" || true
   if [ "$rc" -ne 0 ]; then
     { [ -n "${BACKUP_LOG:-}" ] && [ -r "$BACKUP_LOG" ] && tail -n 30 "$BACKUP_LOG"; } 2>/dev/null \
       | "$REPO/scripts/alert.sh" error "백업 실패 (rc=$rc, BACKUP_ONLY=${BACKUP_ONLY:-all})" || true

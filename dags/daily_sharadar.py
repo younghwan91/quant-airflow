@@ -32,7 +32,7 @@ import pendulum
 
 from airflow.decorators import dag, task
 
-from _common import DEFAULT_TASK_KW, run_collector, sharadar_env
+from _common import DAG_DEFAULT_ARGS, run_collector, sharadar_env
 
 RAW_DIR = "/opt/us-data/sharadar/raw"
 STORE = "/opt/us-data/us_micro.duckdb"
@@ -40,6 +40,7 @@ STORE = "/opt/us-data/us_micro.duckdb"
 
 @dag(
     dag_id="daily_sharadar",
+    default_args=DAG_DEFAULT_ARGS,
     # 17:30 KST — **벤더가 테이블마다 다른 시각에 올린다**(2026-08-15 실측
     # manifest): holdings_ticker 01:39, insiders 09:48, daily 12:56, 그런데
     # 정작 가장 중요한 stocks(주가) 16:40, fundamentals 16:49, funds 16:54 다.
@@ -74,7 +75,7 @@ STORE = "/opt/us-data/us_micro.duckdb"
 )
 def daily_sharadar():
 
-    @task(**{**DEFAULT_TASK_KW, "retries": 2})
+    @task(retries=2, retry_delay=timedelta(minutes=10))
     def download() -> None:
         """구독 14개를 벤더와 대조. `modified` 가 그대로면 받지 않는다."""
         run_collector(
@@ -85,7 +86,7 @@ def daily_sharadar():
             env=sharadar_env(),
         )
 
-    @task(**{**DEFAULT_TASK_KW, "retry_delay": timedelta(minutes=15)})
+    @task(retries=1, retry_delay=timedelta(minutes=15))
     def rebuild() -> None:
         """새 스토어를 짓고, 게이트를 통과하면 제자리에 갈아끼운다.
 

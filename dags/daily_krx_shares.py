@@ -35,11 +35,12 @@ import sys
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import DEFAULT_TASK_KW, run_collector, timescale_dsn
+from _common import DAG_DEFAULT_ARGS, DEFAULT_TASK_KW, run_collector, timescale_dsn
 
 
 @dag(
     dag_id="daily_krx_shares",
+    default_args=DAG_DEFAULT_ARGS,
     # ⛔ schedule=None — **수동 트리거 전용이다.**
     #
     # 원래는 `"30 18 * * 1-5"` + `is_paused_upon_creation=True` 였는데, 그 플래그는

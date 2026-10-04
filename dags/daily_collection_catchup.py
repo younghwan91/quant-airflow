@@ -31,11 +31,12 @@ import sys
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import DEFAULT_TASK_KW, kiwoom_env, run_collector, timescale_dsn
+from _common import DAG_DEFAULT_ARGS, DEFAULT_TASK_KW, kiwoom_env, run_collector, timescale_dsn
 
 
 @dag(
     dag_id="daily_collection_catchup",
+    default_args=DAG_DEFAULT_ARGS,
     # 평일 10:05 KST — 컨테이너 기동(10:00) 직후. **본 수집(daily_collection)이
     # 평일만 도는데 그 복구용이 매일 돌 이유가 없다.** 주말엔 복구할 실패분이
     # 원리적으로 존재하지 않는다(실측: 2026-08-22 토 / 08-23 일 런이 `일봉 0행`

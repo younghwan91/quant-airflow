@@ -42,11 +42,12 @@ import sys
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import DEFAULT_TASK_KW, run_collector, timescale_dsn
+from _common import DAG_DEFAULT_ARGS, DEFAULT_TASK_KW, run_collector, timescale_dsn
 
 
 @dag(
     dag_id="daily_consensus",
+    default_args=DAG_DEFAULT_ARGS,
     # 평일 17:00 KST — 네이버 컨센서스는 T-1 기준이라 시각이 데이터에 영향을
     # 주지 않는다(위 docstring 실측). daily_collection(16:00) 이 중앙 48.7분,
     # 재시도 경로 최대 58.8분이라 17:00 이면 겹치지 않는다.

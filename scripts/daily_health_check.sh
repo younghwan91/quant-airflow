@@ -112,14 +112,25 @@ SELECT 'shares_outstanding', '최근7일', COUNT(*) FROM univ s
     # 정상은 한 자리(상폐 제외 후 09-22 실측 3), 거래정지가 몰려도 수십이다. 100 을
     # 넘으면 "16:00 수집이 통째로 빠졌다"는 뜻이고, 그건 지금까지 표로만 찍히고
     # 끝났다. 다른 테이블 임계값은 다음 하위 프로젝트(DAG 실패 자가치유)의 몫이다.
-    local bars_missing
+    #
+    # 평일 휴장일(한글날·성탄절 등)엔 daily_bars 에 오늘 행이 원래 없어 전종목이
+    # 누락으로 보인다 — 그대로 두면 연 15번쯤 "수집 실패" 오보다. 그렇다고
+    # MAX(date) < today 면 건너뛰는 식으로 막으면 **수집이 통째로 실패한 날도** 같이
+    # 조용해진다(그날도 MAX 는 어제다). 휴장과 실패를 가르는 건 같은 DB 의 ticks 다:
+    # scalp-it 이 장중 실시간으로 쌓으므로 오늘 틱이 있으면 장이 열린 날이고, 그런데
+    # 일봉이 없으면 수집 실패다. 휴장일엔 틱도 없어 조용히 넘어간다. 공휴일 달력을
+    # 따로 안 두는 이 스크립트의 규약(report_theme_freshness 참고)과도 맞다.
+    local bars_missing market_open
+    market_open=$(ts_psql -tAc "
+SELECT EXISTS (SELECT 1 FROM ticks WHERE ts >= '$today'::date AND ts < '$today'::date + 1)
+" 2>/dev/null | tr -d '[:space:]')
     bars_missing=$(ts_psql -tAc "
 SELECT COUNT(*) FROM stocks s
  WHERE NOT EXISTS (SELECT 1 FROM delisted_stocks x WHERE x.code = s.code)
    AND NOT EXISTS (SELECT 1 FROM daily_bars d WHERE d.code = s.code AND d.date = '$today')
 " 2>/dev/null | tr -d '[:space:]')
-    if [ -n "$bars_missing" ] && [ "$bars_missing" -ge 100 ] 2>/dev/null; then
-        warn "daily_bars $today 누락 ${bars_missing}종목 — 16:00 수집이 통째로 빠졌을 가능성"
+    if [ "$market_open" = "t" ] && [ -n "$bars_missing" ] && [ "$bars_missing" -ge 100 ] 2>/dev/null; then
+        warn "daily_bars $today 누락 ${bars_missing}종목 — 오늘 틱은 있는데 일봉이 없다, 16:00 수집 실패 의심"
     fi
 }
 

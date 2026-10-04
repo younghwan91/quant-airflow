@@ -42,11 +42,12 @@ import sys
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import DEFAULT_TASK_KW, kiwoom_env, run_collector, timescale_dsn
+from _common import DAG_DEFAULT_ARGS, DEFAULT_TASK_KW, kiwoom_env, run_collector, timescale_dsn
 
 
 @dag(
     dag_id="weekly_history_backfill",
+    default_args=DAG_DEFAULT_ARGS,
     schedule="0 11 * * 0",  # 일요일 11:00 KST — earnings_backfill(10:00)과 1시간 분리
     # start_date는 직전 일요일 인터벌 시작(07-12)보다 앞에 둬야 catchup=False에서
     # 이번 주 일요일(07-19)이 첫 런으로 잡힌다 — 07-18로 두면 한 주 밀려 07-26이 됐다.

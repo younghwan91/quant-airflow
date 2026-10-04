@@ -41,11 +41,12 @@ from datetime import timedelta
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import DEFAULT_TASK_KW, dart_env, run_collector, timescale_dsn
+from _common import DAG_DEFAULT_ARGS, DEFAULT_TASK_KW, dart_env, run_collector, timescale_dsn
 
 
 @dag(
     dag_id="weekly_delisted_stocks",
+    default_args=DAG_DEFAULT_ARGS,
     # 토요일 10:05 KST — 스택 가동 창(10:00~) 직후. price_adjust(10:40)보다 앞:
     # 새 폐지 종목 시세가 daily_bars 에 들어간 뒤 조정가가 재생성돼야 한다.
     schedule="5 10 * * 6",
@@ -63,7 +64,7 @@ def weekly_delisted_stocks():
             "--db", timescale_dsn(),
         ])
 
-    @task(**{**DEFAULT_TASK_KW, "retry_delay": timedelta(minutes=20)})
+    @task(retries=1, retry_delay=timedelta(minutes=20))
     def backfill_delisted_bars() -> None:
         """폐지 종목의 과거 일봉 백필 (네이버).
 
@@ -76,7 +77,7 @@ def weekly_delisted_stocks():
             "--db", timescale_dsn(),
         ])
 
-    @task(**{**DEFAULT_TASK_KW, "retry_delay": timedelta(minutes=20)})
+    @task(retries=1, retry_delay=timedelta(minutes=20))
     def backfill_delisted_shares() -> None:
         """폐지 종목 상장주식수 백필 (DART).
 
@@ -92,7 +93,7 @@ def weekly_delisted_stocks():
             env=dart_env(),
         )
 
-    @task(**{**DEFAULT_TASK_KW, "retry_delay": timedelta(minutes=20)})
+    @task(retries=1, retry_delay=timedelta(minutes=20))
     def backfill_delisted_flow() -> None:
         """폐지 종목 수급 **부분** 백필 (네이버).
 

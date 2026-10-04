@@ -13,11 +13,12 @@ import sys
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import DEFAULT_TASK_KW, kiwoom_env, run_collector, timescale_dsn
+from _common import DAG_DEFAULT_ARGS, DEFAULT_TASK_KW, kiwoom_env, run_collector, timescale_dsn
 
 
 @dag(
     dag_id="daily_collection",
+    default_args=DAG_DEFAULT_ARGS,
     schedule="0 16 * * 1-5",  # 평일 16:00 KST — 장마감(15:30) 직후, 데이터 확정 대기 30분
     start_date=pendulum.datetime(2026, 1, 1, tz="Asia/Seoul"),
     catchup=False,

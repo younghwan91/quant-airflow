@@ -52,13 +52,14 @@ from datetime import timedelta
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import DEFAULT_TASK_KW, dart_env, run_collector, timescale_dsn
+from _common import DAG_DEFAULT_ARGS, dart_env, run_collector, timescale_dsn
 
 FROM_YEAR = "2016"  # EARNINGS_PIPELINE_PLAN.md 권장치 — 사용자 확인 필요한 기본값
 
 
 @dag(
     dag_id="earnings_backfill",
+    default_args=DAG_DEFAULT_ARGS,
     # 매주 일요일 10:00 KST — 스택 기동(cron 10:00) 직후, 장이 안 서는 날이라
     # 다른 수집과 경합하지 않는다. --multi-batch 적용 후 전 종목 전 이력 재확인이
     # 2분 24초로 끝나므로(과거 215분) 주 1회로 돌려 신규 상장 종목의 과거 이력을
@@ -71,7 +72,7 @@ FROM_YEAR = "2016"  # EARNINGS_PIPELINE_PLAN.md 권장치 — 사용자 확인 �
 )
 def earnings_backfill():
 
-    @task(**{**DEFAULT_TASK_KW, "retries": 2, "retry_delay": timedelta(minutes=30)})
+    @task(retries=2, retry_delay=timedelta(minutes=30))
     def collect_earnings_backfill() -> None:
         run_collector(
             [

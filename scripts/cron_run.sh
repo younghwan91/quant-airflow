@@ -9,8 +9,9 @@
 # 이게 잡는 것은 스크립트 **안의** 핸들러가 돌기 전에 죽는 경우다 — 2026-09-12 백업이
 # `cd: No such file or directory` 로 조용히 실패한 유형(인터프리터 없음·권한·경로).
 # 스크립트 안 핸들러(헬스체크 ⚠️ 모음, 백업 EXIT 트랩)가 이미 알린 경우는 꼬리 안의
-# `[alert.py]` 마커로 알아보고 중복으로 보내지 않는다. 안 핸들러를 빼지 않는 이유:
-# 그쪽은 **왜** 죽었는지 안다, 여기는 꼬리만 안다.
+# `[alert.py] sent|logged-only` 마커로 알아보고 중복으로 보내지 않는다. `failed` 는
+# 전달이 안 된 것이라(웹훅 429/5xx) 여기서 한 번 더 시도한다. 안 핸들러를 빼지 않는
+# 이유: 그쪽은 **왜** 죽었는지 안다, 여기는 꼬리만 안다.
 set -u
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -28,7 +29,7 @@ rc=${PIPESTATUS[0]}
 
 if [ "$rc" -ne 0 ]; then
     tail_out="$(tail -n 30 "$tmp")"
-    if printf '%s\n' "$tail_out" | grep -q '^\[alert\.py\] '; then
+    if printf '%s\n' "$tail_out" | grep -qE '^\[alert\.py\] (sent|logged-only) '; then
         echo "[cron_run] $name rc=$rc — 안에서 이미 알렸다(마커), 중복 알림 생략"
     else
         printf '%s\n' "$tail_out" | "$REPO/scripts/alert.sh" error "$name 실패 (rc=$rc)"

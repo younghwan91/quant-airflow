@@ -265,6 +265,33 @@ cron_run.sh rc≠0 (꼬리 30줄) ────┤   (컨테이너는 직접)    
    `alert.sh info "알림 통로 개통"` 로 즉시 확인 → 사용자 승인 후 airflow compose
    `up -d`(env 재적용). 이 세 단계는 operations.md 에 그대로 적는다.
 
+## 구현 중 바뀐 것 — 코드 리뷰 반영 (2026-10-05)
+
+구현 후 리뷰(`/code-review main..HEAD`)에서 8건이 나왔고 7건을 반영했다. 위 본문과
+다른 점만 적는다:
+
+- **구성 요소 3** — 콜백은 `DEFAULT_TASK_KW` 가 아니라 **`@dag(default_args=
+  DAG_DEFAULT_ARGS)`** 로 건다. 이유: `ExternalTaskSensor` 두 개(`daily_price_adjust`,
+  `weekly_price_adjust`)는 `@task` 가 아니라 `DEFAULT_TASK_KW` 를 안 거치고, 센서가
+  타임아웃으로 죽으면 하류는 `upstream_failed` 라 콜백이 없어 **아무도 안 알린다** —
+  "상류가 이미 알렸다" 는 전제가 깨진다. DAG 단위 default_args 는 모든 오퍼레이터에
+  키 단위로 합쳐지므로 센서도, 앞으로 누가 `@task(retries=3)` 이라고만 적는 태스크도
+  빠지지 않는다. 6개 데코레이터는 원래대로 돌렸고 `DEFAULT_TASK_KW` 는 재시도만 든다.
+- **구성 요소 4** — `daily_bars` 누락 ≥ 100 경보는 **오늘 `ticks` 가 있을 때만** 울린다.
+  평일 휴장일엔 일봉이 원래 없어 전종목 누락으로 보이는데, `MAX(date) < today` 로
+  건너뛰면 수집이 통째로 실패한 날도 조용해진다. 같은 DB 의 틱(scalp-it 실시간)이
+  "장이 열렸나" 를 갈라준다.
+- **구성 요소 1** — 호스트 이름은 `ALERT_HOST` env 우선(컨테이너 hostname 은 컨테이너
+  ID). compose 가 `simnode` 를 넣는다. 로컬 로그에는 본문을 **자르지 않고** 쓴다("전체는
+  로그" 가 사실이 되게). 본문 예산은 제목 길이에서 계산해 긴 제목에서도 닫는 펜스가
+  남는다. stdin 은 바이트로 읽어 비 UTF-8 에도 죽지 않는다.
+- **구성 요소 2** — `alert.sh` 는 env 가 **정의돼 있으면 빈 값이라도** 우선한다
+  (`${VAR+x}`). 안 그러면 실제 URL 이 `.env` 에 들어간 뒤 테스트가 운영 채널로 쏜다.
+  `cron_run.sh` 의 중복 억제는 `sent|logged-only` 만 본다 — `failed` 는 전달이 안 된
+  것이라 바깥이 다시 보낸다.
+- 반영하지 않은 1건: 백업 트랩의 `tail` 과 `tee` 사이 경합 — 리뷰어가 600회 실측으로
+  스스로 반박했다.
+
 ## 검증 — "초록불 = 성공" 이 아니다 (CLAUDE.md §5)
 
 구현이 끝났다고 말하기 전에 확인할 것:

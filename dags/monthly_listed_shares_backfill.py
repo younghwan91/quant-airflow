@@ -40,7 +40,7 @@ import sys
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import DEFAULT_TASK_KW, dart_env, run_collector, timescale_dsn
+from _common import DAG_DEFAULT_ARGS, DEFAULT_TASK_KW, dart_env, run_collector, timescale_dsn
 
 #: 백필 구간. 2016 은 daily_bars 이력의 시작(2016-09-09)에 맞춘 값이고, 상한을
 #: 2025 로 둔 건 2026년부터는 weekly_listed_shares 가 주간 스냅샷으로 채우기
@@ -51,6 +51,7 @@ TO_YEAR = "2025"
 
 @dag(
     dag_id="monthly_listed_shares_backfill",
+    default_args=DAG_DEFAULT_ARGS,
     # 매월 1일 10:20 KST — 스택 오전 창(10:00~11:30) 안. DART 전용이라 같은 창의
     # 키움 DAG(short_credit 10:00 · catchup 10:05 · listed_shares 화 10:10)와
     # 토큰도 TR 버킷도 겹치지 않는다.

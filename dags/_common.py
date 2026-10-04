@@ -62,19 +62,20 @@ def alert_task_failure(context) -> None:
         print(f"[alert_task_failure] 알림 실패를 삼킨다: {type(e).__name__}: {e}", flush=True)
 
 
+#: 모든 @dag 가 ``default_args=DAG_DEFAULT_ARGS`` 로 받는 값. Airflow 는 default_args
+#: 를 그 DAG 의 **모든 오퍼레이터**에 키 단위로 합친다 — 바로 적은 @task(retries=2)
+#: 도, @task 가 아닌 ExternalTaskSensor(daily_price_adjust·weekly_price_adjust)도
+#: 콜백을 받고, 자기 retries 는 그대로 쓴다. 처음엔 DEFAULT_TASK_KW 에 콜백을
+#: 넣었는데(2026-10-05 리뷰) 그러면 센서 둘이 빠지고, 다음에 누가 @task(retries=3)
+#: 이라고만 적어도 그 태스크의 최종 실패가 조용히 알림에서 빠진다 — 이 변경이
+#: 막으려는 바로 그 종류의 구멍이다. DAG 단위 default_args 는 그 둘을 다 막는다.
+DAG_DEFAULT_ARGS = {"on_failure_callback": alert_task_failure}
+
 #: 콜렉터 태스크의 기본 재시도 정책. 12개 DAG 의 @task 18개 중 11개가 이 값을
 #: 글자 그대로 반복하고 있었다 — 공통값을 여기 두면 나머지 7개(sharadar 의
 #: retries=2, earnings_backfill 의 30분, 폐지 백필의 20분)가 "일부러 다른 값"
 #: 으로 눈에 띈다. 반복된 리터럴 사이에서는 그 의도가 안 보인다.
-#:
-#: on_failure_callback 도 여기 산다(2026-10-05). 다른 값이 필요한 태스크는
-#: ``@task(**{**DEFAULT_TASK_KW, "retries": 2})`` 처럼 **덮어쓰기**로 적는다 —
-#: ``@task(retries=2)`` 로 따로 쓰면 콜백이 조용히 빠진다.
-DEFAULT_TASK_KW = {
-    "retries": 1,
-    "retry_delay": timedelta(minutes=10),
-    "on_failure_callback": alert_task_failure,
-}
+DEFAULT_TASK_KW = {"retries": 1, "retry_delay": timedelta(minutes=10)}
 
 
 def timescale_dsn() -> str:

@@ -61,6 +61,32 @@ def test_cron_run_skips_alert_when_command_already_alerted(env, tmp_path):
     assert not (tmp_path / "alerts.log").exists()
 
 
+def test_cron_run_still_alerts_when_inner_alert_failed_to_deliver(env, tmp_path):
+    """`failed` 마커는 전달 안 된 것 — 바깥이 다시 보낸다."""
+    cmd = "echo '[alert.py] failed error: 백업 실패 — HTTPError: 429'; exit 1"
+    r = run([str(CRON_RUN), "demo", "--", "bash", "-c", cmd], env)
+    assert r.returncode == 1
+    assert "중복 알림 생략" not in r.stdout
+    assert "error demo 실패 (rc=1)" in (tmp_path / "alerts.log").read_text(encoding="utf-8")
+
+
+def test_alert_sh_respects_explicitly_empty_url_over_dotenv(tmp_path):
+    """빈 ALERT_WEBHOOK_URL 은 '보내지 마' 다 — .env 의 실제 URL 로 덮어쓰면 안 된다."""
+    # alert.sh 는 자기 위치에서 REPO 를 잡으므로, .env 가 있는 가짜 레포를 만든다.
+    fake = tmp_path / "repo"
+    (fake / "scripts").mkdir(parents=True)
+    (fake / "collectors").mkdir()
+    for name in ("alert.py", "config.py", "__init__.py"):
+        (fake / "collectors" / name).write_bytes((REPO / "collectors" / name).read_bytes())
+    (fake / "scripts" / "alert.sh").write_bytes(ALERT_SH.read_bytes())
+    (fake / ".env").write_text('ALERT_WEBHOOK_URL="https://discord.test/real"\n', encoding="utf-8")
+    e = {"PATH": os.environ["PATH"], "ALERT_LOG": str(tmp_path / "a.log"), "ALERT_WEBHOOK_URL": ""}
+    r = subprocess.run(["bash", str(fake / "scripts" / "alert.sh"), "info", "t"],
+                       env=e, input="", capture_output=True, text=True)
+    assert r.returncode == 0
+    assert "[alert.py] logged-only info: t" in r.stdout  # .env 의 URL 로 안 보냈다
+
+
 def test_cron_run_without_command_is_usage_error(env):
     r = run([str(CRON_RUN), "demo", "--"], env)
     assert r.returncode == 2

@@ -50,6 +50,19 @@ def test_format_message_truncates_then_fences_and_stays_under_discord_limit():
     assert len(msg) <= 2000
 
 
+def test_format_message_long_title_still_closes_fence_under_limit():
+    """제목이 길어도 마지막에 통째로 자르지 않는다 — 예산을 제목 길이에서 뺀다."""
+    msg = format_message("warn", "T" * 300, "b" * 5000, host="h")
+    assert len(msg) <= 2000
+    assert msg.rstrip().endswith("```")
+    assert "T" * 200 + "…" in msg
+
+
+def test_format_message_prefers_alert_host_env(monkeypatch):
+    monkeypatch.setenv("ALERT_HOST", "simnode")
+    assert format_message("info", "t", host=None).startswith("[simnode] ")
+
+
 def test_format_message_masks_secrets_in_title_and_body():
     msg = format_message(
         "error", "postgresql://u:pw@h/db 실패",
@@ -96,6 +109,14 @@ def test_notify_with_url_posts_discord_payload(alert_log, monkeypatch, capsys):
     assert "error 제목" in alert_log.read_text(encoding="utf-8")  # URL 있어도 로컬 로그
 
 
+def test_notify_logs_full_body_even_when_discord_copy_is_truncated(alert_log):
+    body = "\n".join(f"line{i:04d}" for i in range(500))  # ~4,500자
+    notify("warn", "긴 본문", body)
+    text = alert_log.read_text(encoding="utf-8")
+    assert "line0499" in text  # Discord 쪽은 1,800자에서 잘려도 로그는 전부
+    assert "```" not in text  # 로그엔 펜스 같은 전송 포맷을 남기지 않는다
+
+
 def test_notify_swallows_transport_errors(alert_log, monkeypatch, capsys):
     monkeypatch.setenv("ALERT_WEBHOOK_URL", "https://discord.test/hook")
     with patch("urllib.request.urlopen", side_effect=OSError("boom")):
@@ -121,6 +142,18 @@ def test_cli_exits_zero_and_reads_body_from_stdin(alert_log):
     assert r.returncode == 0, r.stderr
     assert "[alert.py] logged-only warn: CLI 제목" in r.stdout
     assert "stdin 본문" in alert_log.read_text(encoding="utf-8")
+
+
+def test_cli_survives_non_utf8_stdin(alert_log):
+    """크론 꼬리(rclone·pg_dump 출력)에 비 UTF-8 바이트가 섞여도 죽지 않는다."""
+    r = subprocess.run(
+        [sys.executable, str(REPO / "collectors" / "alert.py"), "error", "깨진 바이트"],
+        input=b"ok line\n\xff\xfe broken \xe2\x28\xa1\n", capture_output=True,
+        env={"ALERT_LOG": str(alert_log), "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"},
+    )
+    assert r.returncode == 0, r.stderr
+    assert b"[alert.py] logged-only error" in r.stdout
+    assert "ok line" in alert_log.read_text(encoding="utf-8")
 
 
 def test_cli_with_no_args_still_exits_zero():

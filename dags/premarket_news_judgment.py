@@ -18,11 +18,12 @@ import sys
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import DEFAULT_TASK_KW, claude_env, dart_env, run_collector, timescale_dsn
+from _common import DAG_DEFAULT_ARGS, DEFAULT_TASK_KW, claude_env, dart_env, run_collector, timescale_dsn
 
 
 @dag(
     dag_id="premarket_news_judgment",
+    default_args=DAG_DEFAULT_ARGS,
     schedule="45 8 * * 1-5",  # 평일 08:45 KST
     start_date=pendulum.datetime(2026, 1, 1, tz="Asia/Seoul"),
     catchup=False,

@@ -11,16 +11,20 @@
 # .env 는 통째로 source 하지 않는다 — KIWOOM/DART 키가 무관한 자식에 퍼진다
 # (daily_health_check.sh 의 env_get 과 같은 이유). 필요한 두 키만 읽는다. 값에 '=' 가
 # 들어갈 수 있어 -f2- 이고, .env 에 따옴표로 감싼 값이 있어 양끝 따옴표를 뗀다.
-# 이미 환경에 있으면(cron_run.sh → alert.sh, 테스트) 그 값을 우선한다.
+# 환경에 **정의돼 있으면**(빈 값 포함) 그 값을 우선한다 — `${VAR+x}` 는 "정의됐나"를
+# 묻고 `${VAR:-}` 는 "비었나"를 묻는다. 빈 값을 미설정으로 취급하면
+# `ALERT_WEBHOOK_URL=""` 로 "보내지 마" 를 표현할 수 없고, 실제 URL 이 .env 에 들어간
+# 뒤 테스트(tests/test_cron_run.py)가 운영 채널로 쏜다.
 set -u
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 env_get() {
-    grep "^$1=" "$REPO/.env" 2>/dev/null | tail -n 1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//'
+    grep "^$1=" "$REPO/.env" 2>/dev/null | tail -n 1 | cut -d= -f2- \
+        | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//'
 }
 
-if [ -z "${ALERT_WEBHOOK_URL:-}" ]; then ALERT_WEBHOOK_URL="$(env_get ALERT_WEBHOOK_URL)"; fi
-if [ -z "${ALERT_LOG:-}" ]; then ALERT_LOG="$(env_get ALERT_LOG)"; fi
+if [ -z "${ALERT_WEBHOOK_URL+x}" ]; then ALERT_WEBHOOK_URL="$(env_get ALERT_WEBHOOK_URL)"; fi
+if [ -z "${ALERT_LOG+x}" ]; then ALERT_LOG="$(env_get ALERT_LOG)"; fi
 export ALERT_WEBHOOK_URL ALERT_LOG
 
 if ! command -v python3 >/dev/null 2>&1; then

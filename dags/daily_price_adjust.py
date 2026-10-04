@@ -61,11 +61,12 @@ import pendulum
 from airflow.decorators import dag, task
 from airflow.sensors.external_task import ExternalTaskSensor
 
-from _common import DEFAULT_TASK_KW, run_collector, timescale_dsn
+from _common import DAG_DEFAULT_ARGS, DEFAULT_TASK_KW, run_collector, timescale_dsn
 
 
 @dag(
     dag_id="daily_price_adjust",
+    default_args=DAG_DEFAULT_ARGS,
     # 평일 16:55 — daily_collection(16:00 시작, 실측 16:50 종료) 직후.
     # daily_consensus(17:00, 45초)와 겹치지만 그쪽은 네이버 HTTP 라 자원이 안 겹친다.
     #

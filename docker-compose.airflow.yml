@@ -44,6 +44,9 @@ x-airflow-common-env: &airflow-common-env
   # 재적용해야 한다(컨테이너 재생성 — CLAUDE.md §1, 승인 필요).
   ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
   ALERT_LOG: /opt/airflow/logs/alerts.log
+  # 컨테이너 안 hostname 은 12자리 컨테이너 ID 라 알림 머리에 쓸 수 없다. 이 파일은
+  # simnode 전용(상단 주석)이라 기본값을 박아둔다.
+  ALERT_HOST: ${ALERT_HOST:-simnode}
 
 x-airflow-common: &airflow-common
   build:

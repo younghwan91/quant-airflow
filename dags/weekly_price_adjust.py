@@ -44,11 +44,12 @@ import pendulum
 from airflow.decorators import dag, task
 from airflow.sensors.external_task import ExternalTaskSensor
 
-from _common import DEFAULT_TASK_KW, run_collector, timescale_dsn
+from _common import DAG_DEFAULT_ARGS, DEFAULT_TASK_KW, run_collector, timescale_dsn
 
 
 @dag(
     dag_id="weekly_price_adjust",
+    default_args=DAG_DEFAULT_ARGS,
     # 토요일 10:40 KST — 스택 기동(cron 0 10 * * *) 이후. 기존 05:00은 머신이
     # 꺼져 있는 시간이라(스택 가동 창 10:00~) 제 시각에 돌 수 없었다.
     #

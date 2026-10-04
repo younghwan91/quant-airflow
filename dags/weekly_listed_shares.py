@@ -27,11 +27,12 @@ import sys
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import DEFAULT_TASK_KW, kiwoom_env, run_collector, timescale_dsn
+from _common import DAG_DEFAULT_ARGS, DEFAULT_TASK_KW, kiwoom_env, run_collector, timescale_dsn
 
 
 @dag(
     dag_id="weekly_listed_shares",
+    default_args=DAG_DEFAULT_ARGS,
     # 매주 **화요일** 10:10 KST — 컨테이너 기동(10:00) 10분 후.
     #
     # 월요일이 아니라 화요일인 이유: 이 태스크는 종목당 ka10001 한 번이라
