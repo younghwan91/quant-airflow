@@ -63,6 +63,33 @@ Airflow 메타DB 에 물어 조기 종료했다(레거시 스크립트, 지금�
 
 </details>
 
+## 알림 — 사고는 로그가 아니라 사람에게 간다
+
+설계: `docs/superpowers/specs/2026-10-05-alert-channel-design.md`. 전송기는
+`collectors/alert.py` 하나(Discord 웹훅 POST, stdlib 만), bash 입구는
+`scripts/alert.sh`, 크론 줄 래퍼는 `scripts/cron_run.sh`.
+
+| 발생지 | 언제 | 어떻게 |
+|---|---|---|
+| Airflow 태스크 | **재시도를 다 쓴 최종 실패**만 | `dags/_common.py` `DEFAULT_TASK_KW["on_failure_callback"]` |
+| `daily_health_check.sh` | `⚠️` 가 하나라도 있으면 실행당 1건 | `warn()` 모음 → `alert.sh` |
+| `backup_to_gdrive.sh` | rc≠0 로 끝날 때 | EXIT 트랩 → `alert.sh` (본문: `BACKUP_LOG` 꼬리) |
+| simnode 크론 3줄 | 스크립트가 뜨기 전에 죽을 때 | `cron_run.sh` (안에서 이미 알렸으면 `[alert.py]` 마커로 생략) |
+
+**URL 이 없으면** 모든 경로가 `~/logs/quant-airflow/alerts.log`(컨테이너는
+`logs/alerts.log`)에만 쓰고 종료 0 이다. 알림 코드가 본작업을 죽이는 일은 없다.
+
+**URL 을 넣는 날 (양쪽 호스트):**
+
+1. Discord 채널 설정 → 연동 → 웹훅 → URL 을 `quant-airflow/.env` 에
+   `ALERT_WEBHOOK_URL=…` 로. simnode·trader 둘 다.
+2. simnode 에서 `scripts/alert.sh info "알림 통로 개통"` — 채널에 오면 끝.
+3. Airflow 컨테이너는 env 를 기동 때 읽으므로 **승인 받고** 장 마감 후
+   `docker compose -f docker-compose.airflow.yml up -d` (스케줄러·웹서버 재생성).
+   그 전까지 콜백은 `logged-only` 로 동작한다 — 의도된 상태다.
+
+성공 알림·재시도 알림·중복 억제는 없다 — 시끄러워지면 그때 넣는다.
+
 ## 시크릿 처리
 
 `KIWOOM_APP_KEY`/`KIWOOM_APP_SECRET`(실계좌 키)와 `DART_API_KEY`(_2/_3)는
@@ -88,12 +115,14 @@ collectors/            # 수집 로직 자체 보유 (kr_quant 런타임 의존 
   config.py            #   자격증명 로딩 + 키움 클라이언트 생성 + DSN 마스킹 + DART 키 목록(정본)
   kiwoom_cli.py        #   전종목 스윕 콜렉터 공통 CLI(인자·세션·유니버스·배너)
   proc.py              #   자식 프로세스 스트리밍 + 줄 단위 시크릿 마스킹(정본)
+  alert.py             #   운영 알림 전송기(Discord 웹훅, stdlib 만) — 유일한 출구
   {daily_bars,supply_demand,short_credit,...}.py   # 소스별 수집기
   news_toss.py            #   토스 뉴스(krx-news-client) → news_articles/news_article_tickers
   naver_delisted_bars.py  #   폐지 종목 과거 일봉(키움은 빈 응답을 '성공'으로 준다)
   dart_shares.py          #   상장주식수(DART). 기본은 폐지 종목, `--listed` 는 상장 종목 과거 백필
   sharadar_bulk.py        #   미국 벌크 스냅샷 동기화, sharadar_build.py 가 스토어 재구축
 scripts/
+  alert.sh / cron_run.sh # 알림 bash 입구 · 크론 줄 래퍼(rc≠0 이면 꼬리 30줄 알림)
   wait_and_stop.sh     # 레거시(2026-09-11부터 미사용) — 한 호스트 "가동 창" 시절의 조기 종료 스크립트
 sql/init_timescale.sql # hypertable 스키마 + 청크/압축 정책 (신규 DB용)
 sql/migrations/        # 기존 DB 변경분 — 001~013, docs/schema.md 참고

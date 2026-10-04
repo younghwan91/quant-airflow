@@ -7,8 +7,12 @@
 # 24/7 상시 구동 전환(09-11) 이후 shutdown 경로에 묶인 채 죽어 있던 걸
 # scripts/daily_health_check.sh 로 분리해 독립 실행한다. 컨테이너를 내리지
 # 않는다 — 읽고 로그만 남긴다. 시각은 옛 오전/저녁 창 마감 무렵을 그대로 썼다.
-35 11 * * * /home/young/git/quant-airflow/scripts/daily_health_check.sh >> /home/young/logs/quant-airflow/daily_health_check.log 2>&1
-10 18 * * * /home/young/git/quant-airflow/scripts/daily_health_check.sh >> /home/young/logs/quant-airflow/daily_health_check.log 2>&1
+#
+# 2026-10-05 부터 세 줄 다 scripts/cron_run.sh 로 감싼다 — 스크립트가 뜨기 전에 죽는
+# 실패(09-12 `cd: No such file`)도 알림이 가게. 백업 줄의 BACKUP_LOG 는 EXIT 트랩이
+# 알림 본문으로 쓸 꼬리를 읽는 경로다(같은 파일로 리다이렉트되고 있다).
+35 11 * * * /home/young/git/quant-airflow/scripts/cron_run.sh health-check -- /home/young/git/quant-airflow/scripts/daily_health_check.sh >> /home/young/logs/quant-airflow/daily_health_check.log 2>&1
+10 18 * * * /home/young/git/quant-airflow/scripts/cron_run.sh health-check -- /home/young/git/quant-airflow/scripts/daily_health_check.sh >> /home/young/logs/quant-airflow/daily_health_check.log 2>&1
 
 # swing-it(구 kr-quant) DB + Sharadar 미국 데이터 → 구글 드라이브 백업 (매일 19:00).
 # 2026-09-13 trader 에서 여기로 옮겼다 — 데이터가 둘 다 simnode 에 있다:
@@ -17,4 +21,4 @@
 # (b) 미국 데이터는 trader 의 낡은 사본(09-10)을 올려 최신본이 백업 누락됐다.
 # .env 의 BACKUP_DB_CONTAINER(여기 컨테이너명은 ...-replica-1 이지만 실제 PRIMARY)와
 # BACKUP_STAGING_PARENT(/tmp 가 tmpfs 31GB 라 디스크로 뺐다)가 필요하다.
-0 19 * * * /home/young/git/quant-airflow/scripts/backup_to_gdrive.sh >> /home/young/logs/quant-airflow/backup_to_gdrive.cron.log 2>&1
+0 19 * * * BACKUP_LOG=/home/young/logs/quant-airflow/backup_to_gdrive.cron.log /home/young/git/quant-airflow/scripts/cron_run.sh backup -- /home/young/git/quant-airflow/scripts/backup_to_gdrive.sh >> /home/young/logs/quant-airflow/backup_to_gdrive.cron.log 2>&1

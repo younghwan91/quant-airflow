@@ -38,6 +38,12 @@ x-airflow-common-env: &airflow-common-env
   TIMESCALE_DB: ${TIMESCALE_DB}
   TIMESCALE_USER: ${TIMESCALE_USER}
   TIMESCALE_PASSWORD: ${TIMESCALE_PASSWORD}
+  # 운영 알림(docs/superpowers/specs/2026-10-05-alert-channel-design.md). 비어 있으면
+  # on_failure_callback 은 태스크 로그에 `[alert.py] logged-only` 만 남긴다 — URL 을
+  # 아직 못 받은 지금의 의도된 상태다. 값을 .env 에 넣은 뒤엔 `up -d` 로 env 를
+  # 재적용해야 한다(컨테이너 재생성 — CLAUDE.md §1, 승인 필요).
+  ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+  ALERT_LOG: /opt/airflow/logs/alerts.log
 
 x-airflow-common: &airflow-common
   build:
