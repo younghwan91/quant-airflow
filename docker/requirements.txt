@@ -1,5 +1,8 @@
 psycopg2-binary>=2.9
-kiwoom-client>=0.2.1
+kiwoom-client>=0.4.0
+# swing-it(/opt/swing-it 마운트)이 선언한 코어. 2026-09-14 price_adjust 가 import 해서 DAG 가 죽은 뒤(operations.md)
+# 이미지에 없던 것을 넣는다. 핀 고정 — swing-it pyproject 의 핀과 같이 올린다.
+krx-quant-core==0.6.0
 # krx-news-client는 아직 PyPI 미배포 — 배포되면 이 줄을 krx-news-client>=x.y로 바꾼다.
 # ⚠️ @main 이 아니라 **커밋 SHA로 핀한다.** @main 이면 이 파일 내용이 안 바뀌어
 # `COPY requirements.txt` → `RUN pip install` 레이어가 도커 캐시에 그대로 걸리고,
