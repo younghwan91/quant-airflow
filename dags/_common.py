@@ -29,13 +29,52 @@ sys.path.insert(0, "/opt/airflow")
 
 from collectors.config import DART_KEY_ENV_VARS  # noqa: E402
 from collectors.proc import stream_subprocess  # noqa: E402
+from collectors.alert import format_task_failure, notify  # noqa: E402
+
+
+def alert_task_failure(context) -> None:
+    """``on_failure_callback`` — 재시도를 다 쓴 **최종 실패**에만 알린다.
+
+    Airflow 는 이 콜백을 태스크가 failed 로 확정될 때만 부른다(재시도 시엔
+    ``on_retry_callback``). 그래서 이것 하나로 "재시도로 안 낫는 실패만 사람에게"가
+    된다 — 2026-09-29 16:05 공시 수집(CardinalityViolation)은 attempt 2 가 죽은 10:15 에
+    한 번 왔을 것이고, 그 실패는 닷새 뒤에야 로그에서 발견됐다. ``upstream_failed`` 는
+    실행된 적이 없어 콜백이 안 불린다 — 상류가 이미 알렸으니 맞다.
+
+    메시지 조립은 ``collectors.alert.format_task_failure`` (순수 함수, Airflow 없이
+    테스트)에 두고 여기서는 context 에서 값만 꺼낸다. 콜백이 던지면 Airflow 는 로그에
+    남기고 넘어가지만 깔끔하게 삼킨다 — 알림이 태스크 상태를 건드리면 안 된다.
+    """
+    try:
+        ti = context["task_instance"]
+        title, body = format_task_failure(
+            dag_id=ti.dag_id,
+            task_id=ti.task_id,
+            run_id=str(context.get("run_id") or ""),
+            try_number=ti.try_number,
+            # run_collector 의 CalledProcessError 는 이미 _masked(cmd) 지만, alert.py 가
+            # 한 번 더 mask_secrets 를 거친다.
+            exc_text=str(context.get("exception") or ""),
+            log_url=str(getattr(ti, "log_url", "") or ""),
+        )
+        notify("error", title, body)
+    except Exception as e:  # noqa: BLE001 — 알림 실패는 태스크 실패를 덮어쓰지 않는다
+        print(f"[alert_task_failure] 알림 실패를 삼킨다: {type(e).__name__}: {e}", flush=True)
 
 
 #: 콜렉터 태스크의 기본 재시도 정책. 12개 DAG 의 @task 18개 중 11개가 이 값을
 #: 글자 그대로 반복하고 있었다 — 공통값을 여기 두면 나머지 7개(sharadar 의
 #: retries=2, earnings_backfill 의 30분, 폐지 백필의 20분)가 "일부러 다른 값"
 #: 으로 눈에 띈다. 반복된 리터럴 사이에서는 그 의도가 안 보인다.
-DEFAULT_TASK_KW = {"retries": 1, "retry_delay": timedelta(minutes=10)}
+#:
+#: on_failure_callback 도 여기 산다(2026-10-05). 다른 값이 필요한 태스크는
+#: ``@task(**{**DEFAULT_TASK_KW, "retries": 2})`` 처럼 **덮어쓰기**로 적는다 —
+#: ``@task(retries=2)`` 로 따로 쓰면 콜백이 조용히 빠진다.
+DEFAULT_TASK_KW = {
+    "retries": 1,
+    "retry_delay": timedelta(minutes=10),
+    "on_failure_callback": alert_task_failure,
+}
 
 
 def timescale_dsn() -> str:

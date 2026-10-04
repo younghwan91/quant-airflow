@@ -63,7 +63,7 @@ def weekly_delisted_stocks():
             "--db", timescale_dsn(),
         ])
 
-    @task(retries=1, retry_delay=timedelta(minutes=20))
+    @task(**{**DEFAULT_TASK_KW, "retry_delay": timedelta(minutes=20)})
     def backfill_delisted_bars() -> None:
         """폐지 종목의 과거 일봉 백필 (네이버).
 
@@ -76,7 +76,7 @@ def weekly_delisted_stocks():
             "--db", timescale_dsn(),
         ])
 
-    @task(retries=1, retry_delay=timedelta(minutes=20))
+    @task(**{**DEFAULT_TASK_KW, "retry_delay": timedelta(minutes=20)})
     def backfill_delisted_shares() -> None:
         """폐지 종목 상장주식수 백필 (DART).
 
@@ -92,7 +92,7 @@ def weekly_delisted_stocks():
             env=dart_env(),
         )
 
-    @task(retries=1, retry_delay=timedelta(minutes=20))
+    @task(**{**DEFAULT_TASK_KW, "retry_delay": timedelta(minutes=20)})
     def backfill_delisted_flow() -> None:
         """폐지 종목 수급 **부분** 백필 (네이버).
 

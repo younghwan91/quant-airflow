@@ -32,7 +32,7 @@ import pendulum
 
 from airflow.decorators import dag, task
 
-from _common import run_collector, sharadar_env
+from _common import DEFAULT_TASK_KW, run_collector, sharadar_env
 
 RAW_DIR = "/opt/us-data/sharadar/raw"
 STORE = "/opt/us-data/us_micro.duckdb"
@@ -74,7 +74,7 @@ STORE = "/opt/us-data/us_micro.duckdb"
 )
 def daily_sharadar():
 
-    @task(retries=2, retry_delay=timedelta(minutes=10))
+    @task(**{**DEFAULT_TASK_KW, "retries": 2})
     def download() -> None:
         """구독 14개를 벤더와 대조. `modified` 가 그대로면 받지 않는다."""
         run_collector(
@@ -85,7 +85,7 @@ def daily_sharadar():
             env=sharadar_env(),
         )
 
-    @task(retries=1, retry_delay=timedelta(minutes=15))
+    @task(**{**DEFAULT_TASK_KW, "retry_delay": timedelta(minutes=15)})
     def rebuild() -> None:
         """새 스토어를 짓고, 게이트를 통과하면 제자리에 갈아끼운다.
 

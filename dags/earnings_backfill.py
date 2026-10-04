@@ -52,7 +52,7 @@ from datetime import timedelta
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import dart_env, run_collector, timescale_dsn
+from _common import DEFAULT_TASK_KW, dart_env, run_collector, timescale_dsn
 
 FROM_YEAR = "2016"  # EARNINGS_PIPELINE_PLAN.md 권장치 — 사용자 확인 필요한 기본값
 
@@ -71,7 +71,7 @@ FROM_YEAR = "2016"  # EARNINGS_PIPELINE_PLAN.md 권장치 — 사용자 확인 �
 )
 def earnings_backfill():
 
-    @task(retries=2, retry_delay=timedelta(minutes=30))
+    @task(**{**DEFAULT_TASK_KW, "retries": 2, "retry_delay": timedelta(minutes=30)})
     def collect_earnings_backfill() -> None:
         run_collector(
             [
