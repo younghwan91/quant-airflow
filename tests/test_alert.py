@@ -64,11 +64,12 @@ def test_format_message_prefers_alert_host_env(monkeypatch):
 
 
 def test_format_message_masks_secrets_in_title_and_body():
+    # 가짜 비밀번호는 6자 미만으로 둔다 — CI 시크릿 스캔(DSN 비밀번호 규칙)이 6자부터 잡는다.
     msg = format_message(
         "error", "postgresql://u:pw@h/db 실패",
-        "cmd --db postgresql://kr_quant:secret@10.0.0.1:5433/kr_quant api_key=abc", host="h")
-    assert "pw" not in msg and "secret" not in msg and "abc" not in msg
-    assert "u:***@" in msg and "api_key=***" in msg
+        "cmd --db postgresql://kr_quant:pw2@10.0.0.1:5433/kr_quant api_key=abc", host="h")
+    assert "pw@" not in msg and "pw2" not in msg and "abc" not in msg
+    assert "u:***@" in msg and "kr_quant:***@" in msg and "api_key=***" in msg
 
 
 def test_format_task_failure_fields_and_exception_cap():
