@@ -16,6 +16,14 @@ cd "$(dirname "$0")/.."
 today=$(date +%Y-%m-%d)
 log() { echo "[$(date '+%F %T')] $*"; }
 
+# ⚠️ 는 log 가 아니라 warn 으로 찍는다 — 같은 줄을 로그에 남기면서 모아뒀다가
+# 스크립트 끝에서 **한 번에 한 건**으로 알린다(scripts/alert.sh). 실행당 1건인 이유:
+# 리플리카 경보처럼 두 줄이 세트로 나오는 걸 쪼개 보내면 채널이 시끄럽고, 하루 두 번
+# 도는 점검이라 같은 경보가 두 번 올 수 있는 건 허용한다(spec 2026-10-05 "범위 밖").
+# URL 이 없는 동안은 ~/logs/quant-airflow/alerts.log 에만 쌓인다.
+WARNINGS=()
+warn() { log "⚠️ $*"; WARNINGS+=("$*"); }
+
 # .env 전체를 source 하지 않는다 — 필요한 키만 읽는다. -f2- 인 이유: 값에 '=' 가
 # 들어간 키(base64 비밀번호 등)가 있어 -f2 로는 잘린다.
 env_get() { grep "^$1=" .env | cut -d= -f2-; }
@@ -98,7 +106,21 @@ SELECT 'sector_index', '$today', COUNT(*) FROM (SELECT DISTINCT code FROM sector
 UNION ALL
 SELECT 'shares_outstanding', '최근7일', COUNT(*) FROM univ s
     WHERE NOT EXISTS (SELECT 1 FROM shares_outstanding_history d WHERE d.code=s.code AND d.date >= current_date - interval '7 days');
-" 2>&1 || log "커버리지 점검 실패 (DB 연결 안 됨?)"
+" 2>&1 || warn "커버리지 점검 실패 (DB 연결 안 됨?)"
+
+    # 표는 사람이 보지만 알림은 숫자가 있어야 한다. daily_bars 만 임계값을 둔다 —
+    # 정상은 한 자리(상폐 제외 후 09-22 실측 3), 거래정지가 몰려도 수십이다. 100 을
+    # 넘으면 "16:00 수집이 통째로 빠졌다"는 뜻이고, 그건 지금까지 표로만 찍히고
+    # 끝났다. 다른 테이블 임계값은 다음 하위 프로젝트(DAG 실패 자가치유)의 몫이다.
+    local bars_missing
+    bars_missing=$(ts_psql -tAc "
+SELECT COUNT(*) FROM stocks s
+ WHERE NOT EXISTS (SELECT 1 FROM delisted_stocks x WHERE x.code = s.code)
+   AND NOT EXISTS (SELECT 1 FROM daily_bars d WHERE d.code = s.code AND d.date = '$today')
+" 2>/dev/null | tr -d '[:space:]')
+    if [ -n "$bars_missing" ] && [ "$bars_missing" -ge 100 ] 2>/dev/null; then
+        warn "daily_bars $today 누락 ${bars_missing}종목 — 16:00 수집이 통째로 빠졌을 가능성"
+    fi
 }
 
 report_short_selling() {
@@ -119,11 +141,11 @@ SELECT coalesce((SELECT d::text FROM prev), ''),
 " 2>/dev/null)
     IFS='|' read -r asof n med <<< "$row"
     if [ -z "${asof:-}" ]; then
-        log "⚠️ 공매도 점검 실패 (DB 연결 안 됨?)"
+        warn "공매도 점검 실패 (DB 연결 안 됨?)"
     elif [ "$n" -eq 0 ] 2>/dev/null; then
-        log "⚠️ 공매도: $asof 행이 0 — daily_short_credit 이 안 돌았거나 소스가 막혔다"
+        warn "공매도: $asof 행이 0 — daily_short_credit 이 안 돌았거나 소스가 막혔다"
     elif [ $((n * 2)) -lt "$med" ] 2>/dev/null; then
-        log "⚠️ 공매도: $asof ${n}행 — 최근 중앙값 ${med}행의 절반 미만이라 반쪽 수집 의심"
+        warn "공매도: $asof ${n}행 — 최근 중앙값 ${med}행의 절반 미만이라 반쪽 수집 의심"
     else
         log "공매도: $asof ${n}행 (최근 중앙값 ${med}행)"
     fi
@@ -140,7 +162,7 @@ SELECT string_agg(DISTINCT dag_id || '.' || task_id, ',')
     if [ -z "$failed" ]; then
         log "오늘 실패한 태스크: 없음"
     else
-        log "⚠️ 오늘 실패한 태스크: $failed"
+        warn "오늘 실패한 태스크: $failed"
     fi
 }
 
@@ -153,7 +175,7 @@ SELECT string_agg(dag_id, ',' ORDER BY dag_id)
     if [ -z "$paused" ]; then
         log "paused 인 DAG: 없음"
     else
-        log "⚠️ paused 라 안 도는 DAG: $paused  (안 돌릴 거면 schedule=None 으로 코드에 적을 것)"
+        warn "paused 라 안 도는 DAG: $paused  (안 돌릴 거면 schedule=None 으로 코드에 적을 것)"
     fi
 }
 
@@ -166,11 +188,11 @@ report_replication() {
     slot=$(ts_psql -tAc \
         "SELECT slot_name || ':active=' || active || ':wal_status=' || wal_status FROM pg_replication_slots;" 2>/dev/null)
     if [ -z "$slot" ]; then
-        log "⚠️ 복제 슬롯 조회 실패 (DB 연결 안 됨?)"
+        warn "복제 슬롯 조회 실패 (DB 연결 안 됨?)"
     else
         log "복제 슬롯: $slot"
-        echo "$slot" | grep -q "active=f" && log "⚠️ 복제 슬롯 비활성 — trader 리플리카가 스트리밍을 안 받고 있을 수 있다"
-        echo "$slot" | grep -qi "wal_status=lost\|wal_status=extended" && log "⚠️ wal_status 이상 — WAL 세그먼트 유실 위험"
+        echo "$slot" | grep -q "active=f" && warn "복제 슬롯 비활성 — trader 리플리카가 스트리밍을 안 받고 있을 수 있다"
+        echo "$slot" | grep -qi "wal_status=lost\|wal_status=extended" && warn "wal_status 이상 — WAL 세그먼트 유실 위험"
     fi
     return 0
 }
@@ -195,9 +217,9 @@ SELECT coalesce(t::text, ''), coalesce(b::text, ''), coalesce((b - t)::text, '')
 " 2>/dev/null)
     IFS='|' read -r theme_max bars_max gap <<< "$row"
     if [ -z "$theme_max" ] || [ -z "$bars_max" ] || [ -z "$gap" ]; then
-        log "⚠️ 테마 스냅샷 신선도 점검 실패 (DB 연결 안 됨? theme_members/daily_bars 조회 불가)"
+        warn "테마 스냅샷 신선도 점검 실패 (DB 연결 안 됨? theme_members/daily_bars 조회 불가)"
     elif [ "$gap" -gt 0 ] 2>/dev/null; then
-        log "⚠️ theme_members: 최신 $theme_max · daily_bars 최신 $bars_max 보다 ${gap}일 묵었다"
+        warn "theme_members: 최신 $theme_max · daily_bars 최신 $bars_max 보다 ${gap}일 묵었다"
     else
         log "theme_members 신선도: 최신 $theme_max (daily_bars $bars_max 와 일치)"
     fi
@@ -213,4 +235,7 @@ report_failures
 report_paused
 report_replication
 report_theme_freshness
+if [ ${#WARNINGS[@]} -gt 0 ]; then
+    printf '%s\n' "${WARNINGS[@]}" | scripts/alert.sh warn "헬스체크 경보 ${#WARNINGS[@]}건 ($today)"
+fi
 exit 0
