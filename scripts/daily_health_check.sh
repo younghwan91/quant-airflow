@@ -195,14 +195,18 @@ report_replication() {
     # 상태를 감시하는 알림이 없다" — trader 리플리카가 WAL 재시딩까지 간
     # 2026-09-11~12 사고의 근본 원인이었다. 슬롯이 죽어 있거나(active=f) WAL
     # 이 안전 여유 없이 쌓이면 다음 사고 전에 여기서 잡는다.
+    # 2026-10-07 trader 처분으로 리플리카와 trader_replica 슬롯을 없앴다 — 슬롯 0개가 정상이다.
+    # 조회 실패(종료코드)와 0행을 구분한다. 남은 슬롯이 있으면 그건 아무도 안 받는 슬롯이라
+    # WAL 을 무한정 붙잡는다 — active=f 경고가 그걸 잡는다.
     local slot
-    slot=$(ts_psql -tAc \
-        "SELECT slot_name || ':active=' || active || ':wal_status=' || wal_status FROM pg_replication_slots;" 2>/dev/null)
-    if [ -z "$slot" ]; then
+    if ! slot=$(ts_psql -tAc \
+        "SELECT slot_name || ':active=' || active || ':wal_status=' || wal_status FROM pg_replication_slots;" 2>/dev/null); then
         warn "복제 슬롯 조회 실패 (DB 연결 안 됨?)"
+    elif [ -z "$slot" ]; then
+        log "복제 슬롯: 없음 (단일 호스트)"
     else
         log "복제 슬롯: $slot"
-        echo "$slot" | grep -q "active=f" && warn "복제 슬롯 비활성 — trader 리플리카가 스트리밍을 안 받고 있을 수 있다"
+        echo "$slot" | grep -q "active=f" && warn "복제 슬롯 비활성 — 받는 리플리카가 없는데 WAL 을 붙잡고 있다 (pg_drop_replication_slot 검토)"
         echo "$slot" | grep -qi "wal_status=lost\|wal_status=extended" && warn "wal_status 이상 — WAL 세그먼트 유실 위험"
     fi
     return 0

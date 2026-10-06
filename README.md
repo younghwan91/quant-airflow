@@ -73,6 +73,9 @@ TimescaleDB 는 지금 PRIMARY 인 호스트에서 LAN 에 열려 있고 메인 
 바꾸지 않고 그대로 둠) — 실제 값은 `kr-quant/.env` 의 `KR_QUANT_DB`, 이
 레포 `.env` 의 `TIMESCALE_HOST`/`TIMESCALE_PORT` 를 확인한다.
 
+> 2026-10-07 부터 틱 수집기도 Airflow 호스트(simnode)에서 돈다 — trader 를 처분해 아래 sparse
+> 구성은 지금 쓰는 곳이 없다. 수집기를 다시 다른 호스트로 떼어낼 때의 절차로 남긴다.
+
 **scalp-it(실시간 틱 수집기) 쪽은 이 레포를 통째로 clone 하지 않는다** — 필요한 건
 리플리카를 띄우는 `docker-compose.timescale.yml` 과 그게 참조하는
 `sql/init_timescale.sql`, 그리고 두 호스트가 공용으로 쓰는 알림 전송기

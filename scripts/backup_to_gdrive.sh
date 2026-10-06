@@ -144,6 +144,35 @@ dump_core() {
   echo "[$(date '+%F %T')] core 백업 완료 — $REMOTE/core/core-$DATE.sql.gz ($(du -h "$out" | cut -f1))"
 }
 
+# 그날 틱·호가만 장 마감 뒤에 올린다(평일 16:15 크론, `BACKUP_ONLY=ticks-today`).
+# core 는 무거운 4테이블을 빼고 통짜는 일요일에만 뜨므로, 그 사이 DB 디스크가 죽으면
+# 최대 6일치 틱·호가가 사라진다 — 키움에서 소급 수집이 안 되는 유일한 데이터다.
+# 2026-10-07 trader 처분으로 리플리카(두 번째 사본)가 없어지면서 넣었다. 분봉은 키움에서
+# 다시 받을 수 있어 뺀다. 행이 0 이면(휴장일) 올리지 않는다.
+dump_ticks_today() {
+  local t out n total=0
+  for t in ticks quotes quote_events; do
+    out="$TMPDIR/$t-$DATE.csv.gz"
+    docker exec -e PGPASSWORD="$DBPASS" "$CONTAINER" \
+      psql -U "$DBUSER" -d "$DBNAME" -v ON_ERROR_STOP=1 -Atc \
+      "COPY (SELECT * FROM $t WHERE ts >= '$DATE 00:00+09' AND ts < '$DATE 00:00+09'::timestamptz + interval '1 day') TO STDOUT WITH CSV HEADER" \
+      | gzip > "$out"
+    n=$(( $(zcat "$out" | wc -l) - 1 ))
+    [ "$n" -lt 0 ] && n=0
+    total=$(( total + n ))
+    if [ "$n" -gt 0 ]; then
+      rclone copyto "$out" "$REMOTE/ticks_daily/$DATE/$t.csv.gz"
+      echo "[$(date '+%F %T')] $t $DATE ${n}행 백업 — $REMOTE/ticks_daily/$DATE/$t.csv.gz ($(du -h "$out" | cut -f1))"
+    else
+      echo "[$(date '+%F %T')] $t $DATE 0행 — 업로드 생략"
+    fi
+  done
+  # 평일인데 틱이 0행이면 수집이 죽은 날이다 — 백업 문제가 아니지만 여기서도 알린다.
+  if [ "$total" -eq 0 ] && [ "$DOW" -le 5 ]; then
+    echo "[$(date '+%F %T')] ⚠️ 평일인데 오늘 틱·호가가 0행 (휴장일이 아니면 수집 확인)" >&2
+  fi
+}
+
 dump_full() {
   local out="$TMPDIR/full-$DATE.sql.gz"
   docker exec -e PGPASSWORD="$DBPASS" "$CONTAINER" \
@@ -188,6 +217,7 @@ case "${BACKUP_ONLY:-all}" in
   core)          dump_core ;;
   sharadar)      dump_sharadar_duckdb ;;
   full)          dump_full ;;
+  ticks-today)   dump_ticks_today ;;
   sharadar-bulk) dump_sharadar_bulk ;;
   all)
     dump_core
@@ -218,6 +248,6 @@ case "${BACKUP_ONLY:-all}" in
     fi
     ;;
   *)
-    echo "BACKUP_ONLY 값이 이상하다: ${BACKUP_ONLY} (core|sharadar|full|sharadar-bulk|all)" >&2
+    echo "BACKUP_ONLY 값이 이상하다: ${BACKUP_ONLY} (core|sharadar|full|sharadar-bulk|ticks-today|all)" >&2
     exit 2 ;;
 esac

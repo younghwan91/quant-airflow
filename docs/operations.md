@@ -2,16 +2,21 @@
 
 [← README](../README.md)
 
-## 머신 가동 — 2026-09-11 이후: 두 호스트 모두 24/7 상시
+## 머신 가동 — 2026-10-07 이후: simnode 한 대, 24/7 상시
 
-Airflow 와 TimescaleDB 를 **분리된 호스트에서 각각 상시 구동**한다(`restart:
-unless-stopped`, cron 으로 껐다 켜는 대상이 아니다). 아래 "왜 창을 나눴었나"는
-그 이전(한 호스트에 다 얹혀 있던 시절)의 기록이다 — 지금은 해당하지 않는다.
+모든 것이 **simnode 한 대**에서 상시 구동한다(`restart: unless-stopped`, cron 으로 껐다
+켜는 대상이 아니다). 2026-09-11 ~ 10-06 엔 trader(N100)가 읽기 전용 리플리카와 장중
+라이브(틱 수집·짝꿍 감지기·daytrade-it 뉴스 데몬)를 맡았는데, 10-07 에 trader 를 처분하며
+라이브 크론을 각 레포의 `deploy/crontab.simnode` 로 합쳤고 리플리카와 `trader_replica`
+슬롯은 없앴다. 아래 "왜 창을 나눴었나"는 그보다 더 이전(한 호스트에 다 얹혀 있던
+시절)의 기록이다.
 
 | 호스트 | 스택 | 역할 |
 |---|---|---|
-| **simnode** | `docker-compose.airflow.yml` + `docker-compose.replica.yml` | Airflow · TimescaleDB **PRIMARY**(:5433, 이름만 replica — 2026-09-11 `pg_promote()`) · 백업 · 헬스체크 |
-| **trader** (N100) | `docker-compose.timescale.yml` + scalp-it | 읽기 전용 스트리밍 리플리카(`trader_replica` 슬롯) · 실시간 틱 수집기(LAN 너머 simnode:5433 에 쓴다) |
+| **simnode** | `docker-compose.airflow.yml` + `docker-compose.replica.yml` | Airflow · TimescaleDB **PRIMARY**(:5433, 이름만 replica — 2026-09-11 `pg_promote()`) · 장중 라이브(scalp-it·daytrade-it 크론) · 백업 · 헬스체크 |
+
+**두 번째 DB 사본이 없다.** 디스크가 죽으면 남는 것은 구글 드라이브뿐이다 — 19:00 core
+(매일)·평일 16:15 그날 틱·호가(`BACKUP_ONLY=ticks-today`)·일요일 통짜(ticks_full).
 
 역할 확인은 이름이 아니라 `SELECT pg_is_in_recovery();`(PRIMARY=false)로 한다.
 뒤집힌 경위는 `docker-compose.replica.yml` 헤더에 있다.
@@ -69,15 +74,15 @@ Airflow 메타DB 에 물어 조기 종료했다(레거시 스크립트, 지금�
 호스트 `deploy/crontab.<host>`). 이 절은 "내가 푸시하면 무엇이 어디까지 자동인가" 다.
 
 ```
-git push (어느 호스트에서든)
+git push (simnode)
  ├ pre-push: 커밋 신원 가드 → ci-local (이 레포 .github/workflows/ci.yml 을 전용
  │           워크트리에서 그대로 실행 — Install·Lint·DAG 파싱·시크릿 스캔·Test).
  │           sparse 메인에서 만든 워크트리는 스스로 un-sparse 한다.
  ├ 원격 반영 확인(최대 2분) → 푸시한 호스트에서 cron-install
- └ 상대 호스트에 ssh → pull-all (trader 는 --ci-gate: GitHub 체크가 초록일 때만,
-   보류면 60초 간격 최대 10분 재시도) → cron-install
-   실패·보류·미반영은 scripts/alert.sh 로 알림(~/.cache/push-sync.log 에도 남는다)
-안전망: 양쪽 07:50 pull-all --ci-gate + cron-install, 08:50 pull-all --check —
+ └ (상대 호스트가 있으면) ssh → pull-all → cron-install — 2026-10-07 부터 없다.
+   다른 PC 에서 푸시하면 simnode 는 07:50 동기화에서 받는다.
+   실패·미반영은 scripts/alert.sh 로 알림(~/.cache/push-sync.log 에도 남는다)
+안전망: 07:50 pull-all --ci-gate + cron-install, 08:50 pull-all --check —
         둘 다 cron_run.sh 로 감싸 ⏸/✗/behind 가 알림으로 간다.
 ```
 
@@ -89,8 +94,6 @@ git push (어느 호스트에서든)
 | `deploy/crontab.simnode` | push-sync 의 cron-install 직후 |
 | `docker-compose.airflow.yml` env · `docker/requirements.txt` · `Dockerfile` | **자동 아님** — `docker compose -f docker-compose.airflow.yml up -d [--build]` 가 필요하고 그건 스케줄러 재생성이라 CLAUDE.md §1 승인 대상 |
 | `sql/migrations/*.sql` | **자동 아님** — 손으로 적용(마이그레이션 파일 하단 절차) |
-
-trader 는 sparse 체크아웃(README "scalp-it 쪽")이라 compose·sql·알림 전송기만 받는다.
 
 ## 알림 — 사고는 로그가 아니라 사람에게 간다
 
@@ -108,10 +111,10 @@ trader 는 sparse 체크아웃(README "scalp-it 쪽")이라 compose·sql·알림
 **URL 이 없으면** 모든 경로가 `~/logs/quant-airflow/alerts.log`(컨테이너는
 `logs/alerts.log`)에만 쓰고 종료 0 이다. 알림 코드가 본작업을 죽이는 일은 없다.
 
-**URL 을 넣는 날 (양쪽 호스트):**
+**URL 을 넣는 날:**
 
 1. Discord 채널 설정 → 연동 → 웹훅 → URL 을 `quant-airflow/.env` 에
-   `ALERT_WEBHOOK_URL=…` 로. simnode·trader 둘 다.
+   `ALERT_WEBHOOK_URL=…` 로.
 2. simnode 에서 `scripts/alert.sh info "알림 통로 개통"` — 채널에 오면 끝.
 3. Airflow 컨테이너는 env 를 기동 때 읽으므로 **승인 받고** 장 마감 후
    `docker compose -f docker-compose.airflow.yml up -d` (스케줄러·웹서버 재생성).
@@ -157,7 +160,7 @@ sql/init_timescale.sql # hypertable 스키마 + 청크/압축 정책 (신규 DB�
 sql/migrations/        # 기존 DB 변경분 — 001~013, docs/schema.md 참고
 docker/Dockerfile      # collectors/ 의존성만 설치 (kr-quant editable install 없음)
 docker-compose.replica.yml   # simnode — TimescaleDB PRIMARY(:5433, 이름만 replica), 24/7
-docker-compose.timescale.yml # trader — 읽기 전용 리플리카, 24/7
+docker-compose.timescale.yml # 옛 trader 리플리카(2026-10-07 폐기) — 새 호스트에 DB 를 처음 세울 때의 참고본
 docker-compose.airflow.yml   # simnode — 스케줄러·웹서버·init·메타 Postgres, 24/7
 ```
 

@@ -1,3 +1,5 @@
+# ⚠️ 2026-10-07 trader 처분으로 이 리플리카는 폐기됐다 — 지금 어느 호스트도 이 파일을 띄우지 않는다.
+#    simnode 의 trader_replica 슬롯도 지웠다. 새 리플리카를 세울 때의 참고본으로 남긴다.
 # trader 전용 — 2026-09-11 부터 **읽기 전용 스트리밍 리플리카**다(원본 이름은
 # 그대로 뒀지만 역할이 바뀌었다). PRIMARY 는 이제 simnode 의
 # docker-compose.replica.yml 이다 — 헷갈리면 `pg_is_in_recovery()` 로 확인: 여기는

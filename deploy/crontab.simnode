@@ -22,3 +22,9 @@
 # .env 의 BACKUP_DB_CONTAINER(여기 컨테이너명은 ...-replica-1 이지만 실제 PRIMARY)와
 # BACKUP_STAGING_PARENT(/tmp 가 tmpfs 31GB 라 디스크로 뺐다)가 필요하다.
 0 19 * * * BACKUP_LOG=/home/young/logs/quant-airflow/backup_to_gdrive.cron.log /home/young/git/quant-airflow/scripts/cron_run.sh backup -- /home/young/git/quant-airflow/scripts/backup_to_gdrive.sh >> /home/young/logs/quant-airflow/backup_to_gdrive.cron.log 2>&1
+
+# 그날 틱·호가만 장 마감 뒤 따로 올린다(2026-10-07). 19:00 core 는 무거운 4테이블을 빼고
+# 통짜(ticks_full)는 일요일에만 뜨므로, 그 사이 이 호스트 디스크가 죽으면 최대 6일치 틱·호가가
+# 사라진다 — 키움에서 소급 수집이 안 되는 유일한 데이터다. trader 처분으로 리플리카(두 번째
+# 사본)가 없어져 넣었다. 감지기는 15:20, 수집 프로세스는 15:40 에 끝난다.
+15 16 * * 1-5 BACKUP_ONLY=ticks-today BACKUP_LOG=/home/young/logs/quant-airflow/backup_ticks_today.cron.log /home/young/git/quant-airflow/scripts/cron_run.sh backup-ticks -- /home/young/git/quant-airflow/scripts/backup_to_gdrive.sh >> /home/young/logs/quant-airflow/backup_ticks_today.cron.log 2>&1
