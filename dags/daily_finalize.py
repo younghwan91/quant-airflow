@@ -43,7 +43,7 @@ from _common import DAG_DEFAULT_ARGS, DEFAULT_TASK_KW, kiwoom_env, run_collector
     dag_id="daily_finalize",
     default_args=DAG_DEFAULT_ARGS,
     schedule="30 6 * * 2-6",  # 화~토 06:30 KST — 전 거래일 확정치(위 docstring)
-    start_date=pendulum.datetime(2026, 10, 8, tz="Asia/Seoul"),
+    start_date=pendulum.datetime(2026, 10, 1, tz="Asia/Seoul"),  # catchup=False 라 최근 한 구간만 돈다 — 10-08 로 두면 첫 런이 10-09 로 밀린다
     catchup=False,
     max_active_runs=1,
     tags=["kr-quant", "collection", "finalize"],
