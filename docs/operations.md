@@ -165,7 +165,7 @@ TimescaleDB 접속 정보(`TIMESCALE_*`)는 LAN 내부용이라 평문 컨테이
 ## 저장소 구조
 
 ```
-dags/                  # 16개 DAG — run_collector()로 `python -m collectors.X` 실행
+dags/                  # 17개 DAG — run_collector()로 `python -m collectors.X` 실행
   _common.py           #   공유 헬퍼: timescale_dsn()/kiwoom_env()/dart_env()/run_collector()
 collectors/            # 수집 로직 자체 보유 (kr_quant 런타임 의존 없음)
   storage.py           #   스키마 + upsert 전체 (sqlite/Postgres 듀얼 백엔드)

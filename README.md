@@ -8,7 +8,7 @@
 **한국 주식**(코스피·코스닥)의 시세·수급·실적·컨센서스를 TimescaleDB 에 쌓고,
 **미국 주식**(Sharadar)은 벤더가 주는 벌크 스냅샷으로 DuckDB 스토어를 거래일마다 새로 짓는다.
 
-- **오케스트레이션**: Airflow(LocalExecutor) — 16개 DAG
+- **오케스트레이션**: Airflow(LocalExecutor) — 17개 DAG
 - **데이터 소스**: DART(실적·공시) · 키움 REST(시세·수급·공매도·신용·상장주식수) · KRX(상장폐지) · 네이버(컨센서스·폐지종목 시세) · Sharadar(미국) · 토스증권(뉴스, krx-news-client)
 - **스토어**: TimescaleDB(hypertable + 압축) — LAN 에 열어 메인 PC 가 읽기 전용으로 질의
 
@@ -188,6 +188,7 @@ flowchart LR
 | `daily_short_credit` | 화~토 10:00 | 공매도 + 신용잔고(키움) |
 | `daily_earnings` | 평일 16:00 | DART 실적 증분(당기 + 전분기) |
 | `daily_price_adjust` | 평일 16:55 | `daily_bars_adjusted` 재생성 |
+| `daily_finalize` | 화~토 06:30 | 전 거래일 일봉·수급·업종지수를 **확정치로 재수집**(16:00 값은 잠정) → 조정주가 재생성 |
 | `daily_consensus` | 평일 17:00 | 네이버 컨센서스(월요일만 전종목) |
 | `daily_sharadar` | 화~토 17:30 | 미국 벌크 스냅샷 → 재구축 → 검증 → 공개 |
 | `daily_news` | 평일 10:05 · 16:05 | 토스·DART 뉴스/공시 수집 + LLM 판단(news_judgments) |
