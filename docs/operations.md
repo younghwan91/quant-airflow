@@ -20,9 +20,28 @@
 클러스터 통째로 복제하던 시절엔 따로 뜰 필요가 없었다)·평일 16:15 그날 틱·호가
 (`BACKUP_ONLY=ticks-today`)·일요일 통짜(ticks_full).
 
-드라이브에 **안 올라가는** 것: 각 레포의 `data/`(daytrade-it 종이매매 장부 jsonl,
-scalp-it `dart.db`·매매일지·감지기 로그)와 `~/of80`(RL 모델)·`~/trader-archive`.
-trader 시절엔 일부가 두 호스트에 있었지만 지금은 이 디스크 하나뿐이다.
+DB 밖 파일도 19:00 에 함께 올라간다(2026-10-08~, `sync_host_files`): 각 레포의 `data/`
+(daytrade-it 종이매매 장부 jsonl, scalp-it `dart.db`·매매일지·감지기 로그)와 `~/of80`(83~96번
+연구 캐시·모델, 가상환경은 빼고 `pip freeze` 만). `rclone copy` 라 바뀐 파일만 올라가고 여기서
+지운 파일은 드라이브에 남는다. `~/trader-archive` 는 한 번 묶어 올렸다(아래 표).
+
+**드라이브 구조** (`2.4. 트레이딩/3. stocks 주식/`):
+
+| 경로 | 내용 | 보존 |
+|---|---|---|
+| `quant-airflow-backup/core/` | kr_quant 덤프(무거운 4테이블 제외), 매일 | 최근 7개 |
+| `quant-airflow-backup/ticks_full/` | kr_quant 통짜 덤프, 일요일 | 최근 2개 |
+| `quant-airflow-backup/ticks_daily/<날짜>/` | 그날 틱·호가 csv, 평일 16:15 | 최신 통짜 날짜 이전은 지운다 |
+| `quant-airflow-backup/gptquant/` | gptquant DB 덤프, 매일 | 최근 30개 |
+| `quant-airflow-backup/sharadar/` | 구독 해지 전 마지막 duckdb(2026-09-13)·벌크 원본(2026-08-11) | 고정 |
+| `simnode-files/{daytrade-it-data,scalp-it-data,of80}/` | DB 밖 파일 거울(삭제는 안 따라감), 매일 | 최신본만 |
+| `simnode-files/trader-archive/` | 은퇴한 trader 의 남은 자료 묶음·크레덴셜(README 있음) | 고정 |
+
+덤프는 전부 **누적 스냅샷**이다(DB 에 보존정책이 없어 오래된 행이 안 지워진다) — 새 덤프가 옛
+덤프를 품으므로 날짜별 옛 사본은 이력이 아니라 중복이다. 그래서 `prune_old` 가 매일 19:00 끝에
+위 표대로 지운다(오늘 업로드가 성공했을 때만, 지운 건 드라이브 휴지통에 30일). 2026-10-08 에
+처음 정리하며 56.3GiB → 22.7GiB 가 됐다(똑같은 `us.duckdb` 5벌, 구독 해지 뒤 낡은 `us_micro`
+판본 4개, 통짜가 품는 옛 core 들).
 
 역할 확인은 이름이 아니라 `SELECT pg_is_in_recovery();`(PRIMARY=false)로 한다.
 뒤집힌 경위는 `docker-compose.replica.yml` 헤더에 있다.

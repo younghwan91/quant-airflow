@@ -16,6 +16,7 @@
 
 # kr_quant DB(core) + gptquant DB(daytrade-it 신호, 2026-10-08 추가) → 구글 드라이브 백업 (매일 19:00).
 # 일요일엔 ticks 포함 통짜도. Sharadar 는 구독 해지로 09-22 부터 자동 경로에서 뺐다.
+# 끝에 DB 밖 파일(data/·~/of80) 증분 업로드와 오래된 사본 정리(prune_old)가 붙는다(2026-10-08~).
 # 2026-09-13 trader 에서 여기로 옮겼다 — 데이터가 둘 다 simnode 에 있다:
 # DB PRIMARY(pg_promote 09-11)와 daily_sharadar 가 매일 재빌드하는 us_micro.duckdb.
 # trader 에서 돌던 동안은 (a) 한국 DB 를 리플리카 경유로 우회 덤프했고

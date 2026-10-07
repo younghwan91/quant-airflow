@@ -15,9 +15,13 @@
 # 구독 해지로 재빌드가 멈춘 뒤에도 백업만 계속 돌아 같은 파일을 날짜 폴더만
 # 바꿔 매일 2.3GB 씩 올리고 있었다. 설명 자체는 구독을 다시 틀 때를 위해 남겨둔다.
 #
-# 보존기간 없음(Drive 5TB 중 4.8TB 여유 — 사용자 확인, 2026-09-06) — 자동 삭제 안 함.
-# 다만 "안 지운다" 는 **중복을 쌓아도 된다는 뜻이 아니다.** 소스가 안 바뀌는데
-# 날짜 폴더만 늘어나는 건 되돌릴 이력이 아니라 같은 파일의 사본일 뿐이다.
+# 보존: 2026-10-08 부터 prune_old 가 오래된 사본을 지운다(사용자: "똑같은 데이터인데 매일
+# 똑같이 올라가는 것들 정리해"). 덤프는 전부 누적 스냅샷이라(DB 에 보존정책이 없다 — 오래된
+# 행이 지워지지 않는다) 새 덤프가 옛 덤프의 내용을 다 품는다. 그래서 오래된 날짜본은 이력이
+# 아니라 사본이다. 남기는 것은 prune_old 주석 참고. 지운 것은 드라이브 휴지통에 30일 남는다.
+#
+# 이 호스트의 DB 밖 파일(각 레포 data/, ~/of80)도 sync_host_files 가 매일 올린다
+# — trader 처분(2026-10-07)으로 그것들의 두 번째 사본이 없어졌다.
 set -euo pipefail
 
 # 레포 경로는 이 스크립트 위치에서 유도한다 — 2026-09-11 레포를
@@ -215,6 +219,74 @@ dump_gptquant() {
   echo "[$(date '+%F %T')] gptquant 백업 완료 — $REMOTE/gptquant/gptquant-$DATE.sql.gz ($(du -h "$out" | cut -f1))"
 }
 
+# DB 밖에 있는 이 호스트의 파일 — 각 레포 data/(daytrade-it 종이매매 장부·판정 기록,
+# scalp-it dart.db·매매일지·감지기 로그)와 ~/of80(83~96번 연구의 피처 캐시·학습 모델).
+# git 에 없고(gitignore) 2026-10-07 trader 처분 뒤로 이 디스크가 유일한 사본이었다.
+#
+# `rclone copy` 다(sync 가 아니다): 바뀐 파일만 덮어쓰고 여기서 지운 파일은 드라이브에
+# 그대로 둔다 — 실수로 지운 게 다음 날 드라이브에서도 사라지면 백업이 아니다. 날짜 폴더를
+# 만들지 않으므로 매일 같은 사본이 쌓이지도 않는다(첫 회 이후는 증분이다).
+# 가상환경(~/of80/.rlvenv)은 빼고 대신 pip freeze 를 올린다 — 파일 2만 5천 개를 매일 훑을
+# 이유가 없고, 같은 버전으로 다시 만드는 데는 목록이면 된다.
+FILES_REMOTE="${BACKUP_FILES_REMOTE:-gdrive:2.4. 트레이딩/3. stocks 주식/simnode-files}"
+sync_host_files() {
+  local name src
+  local -a specs=(
+    "daytrade-it-data|$REPO/../daytrade-it/data"
+    "scalp-it-data|$REPO/../scalp-it/data"
+    "of80|$HOME/of80"
+  )
+  for spec in "${specs[@]}"; do
+    name="${spec%%|*}"; src="${spec#*|}"
+    if [ ! -d "$src" ]; then
+      echo "[$(date '+%F %T')] ⚠️ $src 없음 — $name 건너뜀" >&2
+      continue
+    fi
+    rclone copy "$src" "$FILES_REMOTE/$name" \
+      --exclude ".rlvenv/**" --exclude "__pycache__/**" --exclude "*.pyc" \
+      --transfers 8 --checkers 16 --fast-list
+    echo "[$(date '+%F %T')] $name 동기화 완료 — $FILES_REMOTE/$name"
+  done
+  if [ -x "$HOME/of80/.rlvenv/bin/python" ]; then
+    "$HOME/of80/.rlvenv/bin/python" -m pip freeze 2>/dev/null > "$TMPDIR/rlvenv-requirements.txt" \
+      && rclone copyto "$TMPDIR/rlvenv-requirements.txt" "$FILES_REMOTE/of80/.rlvenv-requirements.txt"
+  fi
+}
+
+# 오래된 사본 정리 — 모든 덤프가 누적 스냅샷이라 새 것이 옛 것을 품는다(헤더 참고).
+#   core/         최근 7개      (하루 단위로 되돌릴 창. 그 이전은 주간 통짜가 품는다)
+#   ticks_full/   최근 2개      (최신본이 깨졌을 때 한 주 전으로 물러설 자리)
+#   ticks_daily/  최신 통짜 날짜 이전 날짜 폴더 전부 (그 통짜가 그날 틱을 이미 품는다)
+#   gptquant/     최근 30개     (18KB 라 길게 둔다)
+# **오늘 업로드가 성공한 뒤에만** 돈다 — set -e 라 앞 단계가 죽으면 여기까지 안 온다.
+# 그래도 남길 개수보다 적게 있으면 아무것도 안 지운다(목록 조회가 비면 다 지우는 사고 방지).
+# rclone delete 는 드라이브 휴지통으로 보낸다(30일 복구 가능).
+keep_newest() {  # <원격 폴더> <남길 개수> — 이름순(=날짜순) 오래된 파일부터 지운다
+  local dir="$1" keep="$2" files n
+  files="$(rclone lsf --files-only "$dir" | LC_ALL=C sort)" || return 1
+  n=$(printf '%s\n' "$files" | grep -c . || true)
+  [ "$n" -le "$keep" ] && return 0
+  printf '%s\n' "$files" | head -n $(( n - keep )) | while IFS= read -r f; do
+    rclone deletefile "$dir/$f"
+    echo "[$(date '+%F %T')] 정리: $dir/$f"
+  done
+}
+prune_old() {
+  keep_newest "$REMOTE/core" 7
+  keep_newest "$REMOTE/ticks_full" 2
+  keep_newest "$REMOTE/gptquant" 30
+  local latest_full d
+  latest_full="$(rclone lsf --files-only "$REMOTE/ticks_full" | LC_ALL=C sort | tail -1 \
+    | sed -nE 's/^full-([0-9]{4}-[0-9]{2}-[0-9]{2})\.sql\.gz$/\1/p')"
+  [ -n "$latest_full" ] || return 0
+  rclone lsf --dirs-only "$REMOTE/ticks_daily" | tr -d / | while IFS= read -r d; do
+    if [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [[ "$d" < "$latest_full" ]]; then
+      rclone purge "$REMOTE/ticks_daily/$d"
+      echo "[$(date '+%F %T')] 정리: ticks_daily/$d (full-$latest_full 이 품는다)"
+    fi
+  done
+}
+
 dump_sharadar_bulk() {
   # raw/ 는 sharadar_bulk.py 가 받는 중인 .part 임시본이 섞여 있어 뺀다.
   rclone sync "$SHARADAR_DIR/sharadar" "$REMOTE/sharadar/bulk/latest" \
@@ -229,6 +301,8 @@ dump_sharadar_bulk() {
 case "${BACKUP_ONLY:-all}" in
   core)          dump_core ;;
   gptquant)      dump_gptquant ;;
+  files)         sync_host_files ;;
+  prune)         prune_old ;;
   sharadar)      dump_sharadar_duckdb ;;
   full)          dump_full ;;
   ticks-today)   dump_ticks_today ;;
@@ -261,8 +335,10 @@ case "${BACKUP_ONLY:-all}" in
       dump_full
       #   dump_sharadar_bulk
     fi
+    sync_host_files
+    prune_old
     ;;
   *)
-    echo "BACKUP_ONLY 값이 이상하다: ${BACKUP_ONLY} (core|gptquant|sharadar|full|sharadar-bulk|ticks-today|all)" >&2
+    echo "BACKUP_ONLY 값이 이상하다: ${BACKUP_ONLY} (core|gptquant|files|prune|sharadar|full|sharadar-bulk|ticks-today|all)" >&2
     exit 2 ;;
 esac
