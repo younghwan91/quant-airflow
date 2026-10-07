@@ -16,7 +16,13 @@
 | **simnode** | `docker-compose.airflow.yml` + `docker-compose.replica.yml` | Airflow · TimescaleDB **PRIMARY**(:5433, 이름만 replica — 2026-09-11 `pg_promote()`) · 장중 라이브(scalp-it·daytrade-it 크론) · 백업 · 헬스체크 |
 
 **두 번째 DB 사본이 없다.** 디스크가 죽으면 남는 것은 구글 드라이브뿐이다 — 19:00 core
-(매일)·평일 16:15 그날 틱·호가(`BACKUP_ONLY=ticks-today`)·일요일 통짜(ticks_full).
+(매일)·19:00 `gptquant` DB(매일, daytrade-it 뉴스 신호 — 2026-10-08 추가; 리플리카가
+클러스터 통째로 복제하던 시절엔 따로 뜰 필요가 없었다)·평일 16:15 그날 틱·호가
+(`BACKUP_ONLY=ticks-today`)·일요일 통짜(ticks_full).
+
+드라이브에 **안 올라가는** 것: 각 레포의 `data/`(daytrade-it 종이매매 장부 jsonl,
+scalp-it `dart.db`·매매일지·감지기 로그)와 `~/of80`(RL 모델)·`~/trader-archive`.
+trader 시절엔 일부가 두 호스트에 있었지만 지금은 이 디스크 하나뿐이다.
 
 역할 확인은 이름이 아니라 `SELECT pg_is_in_recovery();`(PRIMARY=false)로 한다.
 뒤집힌 경위는 `docker-compose.replica.yml` 헤더에 있다.

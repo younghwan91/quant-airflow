@@ -14,7 +14,8 @@
 35 11 * * * /home/young/git/quant-airflow/scripts/cron_run.sh health-check -- /home/young/git/quant-airflow/scripts/daily_health_check.sh >> /home/young/logs/quant-airflow/daily_health_check.log 2>&1
 10 18 * * * /home/young/git/quant-airflow/scripts/cron_run.sh health-check -- /home/young/git/quant-airflow/scripts/daily_health_check.sh >> /home/young/logs/quant-airflow/daily_health_check.log 2>&1
 
-# swing-it(구 kr-quant) DB + Sharadar 미국 데이터 → 구글 드라이브 백업 (매일 19:00).
+# kr_quant DB(core) + gptquant DB(daytrade-it 신호, 2026-10-08 추가) → 구글 드라이브 백업 (매일 19:00).
+# 일요일엔 ticks 포함 통짜도. Sharadar 는 구독 해지로 09-22 부터 자동 경로에서 뺐다.
 # 2026-09-13 trader 에서 여기로 옮겼다 — 데이터가 둘 다 simnode 에 있다:
 # DB PRIMARY(pg_promote 09-11)와 daily_sharadar 가 매일 재빌드하는 us_micro.duckdb.
 # trader 에서 돌던 동안은 (a) 한국 DB 를 리플리카 경유로 우회 덤프했고

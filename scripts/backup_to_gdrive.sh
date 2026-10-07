@@ -202,6 +202,19 @@ dump_sharadar_duckdb() {
   echo "[$(date '+%F %T')] sharadar duckdb 백업 완료 (${copied}개 파일) — $dest"
 }
 
+# 같은 PRIMARY 클러스터의 두 번째 DB — daytrade-it 뉴스 신호(trading_signals)가 쌓인다.
+# 2026-10-07 까지는 trader 의 물리 리플리카가 클러스터 통째로(이 DB 포함) 두 번째 사본이
+# 었는데, trader 처분으로 그게 없어지자 이 DB 는 사본이 0 이 됐다(위 덤프들은 $DBNAME 만
+# 뜬다). 10MB 남짓이라 매일 통째로 뜬다. 하이퍼테이블이 없어 제외 목록·검증이 필요 없다.
+GPTQ_DBNAME="${BACKUP_GPTQ_DB:-gptquant}"
+dump_gptquant() {
+  local out="$TMPDIR/gptquant-$DATE.sql.gz"
+  docker exec -e PGPASSWORD="$DBPASS" "$CONTAINER" \
+    pg_dump -U "$DBUSER" -d "$GPTQ_DBNAME" | gzip > "$out"
+  rclone copyto "$out" "$REMOTE/gptquant/gptquant-$DATE.sql.gz"
+  echo "[$(date '+%F %T')] gptquant 백업 완료 — $REMOTE/gptquant/gptquant-$DATE.sql.gz ($(du -h "$out" | cut -f1))"
+}
+
 dump_sharadar_bulk() {
   # raw/ 는 sharadar_bulk.py 가 받는 중인 .part 임시본이 섞여 있어 뺀다.
   rclone sync "$SHARADAR_DIR/sharadar" "$REMOTE/sharadar/bulk/latest" \
@@ -215,12 +228,14 @@ dump_sharadar_bulk() {
 # 필요했다. 기본값 all 은 크론이 쓰는 기존 동작 그대로다.
 case "${BACKUP_ONLY:-all}" in
   core)          dump_core ;;
+  gptquant)      dump_gptquant ;;
   sharadar)      dump_sharadar_duckdb ;;
   full)          dump_full ;;
   ticks-today)   dump_ticks_today ;;
   sharadar-bulk) dump_sharadar_bulk ;;
   all)
     dump_core
+    dump_gptquant
     # ⚠️ sharadar 두 단계(duckdb·bulk)는 2026-09-22 부터 자동 경로에서 뺐다.
     # 구독 해지(2026-09-14, `daily_sharadar` 가 schedule=None)로 us.duckdb ·
     # us_micro.duckdb 가 더는 재빌드되지 않는데 백업만 매일 돌아, **같은 파일을
@@ -248,6 +263,6 @@ case "${BACKUP_ONLY:-all}" in
     fi
     ;;
   *)
-    echo "BACKUP_ONLY 값이 이상하다: ${BACKUP_ONLY} (core|sharadar|full|sharadar-bulk|ticks-today|all)" >&2
+    echo "BACKUP_ONLY 값이 이상하다: ${BACKUP_ONLY} (core|gptquant|sharadar|full|sharadar-bulk|ticks-today|all)" >&2
     exit 2 ;;
 esac

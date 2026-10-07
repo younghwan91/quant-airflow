@@ -1,14 +1,14 @@
 # simnode 전용 — Airflow 4종(메타DB·init·webserver·scheduler)만 있다. TimescaleDB
 # PRIMARY 는 같은 simnode 의 별도 스택(docker-compose.replica.yml — 이름만 replica,
-# 2026-09-11 pg_promote)이고, trader 는 읽기 전용 리플리카다. 호스트 구성은
+# 2026-09-11 pg_promote)이다. 리플리카는 2026-10-07 trader 처분으로 없다. 호스트 구성은
 # docs/operations.md 가 정본. 이 파일은 DB 와 따로 올리고 내릴 수 있다 — 예전엔
 # timescaledb 를 같은 스택에 껴서 내리는 바람에 scalp-it 틱 수집기가 DB 순단으로
 # 죽는 위험이 있었다.
 #
 # TIMESCALE_HOST 기본값(`timescaledb`)은 한 스택으로 합쳐 띄우던 시절 값이다.
 # 지금 simnode 는 .env 에서 TIMESCALE_HOST=<simnode LAN IP>, TIMESCALE_PORT=5433
-# (PRIMARY 의 게시 포트)으로 덮어쓴다. **trader IP 로 두면 안 된다** — 거긴 read-only
-# standby 라 모든 쓰기가 실패한다.
+# (PRIMARY 의 게시 포트)으로 덮어쓴다. (옛 trader IP 192.168.45.70 은 read-only standby
+# 였고 지금은 아무것도 없다.)
 #
 # depends_on 에 DB 가 없는 이유: 별도 스택이라 이 파일에 그 서비스가 없어 Compose
 # 검증에서 깨진다. 대신 airflow-init 이 pg_isready 로 DB 를 기다린다.

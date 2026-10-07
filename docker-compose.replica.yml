@@ -5,6 +5,10 @@
 # 그 전부를 또 바꾸는 게 더 위험하다고 판단했다. `pg_is_in_recovery()` 로
 # 실제 역할을 확인할 것 (여기는 false 가 나와야 정상 — primary).
 #
+# ⚠️ 2026-10-07 trader 처분으로 아래에 나오는 trader 리플리카·`trader_replica` 슬롯은
+# 없어졌다 — 지금은 이 컨테이너가 유일한 DB 사본이다(두 번째 사본은 구글 드라이브 백업뿐,
+# docs/operations.md). 아래 단락들은 리플리카를 다시 세울 때를 위한 경위 기록이다.
+#
 # 왜 뒤집혔나: 원래 설계는 실시간 틱 수집기(scalp-it, trader)와 같은 호스트에
 # PRIMARY 를 두는 것이었는데, collector.py 에 재연결+디스크 스풀(spool_dir)이
 # 들어가 LAN 순단을 스스로 버티는 게 실전 검증(2026-09-11, trader DB 로 왕복

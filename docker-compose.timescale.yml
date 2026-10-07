@@ -4,7 +4,8 @@
 # 그대로 뒀지만 역할이 바뀌었다). PRIMARY 는 이제 simnode 의
 # docker-compose.replica.yml 이다 — 헷갈리면 `pg_is_in_recovery()` 로 확인: 여기는
 # true 가 나와야 정상이다. 뒤집힌 경위는 docker-compose.replica.yml 헤더 참고.
-# scalp-it collector 는 여전히 trader 에서 돌지만 LAN 너머 simnode:5433 에 쓴다.
+# (2026-10-06 까지 scalp-it collector 는 trader 에서 돌며 LAN 너머 simnode:5433 에 썼다.
+#  10-07 부터는 simnode 에서 돈다.)
 #
 # 24/7 상시(restart: unless-stopped) — cron 으로 올렸다 내리는 대상이 아니다.
 # 볼륨은 quant-airflow_timescale-data(외부, pg_basebackup 으로 시딩됨).

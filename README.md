@@ -12,52 +12,39 @@
 - **데이터 소스**: DART(실적·공시) · 키움 REST(시세·수급·공매도·신용·상장주식수) · KRX(상장폐지) · 네이버(컨센서스·폐지종목 시세) · Sharadar(미국) · 토스증권(뉴스, krx-news-client)
 - **스토어**: TimescaleDB(hypertable + 압축) — LAN 에 열어 메인 PC 가 읽기 전용으로 질의
 
-## 두 호스트로 나뉜 배치 (2026-09-11)
+## 배치 — 한 호스트, 24/7 (2026-10-07~)
 
-Airflow 와 TimescaleDB 는 이제 **같은 스택이 아니다.** DB 는 24/7 상시(이 문서에서
-"DB 호스트"), Airflow(스케줄러·웹서버·메타DB)는 자원이 넉넉한 별도 호스트("Airflow
-호스트")에서 역시 24/7 상시로 돈다. 예전엔 하나였던 걸 하루 4번 껐다 켰다 했는데
-(`docs/operations.md` 의 옛 "가동 창" 참고), Airflow 호스트가 상시 구동을 버틸
-만큼 여유로우면 그 창 자체가 필요 없다.
+Airflow(스케줄러·웹서버·메타DB)와 TimescaleDB 는 **같은 호스트(simnode)에서 서로 다른
+compose 스택으로** 상시 돈다 — 한쪽을 내리고 올려도 다른 쪽이 안 흔들린다. 같은 호스트에서
+다른 레포의 장중 라이브(scalp-it 틱 수집·감지기, daytrade-it 뉴스 데몬)도 돈다. 하루 4번
+껐다 켜던 옛 "가동 창"과 2026-09-11 ~ 10-06 의 두 호스트 시절(PRIMARY + trader 리플리카)
+경위는 [`docs/operations.md`](docs/operations.md) 에 있다.
 
-> **DB 호스트는 고정된 물리적 위치가 아니다 — PRIMARY 인 쪽이 DB 호스트다.**
-> 최초 분리(2026-09-11 오전)는 실시간 틱 수집기(scalp-it)와 물리적으로 같은
-> 호스트에 PRIMARY 를 두는 설계였다(순단 재연결 실패 회피). 같은 날 저녁,
-> collector 에 재연결+디스크 스풀이 들어가 LAN 순단을 스스로 버티는 게 실전
-> 검증되면서 PRIMARY 를 자원이 넉넉한 호스트로 승격(`pg_promote()`)했다 — 수집기는
-> 원래 호스트에 그대로 두고, LAN 너머 새 PRIMARY 에 쓴다. 옛 PRIMARY 는 새
-> PRIMARY 의 리플리카로 재구성했다(`docker-compose.timescale.yml` — 파일 이름은
-> 안 바꿨지만 내용이 role 을 명시한다). **어느 쪽이 지금 PRIMARY 인지는 코드가
-> 아니라 상태다** — `pg_is_in_recovery()` 로 확인한다(false = PRIMARY).
+| compose 파일 | 내용 |
+|---|---|
+| `docker-compose.replica.yml` | TimescaleDB **PRIMARY**(:5433). 이름만 replica — 2026-09-11 `pg_promote()` 로 역할이 바뀌었고 볼륨·포트가 여러 DSN 에 박혀 있어 이름은 안 바꿨다. 역할은 `SELECT pg_is_in_recovery();`(false = PRIMARY)로 확인 |
+| `docker-compose.airflow.yml` | Airflow 4종. DB 는 이 파일에 없다 — `.env` 의 `TIMESCALE_HOST`/`TIMESCALE_PORT` 로 위 PRIMARY 에 붙는다 |
+| `docker-compose.timescale.yml` | 폐기된 trader 리플리카의 참고본. 지금 아무 데서도 띄우지 않는다 |
+
+**DB 사본은 하나다** — 리플리카가 없어 두 번째 사본은 구글 드라이브 백업
+(`scripts/backup_to_gdrive.sh`, 이 호스트에서만 돈다)뿐이다.
 
 ```bash
 git clone <this-repo> quant-airflow
-git clone https://github.com/younghwan91/kr-quant.git ../kr-quant   # sibling
+git clone https://github.com/younghwan91/swing-it.git ../swing-it                       # sibling
 git clone https://github.com/younghwan91/portfolio-research.git ../portfolio-research  # sibling
 cd quant-airflow
 cp .env.example .env   # 아래 필수값 채우기
+
+docker compose -f docker-compose.replica.yml up -d   # DB(PRIMARY) — 볼륨은 external 이다
+docker compose -f docker-compose.airflow.yml up -d   # Airflow
 ```
 
-**DB 호스트**에서 (지금 PRIMARY 를 맡을 호스트 — 위 안내 상자 참고. `pg_is_in_recovery()`
-가 false 로 나와야 PRIMARY):
-
-```bash
-docker compose -f docker-compose.timescale.yml up -d
-```
-
-**Airflow 호스트**에서 (DB 호스트와 LAN 으로 연결, `.env` 의 `TIMESCALE_HOST` 를
-DB 호스트의 LAN IP 로 설정):
-
-```bash
-docker compose -f docker-compose.airflow.yml up -d
-```
-
-한 대에서 둘 다 테스트하고 싶으면(`TIMESCALE_HOST` 기본값이 도커 네트워크
-서비스명 `timescaledb` 라 그대로 붙는다):
-
-```bash
-docker compose -f docker-compose.timescale.yml -f docker-compose.airflow.yml up -d
-```
+위 DB 줄은 **이미 데이터가 든 볼륨**을 띄우는 것이다. `docker-compose.replica.yml` 은 볼륨이
+`external` 이고 `POSTGRES_USER/PASSWORD/DB` 가 없어 빈 볼륨에서 initdb 를 하지 못한다 — 새
+머신에 처음 세울 때는 `docker-compose.timescale.yml`(그 환경변수와 `sql/init_timescale.sql`
+마운트가 있다)을 참고하거나 구글 드라이브 백업에서 복원한다. 스키마의 정본은
+`sql/init_timescale.sql` + `sql/migrations/*.sql` 이다.
 
 `.env` 에 채워야 하는 값:
 
@@ -65,64 +52,43 @@ docker compose -f docker-compose.timescale.yml -f docker-compose.airflow.yml up 
 |---|---|
 | `KIWOOM_APP_KEY` / `KIWOOM_APP_SECRET` | 키움 REST — 시세·수급·공매도·신용·상장주식수 |
 | `DART_API_KEY`(`_2`/`_3`) | DART OpenAPI — [무료 발급](https://opendart.fss.or.kr), 보조키를 추가하면 일한도가 키 개수만큼 늘어난다 |
-| `TIMESCALE_*` / `AIRFLOW_*` | DB 접속 정보·Airflow 시크릿(`.env.example` 에 생성법 주석 포함). Airflow 호스트에서는 `TIMESCALE_HOST` 를 DB 호스트 LAN IP 로 override |
-| `US_DATA_DIR` | Sharadar DuckDB 스토어(`us_micro.duckdb`)가 있는 호스트 디렉터리 — Airflow 호스트 쪽에 있어야 한다. 없으면 `daily_sharadar` 가 돌지 않는다 |
+| `TIMESCALE_*` / `AIRFLOW_*` | DB 접속 정보·Airflow 시크릿(`.env.example` 에 생성법 주석 포함). `TIMESCALE_HOST` 는 호스트 LAN IP, `TIMESCALE_PORT=5433` |
+| `US_DATA_DIR` | Sharadar DuckDB 스토어(`us_micro.duckdb`) 디렉터리. 없으면 `daily_sharadar` 가 돌지 않는다 |
 
-TimescaleDB 는 지금 PRIMARY 인 호스트에서 LAN 에 열려 있고 메인 PC 와 Airflow
-호스트 양쪽이 여기에 질의한다. 포트는 호스트마다 다를 수 있다(트래픽 정리 편의상
-바꾸지 않고 그대로 둠) — 실제 값은 `kr-quant/.env` 의 `KR_QUANT_DB`, 이
-레포 `.env` 의 `TIMESCALE_HOST`/`TIMESCALE_PORT` 를 확인한다.
+TimescaleDB 는 LAN 에 열려 있어 다른 PC 도 읽기 전용으로 질의한다. 실제 접속값은 이 레포
+`.env` 의 `KR_QUANT_DB`·`TIMESCALE_HOST`/`TIMESCALE_PORT` 를 본다 — 같은 호스트의 다른
+레포(scalp-it·daytrade-it 크론)도 이 파일에서 DSN 을 읽는다.
 
-> 2026-10-07 부터 틱 수집기도 Airflow 호스트(simnode)에서 돈다 — trader 를 처분해 아래 sparse
-> 구성은 지금 쓰는 곳이 없다. 수집기를 다시 다른 호스트로 떼어낼 때의 절차로 남긴다.
+<details>
+<summary>수집기를 다른 호스트로 떼어낼 때 (2026-09-11 ~ 10-06 의 trader 구성)</summary>
 
-**scalp-it(실시간 틱 수집기) 쪽은 이 레포를 통째로 clone 하지 않는다** — 필요한 건
-리플리카를 띄우는 `docker-compose.timescale.yml` 과 그게 참조하는
-`sql/init_timescale.sql`, 그리고 두 호스트가 공용으로 쓰는 알림 전송기
-(`scripts/alert.sh`·`scripts/cron_run.sh`·`collectors/{alert,config,__init__}.py`,
-`docs/operations.md` "알림" 참고)뿐이라 `git sparse-checkout set` 으로 그것만 받는다:
+그 호스트는 이 레포를 통째로 clone 하지 않고 리플리카용 compose·스키마와 알림 전송기만
+sparse 로 받았다:
 
 ```bash
 git sparse-checkout set --no-cone /docker-compose.timescale.yml /sql/init_timescale.sql \
   /scripts/alert.sh /scripts/cron_run.sh /collectors/alert.py /collectors/config.py /collectors/__init__.py
 ```
 
-전체 레포(DAG·수집기 등)는 항상 Airflow 호스트 쪽 clone 이 정본이다 —
-같은 레포가 양쪽 호스트에 있다고 양쪽 다 "찐"인 게 아니라는 점에 주의(구성 파일
-수정은 Airflow 호스트에서 하고 push, scalp-it 쪽은 pull 만). sparse 체크아웃에서 만든
-**워크트리는 그 sparse 패턴을 물려받는다** — 거기서 테스트·CI 를 돌리려면 그 워크트리
-안에서 `git sparse-checkout disable` 을 한다(워크트리별 설정이라 메인은 그대로다;
-pre-push 의 ci-local 은 이걸 스스로 한다).
+전체 레포는 항상 Airflow 호스트 쪽 clone 이 정본이다. sparse 체크아웃에서 만든 워크트리는
+그 패턴을 물려받으므로 거기서 테스트하려면 `git sparse-checkout disable` 한다. 백업은 그쪽에서
+돌리지 않는다 — 날짜 기반 파일명이라 낡은 스탠바이 덤프가 그날 파일을 덮어쓴다(2026-09-13 사고).
+리플리카가 WAL 스트리밍 끊김(`requested WAL segment ... has already been removed`)으로 죽었을
+때의 재시딩(`pg_basebackup -R -C -S <slot>`) 절차는 `docker-compose.replica.yml` 헤더에 있다.
 
-**구글 드라이브 백업(`scripts/backup_to_gdrive.sh`)은 Airflow 호스트에서만 돈다.**
-2026-09-13 에 scalp-it 호스트의 19:00 크론을 지웠다 — 양쪽이 같은 시각에 돌고 있었고
-스크립트가 날짜 기반 파일명(`core/core-<날짜>.sql.gz`, `sharadar/duckdb/<날짜>/`)을
-쓰기 때문에 나중에 끝난 쪽이 먼저 끝난 쪽을 덮어썼다. 09-11 이후 DB PRIMARY 와
-`daily_sharadar` 산출물이 모두 Airflow 호스트에 있으므로, scalp-it 쪽에서 돌면 낡은
-스탠바이 덤프와 낡은 미국 데이터가 그날 파일이 된다. 같은 이유로 scalp-it 쪽
-sparse-checkout 목록에서도 이 스크립트를 뺐다 — 거기 남아 있으면 손으로 돌리게 된다.
-
-그 크론이 마지막으로 남긴 것은 09-12 19:00 의 한 줄뿐이었다(로그 전체가 139바이트):
-`cd: /home/young/Documents/git/quant-airflow: No such file or directory`. 백업이 하루
-통째로 빠졌는데 신호는 이게 전부였다 — 그래서 지금은 `backup_to_gdrive.sh` 가 덤프를
-뜬 직후 **올리기 전에** 제외 대상이 실렸는지 열어보고, 걸리면 업로드를 멈춘다.
-
-**리플리카가 WAL 스트리밍 끊김으로 죽으면** (`could not receive data from WAL stream:
-requested WAL segment ... has already been removed` — `max_slot_wal_keep_size` 한도를
-넘겨 리플리카가 못 따라잡은 경우, 증분 복구 불가) `docker-compose.replica.yml` 파일
-헤더 주석에 재시딩(`pg_basebackup -R -C -S <slot>`) 절차가 적혀 있다.
+</details>
 
 ## 데이터 읽는 법
 
 ```python
 import pandas as pd, psycopg2
-conn = psycopg2.connect(host="<spare-pc-ip>", port=5432,
+conn = psycopg2.connect(host="<db-host-ip>", port=5433,
                         dbname="kr_quant", user="kr_quant", password="...")
 df = pd.read_sql("SELECT * FROM daily_bars_adjusted WHERE code = %s ORDER BY date",
                  conn, params=("005930",))
 ```
 
-분석·백테스트 코드는 [kr-quant](https://github.com/younghwan91/kr-quant) 에 있으며 이
+분석·백테스트 코드는 [swing-it](https://github.com/younghwan91/swing-it)(구 kr-quant) 에 있으며 이
 DB 를 읽기 전용으로 쓴다.
 
 ## 창고에 실제로 뭐가 들어 있나
