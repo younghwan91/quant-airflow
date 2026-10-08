@@ -247,9 +247,15 @@ sync_host_files() {
       --transfers 8 --checkers 16 --fast-list
     echo "[$(date '+%F %T')] $name 동기화 완료 — $FILES_REMOTE/$name"
   done
+  # 그 venv 는 uv 로 만들어 pip 가 없다 — `python -m pip freeze` 가 실패해 이 함수가 rc=1 을 돌려줬고
+  # 백업 전체가 실패로 끝났다(2026-10-08 첫 실행). uv 로 뜨고, 목록은 부가물이라 실패해도 백업을 죽이지 않는다.
   if [ -x "$HOME/of80/.rlvenv/bin/python" ]; then
-    "$HOME/of80/.rlvenv/bin/python" -m pip freeze 2>/dev/null > "$TMPDIR/rlvenv-requirements.txt" \
-      && rclone copyto "$TMPDIR/rlvenv-requirements.txt" "$FILES_REMOTE/of80/.rlvenv-requirements.txt"
+    if "$HOME/.local/bin/uv" pip freeze --python "$HOME/of80/.rlvenv/bin/python" > "$TMPDIR/rlvenv-requirements.txt" 2>/dev/null \
+        && [ -s "$TMPDIR/rlvenv-requirements.txt" ]; then
+      rclone copyto "$TMPDIR/rlvenv-requirements.txt" "$FILES_REMOTE/of80/.rlvenv-requirements.txt"
+    else
+      echo "[$(date '+%F %T')] ⚠️ ~/of80/.rlvenv 패키지 목록을 못 떴다 — 파일 업로드는 끝났다" >&2
+    fi
   fi
 }
 
