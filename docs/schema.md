@@ -9,7 +9,7 @@
 
 | 테이블 | 내용 |
 |---|---|
-| `daily_bars` | 일봉 OHLCV + 거래대금. `source`='kiwoom'(상장 종목) / 'naver'(폐지 종목 백필 — 거래대금은 close×volume 근사) |
+| `daily_bars` | 일봉 OHLCV + 거래대금. `source`='kiwoom'(상장 종목) / 'naver'(폐지 종목 백필 — 거래대금은 close×volume 근사). **`trade_value` 는 백만원 단위다**(두 source 모두, `minute_bars.trade_value` 는 원) — 원으로 읽어 문턱이 1e6 배 틀어진 사고가 있다(daytrade-it volume_entry, 2026-10-09) |
 | `daily_bars_adjusted` | 액면분할 백조정 일봉. 평일 `daily_price_adjust` + 토요일 `weekly_price_adjust` 가 **전량 재계산**한다(back-adjust 는 종목별 전체 이력을 봐야 해서 증분이 불가능하다 — 실측 6분 23초 / 피크 RSS 5.2GB). `source` 는 `daily_bars` 에서 전파 |
 | `supply_demand` | 투자자별 순매매 **수량(주)** — 금액이 아니다(`amt_qty_tp="2"`). `flu_rt` 는 **키움이 준 등락률 × 100(bp)**: 175 = +1.75%. ⚠️ **2026-09-15 부터 전일 KRX 종가 대비가 아니다** — 키움의 기준가가 바뀌었다(005930 10-07: 종가 269,000 · 전일대비 −3,000 → 기준가 272,000, 그런데 전일 KRX 종가는 273,000). 그 전엔 종가 대비 수익률과 상관 0.9975 였고 그 뒤로는 80% 가 5bp 넘게 어긋난다. 출처 값을 그대로 두므로 **수익률은 `daily_bars_adjusted` 에서 계산할 것**(이 컬럼을 읽는 소비자는 2026-10-08 현재 없다). `natn`(국가)은 실측상 늘 0. `source`='kiwoom'(전체) / 'naver'(폐지 부분 백필 — 기관·외국인만, 개인·기관세부는 NULL → **지표마다 유니버스가 달라진다**) |
 | `short_selling` | 공매도 추이(수량·잔고·비율·평균가) |
