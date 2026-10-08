@@ -74,3 +74,22 @@ def test_upsert_news_articles_is_idempotent_on_rerun(tmp_path):
 
     ticker_rows = con.execute("SELECT article_id, ticker FROM news_article_tickers").fetchall()
     assert len(ticker_rows) == 1
+
+
+def test_drop_edited_keeps_first_version_and_still_updates_same_version(tmp_path):
+    """토스가 고친 기사(createdAt 이 바뀐 같은 id)는 새 행이 되지 않는다 — migrations/017 의 재발 방지."""
+    from collectors.news_toss import _drop_edited
+
+    con = connect(tmp_path / "t.db")
+    first = _article("toss:edited")
+    upsert_news_articles(con, [_article_record(first)])
+
+    edited = first.model_copy(update={"published_at": datetime(2026, 9, 5, 18, 0, 0), "title": "고친 제목"})
+    same = first.model_copy(update={"collected_at": datetime(2026, 9, 5, 12, 10, 0)})
+    fresh = _article("toss:new")
+
+    keep, skipped = _drop_edited(con, [edited, fresh])
+    assert [a.id for a in keep] == ["toss:new"] and skipped == 1
+
+    keep, skipped = _drop_edited(con, [same])
+    assert [a.id for a in keep] == ["toss:edited"] and skipped == 0   # 같은 판의 재수집은 그대로 갱신

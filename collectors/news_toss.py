@@ -18,12 +18,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from krx_news_client import TossScraper
 from krx_news_client.models.schemas import NewsArticle
 
-from .storage import connect, upsert_news_article_tickers, upsert_news_articles
+from .storage import connect, fetchall, upsert_news_article_tickers, upsert_news_articles
+
+_KST = timezone(timedelta(hours=9))
 
 
 def _article_record(article: NewsArticle) -> tuple:
@@ -50,6 +53,32 @@ def _dedupe(articles: list[NewsArticle]) -> list[NewsArticle]:
     return list({article.id: article for article in articles}.values())
 
 
+def _as_aware(value: Any) -> datetime:
+    t = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    return t if t.tzinfo else t.replace(tzinfo=_KST)
+
+
+def _drop_edited(con: Any, articles: list[NewsArticle]) -> tuple[list[NewsArticle], int]:
+    """이미 다른 published_at 으로 저장된 id 는 뺀다 — 먼저 본 판을 남긴다.
+
+    PK 가 (id, published_at) 라 토스가 기사를 고쳐 createdAt 이 바뀌면 그대로 upsert 할 때
+    같은 기사가 **새 행**이 된다(2026-09-10 ~ 10-08 실측 4건, migrations/017 이 정리).
+    나중 판은 lookahead 라 버린다. 같은 published_at 의 재수집은 그대로 갱신한다.
+    015 의 종목별 수집기(news_toss_company)와 같은 규칙이다.
+    """
+    ids = [a.id for a in articles]
+    stored: dict[str, set[datetime]] = {}
+    for i in range(0, len(ids), 500):
+        part = ids[i:i + 500]
+        ph = ",".join("?" * len(part))
+        for aid, pub in fetchall(con, f"SELECT id, published_at FROM news_articles WHERE id IN ({ph})",
+                                 tuple(part)):
+            stored.setdefault(aid, set()).add(_as_aware(pub))
+    keep = [a for a in articles
+            if a.id not in stored or _as_aware(a.published_at) in stored[a.id]]
+    return keep, len(articles) - len(keep)
+
+
 async def collect(con: Any) -> dict[str, int]:
     scraper = TossScraper()
     try:
@@ -57,12 +86,15 @@ async def collect(con: Any) -> dict[str, int]:
     finally:
         await scraper.close()
 
-    unique = _dedupe(articles)
+    unique, edited = _drop_edited(con, _dedupe(articles))
+    if edited:
+        print(f"⚠️ 토스가 고친 기사 {edited}건 — 먼저 저장된 판을 남기고 건너뜀", flush=True)
     article_rows = upsert_news_articles(con, [_article_record(a) for a in unique])
     ticker_rows = upsert_news_article_tickers(con, _ticker_records(unique))
     return {
         "fetched": len(articles),
         "unique": len(unique),
+        "edited_skipped": edited,
         "articles": article_rows,
         "tickers": ticker_rows,
     }

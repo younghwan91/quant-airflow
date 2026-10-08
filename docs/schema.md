@@ -85,6 +85,7 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 | `014_fix_collected_at_9h` | **데이터 정정** — `news_articles`·`disclosures` 의 `collected_at` 이 2026-09-11 이전 행(928·2,631)에서 9시간 일찍 저장돼 있던 것을 +9h. 원인은 krx-news-client 의 naive `datetime.now()`(그쪽 86cc785 에서 수정). 검증·롤백은 파일 하단 |
 | `015_news_company_feed` | `news_company_feed`·`news_company_feed_fetches` 신설, 토스 종목별 뉴스 아카이브(2023-03-16~, daytrade-it 파일)를 DB 로 이전 — 그전엔 아카이브 태그에 고정된 분리 워크트리의 비관리 크론이 파일에만 쌓았다. 기사 본체는 `news_articles` 에 같은 id 규칙으로 |
 | `016_article_judgments` | `judges`·`article_judgments` 신설 — 파일 네 곳에 흩어져 있던 기사 LLM 판정(4.5 유니버스 156,605·5.5 지속성 36,171 등)을 한 원장으로. `news_judgments` 는 실매매 경로라 그대로 |
+| `017_dedupe_news_articles_edited` | **데이터 정정** — `news_articles` 의 같은 id 두 행 4건(토스가 고쳐 createdAt 이 바뀐 기사를 daily_news 가 새 행으로 넣었다)에서 먼저 본 판만 남긴다. 같은 날 `news_toss.py` 도 "이미 다른 시각으로 있는 id 는 건너뛴다" 로 고쳐 재발을 막았다. 롤백은 파일 하단(10-08 core 덤프) |
 
 > ⚠️ 001 은 코드가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이 `daily_earnings` 가
 > 초록불이었던 건 비수기라 `rows=0` 이어서 DB 를 건드리기 전에 빠져나갔기 때문이지,
