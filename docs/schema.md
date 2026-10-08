@@ -26,6 +26,8 @@
 | `news_article_tickers` | `news_articles` 관련 종목 — `(article_id, ticker)` 정규화 테이블. 종목별 뉴스 전체 조회용. 토스가 기사에 태그한 종목(`stockCodes`)이라 대부분의 기사에 없다 |
 | `news_company_feed` | 토스 **종목별 피드**에 그 기사가 떴다 — `(article_id, code)`. 태그와 정의가 달라 위 표와 섞지 않는다. 연구의 "관련 종목·팬아웃" 이 이것이다. `inserted_article` = 이 쌍이 `news_articles` 행도 새로 만들었나(롤백 표시) |
 | `news_company_feed_fetches` | 종목별 수집 원장 `(code, run_started)` — `status` done/page_cap/failed, `oldest_at`(page_cap 이면 실제 하한). 피드는 1만 건까지만 줘서 대형주는 오래된 기사가 없다 — **"그날 0건" 과 "그날 못 받음" 을 이 원장으로 구분한다** |
+| `judges` | 기사 LLM 판정기 등록표 — 이름 하나 = 모델·system 프롬프트·user 템플릿·파라미터 한 벌(**바뀌면 새 이름**). 프롬프트 원문을 같이 저장해 재현한다. `owner_repo` 가 그 judge 의 행을 쓰는 유일한 레포 |
+| `article_judgments` | 기사 LLM 판정 원장 `(article_id, code, judge)` — 모든 트레이더 레포가 읽는다. `output` JSONB(judge 마다 형식이 다르다), 성공 판정은 덮어쓰지 않고 실패 행(`output` NULL)만 재시도로 바뀐다. `judged_at`(+`judged_at_exact`=FALSE 면 배치 제출 시각) — 백필 판정이 과거 시점 백테스트에 "그때 알던 것" 으로 섞이지 않게. 실매매 경로가 읽는 `news_judgments`(012)는 별개로 그대로 |
 
 ## 펀더멘털·마스터 (일반 테이블)
 
@@ -82,6 +84,7 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 | `013_news_judgments_confidence_judged_at` | `news_judgments`에 `confidence`(LLM 확신도 0~100)·`judged_at`(응답 시각, UTC) 추가 — scalp-it 세션 요청(오탐 필터링·레이턴시 측정용), 둘 다 nullable(013 이전 행은 소급 불가) |
 | `014_fix_collected_at_9h` | **데이터 정정** — `news_articles`·`disclosures` 의 `collected_at` 이 2026-09-11 이전 행(928·2,631)에서 9시간 일찍 저장돼 있던 것을 +9h. 원인은 krx-news-client 의 naive `datetime.now()`(그쪽 86cc785 에서 수정). 검증·롤백은 파일 하단 |
 | `015_news_company_feed` | `news_company_feed`·`news_company_feed_fetches` 신설, 토스 종목별 뉴스 아카이브(2023-03-16~, daytrade-it 파일)를 DB 로 이전 — 그전엔 아카이브 태그에 고정된 분리 워크트리의 비관리 크론이 파일에만 쌓았다. 기사 본체는 `news_articles` 에 같은 id 규칙으로 |
+| `016_article_judgments` | `judges`·`article_judgments` 신설 — 파일 네 곳에 흩어져 있던 기사 LLM 판정(4.5 유니버스 156,605·5.5 지속성 36,171 등)을 한 원장으로. `news_judgments` 는 실매매 경로라 그대로 |
 
 > ⚠️ 001 은 코드가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이 `daily_earnings` 가
 > 초록불이었던 건 비수기라 `rows=0` 이어서 DB 를 건드리기 전에 빠져나갔기 때문이지,

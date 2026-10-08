@@ -288,6 +288,40 @@ CREATE TABLE IF NOT EXISTS news_company_feed_fetches (
     PRIMARY KEY (code, run_started)
 );
 
+-- 기사 LLM 판정 원장(migrations/016 참고) — judge 하나 = 모델·프롬프트·파라미터 한 벌(바뀌면 새 이름),
+-- (기사, 종목, judge) 당 한 행, 성공 판정은 덮어쓰지 않는다. 각 레포는 자기 judge 행만 쓴다.
+CREATE TABLE IF NOT EXISTS judges (
+    judge          TEXT PRIMARY KEY,
+    model          TEXT NOT NULL,
+    system_sha256  TEXT NOT NULL,
+    system_prompt  TEXT NOT NULL,
+    user_template  TEXT NOT NULL,
+    params         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    output_schema  TEXT NOT NULL,
+    owner_repo     TEXT NOT NULL,
+    description    TEXT NOT NULL,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS article_judgments (
+    article_id            TEXT NOT NULL,
+    code                  TEXT NOT NULL,
+    judge                 TEXT NOT NULL REFERENCES judges(judge),
+    input_hash            TEXT NOT NULL,
+    output                JSONB,
+    error                 TEXT,
+    judged_at             TIMESTAMPTZ NOT NULL,
+    judged_at_exact       BOOLEAN NOT NULL,
+    batch_id              TEXT,
+    input_tokens          INTEGER,
+    cache_creation_tokens INTEGER,
+    cache_read_tokens     INTEGER,
+    output_tokens         INTEGER,
+    PRIMARY KEY (article_id, code, judge),
+    CHECK ((output IS NULL) <> (error IS NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_aj_judge ON article_judgments(judge);
+CREATE INDEX IF NOT EXISTS idx_aj_code ON article_judgments(code);
+
 -- DART 공시 히스토리(migrations/011 참고) — krx-news-client의 DartScraper가
 -- DART API의 stock_code를 그대로 티커로 주므로, news_articles와 달리 정규화
 -- 테이블 없이 ticker 컬럼 하나로 충분하다(공시 1건=발행사 1곳).
