@@ -98,6 +98,7 @@ def build_sd_records(code: str, resp: dict, cutoff: str) -> list[tuple]:
                 date,
                 # cur_prc 의 부호는 전일대비 등락 방향이므로 절댓값(가격)으로 저장.
                 abs(to_int(row.get("cur_prc"))),
+                # 키움 등락률 그대로. 2026-09-15 부터 키움 기준가가 전일 KRX 종가가 아니다(docs/schema.md) — 수익률로 쓰지 말 것.
                 to_float(row.get("flu_rt")),
                 to_int(row.get("acc_trde_qty")),
                 *[to_int(row.get(src)) for src in INVESTOR_COLUMNS.values()],

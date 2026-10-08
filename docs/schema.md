@@ -11,7 +11,7 @@
 |---|---|
 | `daily_bars` | 일봉 OHLCV + 거래대금. `source`='kiwoom'(상장 종목) / 'naver'(폐지 종목 백필 — 거래대금은 close×volume 근사) |
 | `daily_bars_adjusted` | 액면분할 백조정 일봉. 평일 `daily_price_adjust` + 토요일 `weekly_price_adjust` 가 **전량 재계산**한다(back-adjust 는 종목별 전체 이력을 봐야 해서 증분이 불가능하다 — 실측 6분 23초 / 피크 RSS 5.2GB). `source` 는 `daily_bars` 에서 전파 |
-| `supply_demand` | 투자자별 순매매 **수량(주)** — 금액이 아니다(`amt_qty_tp="2"`). `flu_rt` 는 **등락률 × 100(bp)**: 175 = +1.75%. `natn`(국가)은 실측상 늘 0. `source`='kiwoom'(전체) / 'naver'(폐지 부분 백필 — 기관·외국인만, 개인·기관세부는 NULL → **지표마다 유니버스가 달라진다**) |
+| `supply_demand` | 투자자별 순매매 **수량(주)** — 금액이 아니다(`amt_qty_tp="2"`). `flu_rt` 는 **키움이 준 등락률 × 100(bp)**: 175 = +1.75%. ⚠️ **2026-09-15 부터 전일 KRX 종가 대비가 아니다** — 키움의 기준가가 바뀌었다(005930 10-07: 종가 269,000 · 전일대비 −3,000 → 기준가 272,000, 그런데 전일 KRX 종가는 273,000). 그 전엔 종가 대비 수익률과 상관 0.9975 였고 그 뒤로는 80% 가 5bp 넘게 어긋난다. 출처 값을 그대로 두므로 **수익률은 `daily_bars_adjusted` 에서 계산할 것**(이 컬럼을 읽는 소비자는 2026-10-08 현재 없다). `natn`(국가)은 실측상 늘 0. `source`='kiwoom'(전체) / 'naver'(폐지 부분 백필 — 기관·외국인만, 개인·기관세부는 NULL → **지표마다 유니버스가 달라진다**) |
 | `short_selling` | 공매도 추이(수량·잔고·비율·평균가) |
 | `credit_balance` | 신용잔고(신규·상환·잔고·비율) |
 | `sector_index` | 업종지수 OHLCV |
@@ -78,6 +78,7 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 | `011_disclosures` | `disclosures` 신설 — krx-news-client(DART) 공시를 백테스팅+실매매용으로 영속 저장 |
 | `012_news_judgments` | `news_judgments` 신설 — LLM 뉴스/공시 판단, 장전/장중 DAG가 채움 |
 | `013_news_judgments_confidence_judged_at` | `news_judgments`에 `confidence`(LLM 확신도 0~100)·`judged_at`(응답 시각, UTC) 추가 — scalp-it 세션 요청(오탐 필터링·레이턴시 측정용), 둘 다 nullable(013 이전 행은 소급 불가) |
+| `014_fix_collected_at_9h` | **데이터 정정** — `news_articles`·`disclosures` 의 `collected_at` 이 2026-09-11 이전 행(928·2,631)에서 9시간 일찍 저장돼 있던 것을 +9h. 원인은 krx-news-client 의 naive `datetime.now()`(그쪽 86cc785 에서 수정). 검증·롤백은 파일 하단 |
 
 > ⚠️ 001 은 코드가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이 `daily_earnings` 가
 > 초록불이었던 건 비수기라 `rows=0` 이어서 DB 를 건드리기 전에 빠져나갔기 때문이지,
