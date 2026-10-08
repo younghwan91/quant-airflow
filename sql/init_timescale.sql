@@ -264,6 +264,30 @@ CREATE TABLE IF NOT EXISTS news_article_tickers (
 );
 CREATE INDEX IF NOT EXISTS idx_nat_ticker ON news_article_tickers(ticker);
 
+-- 토스 종목별 뉴스 피드(migrations/015 참고) — 기사 본체는 news_articles 에 있고(같은
+-- 기사면 daily_news 와 같은 id), 여기는 "어느 종목 피드에 떴나"(관련 종목·팬아웃)와
+-- 종목별 수집 원장(page_cap 하한, "0건" 과 "못 받음" 의 구분)이다.
+CREATE TABLE IF NOT EXISTS news_company_feed (
+    article_id       TEXT NOT NULL,
+    code             TEXT NOT NULL,
+    first_seen_at    TIMESTAMPTZ NOT NULL,
+    source           TEXT NOT NULL,      -- 'toss_company_feed' | 'toss_archive_import'
+    inserted_article BOOLEAN NOT NULL,   -- 이 쌍이 news_articles 행도 새로 만들었나(롤백 표시)
+    PRIMARY KEY (article_id, code)
+);
+CREATE INDEX IF NOT EXISTS idx_ncf_code ON news_company_feed(code);
+CREATE TABLE IF NOT EXISTS news_company_feed_fetches (
+    code        TEXT NOT NULL,
+    run_started TIMESTAMPTZ NOT NULL,
+    since       DATE NOT NULL,
+    status      TEXT NOT NULL,           -- done | page_cap | failed
+    oldest_at   TIMESTAMPTZ,
+    n_rows      INTEGER NOT NULL,
+    finished_at TIMESTAMPTZ NOT NULL,
+    source      TEXT NOT NULL,
+    PRIMARY KEY (code, run_started)
+);
+
 -- DART 공시 히스토리(migrations/011 참고) — krx-news-client의 DartScraper가
 -- DART API의 stock_code를 그대로 티커로 주므로, news_articles와 달리 정규화
 -- 테이블 없이 ticker 컬럼 하나로 충분하다(공시 1건=발행사 1곳).

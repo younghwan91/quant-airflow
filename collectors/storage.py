@@ -249,6 +249,27 @@ CREATE TABLE IF NOT EXISTS news_article_tickers (
     PRIMARY KEY (article_id, ticker)
 );
 CREATE INDEX IF NOT EXISTS idx_nat_ticker ON news_article_tickers(ticker);
+-- 토스 종목별 뉴스 피드(migrations/015) — "어느 종목 피드에 떴나" 와 종목별 수집 원장.
+CREATE TABLE IF NOT EXISTS news_company_feed (
+    article_id       TEXT NOT NULL,
+    code             TEXT NOT NULL,
+    first_seen_at    TEXT NOT NULL,
+    source           TEXT NOT NULL,
+    inserted_article INTEGER NOT NULL,
+    PRIMARY KEY (article_id, code)
+);
+CREATE INDEX IF NOT EXISTS idx_ncf_code ON news_company_feed(code);
+CREATE TABLE IF NOT EXISTS news_company_feed_fetches (
+    code        TEXT NOT NULL,
+    run_started TEXT NOT NULL,
+    since       TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    oldest_at   TEXT,
+    n_rows      INTEGER NOT NULL,
+    finished_at TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    PRIMARY KEY (code, run_started)
+);
 -- krx-news-client(pip)의 DartScraper.scrape_disclosures()로 수집한 DART 공시
 -- (migrations/011 참고). NewsArticle과 필드가 달라(회사·티커·공시유형) 별도 테이블로
 -- 둔다 — ticker가 DART API의 stock_code를 그대로 쓰므로 news_articles와 달리
@@ -798,6 +819,33 @@ def upsert_news_article_tickers(con: Any, records: list[tuple]) -> int:
     return _upsert(
         con, "news_article_tickers", _NEWS_ARTICLE_TICKERS_COLS, records,
         pk_cols=("article_id", "ticker"),
+    )
+
+
+_NEWS_COMPANY_FEED_COLS = ["article_id", "code", "first_seen_at", "source", "inserted_article"]
+
+
+def insert_news_company_feed(con: Any, records: list[tuple]) -> int:
+    """news_company_feed 쌍을 넣는다 — 이미 있는 쌍은 그대로 둔다(처음 본 시각을 지킨다).
+
+    tuples ordered by ``_NEWS_COMPANY_FEED_COLS``. 반환값은 실제로 새로 들어간 행 수.
+    """
+    return _upsert(
+        con, "news_company_feed", _NEWS_COMPANY_FEED_COLS, records,
+        pk_cols=("article_id", "code"), on_conflict="nothing",
+    )
+
+
+_NEWS_COMPANY_FEED_FETCHES_COLS = [
+    "code", "run_started", "since", "status", "oldest_at", "n_rows", "finished_at", "source",
+]
+
+
+def upsert_news_company_feed_fetches(con: Any, records: list[tuple]) -> int:
+    """종목별 수집 원장 행(tuples ordered by ``_NEWS_COMPANY_FEED_FETCHES_COLS``)."""
+    return _upsert(
+        con, "news_company_feed_fetches", _NEWS_COMPANY_FEED_FETCHES_COLS, records,
+        pk_cols=("code", "run_started"),
     )
 
 
