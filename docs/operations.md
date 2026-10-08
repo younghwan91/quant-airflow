@@ -34,7 +34,7 @@ DB 밖 파일도 19:00 에 함께 올라간다(2026-10-08~, `sync_host_files`): 
 | `quant-airflow-backup/ticks_daily/<날짜>/` | 그날 틱·호가 csv, 평일 16:15 | 최신 통짜 날짜 이전은 지운다 |
 | `quant-airflow-backup/gptquant/` | gptquant DB 덤프, 매일 | 최근 30개 |
 | `quant-airflow-backup/sharadar/` | 구독 해지 전 마지막 duckdb(2026-09-13)·벌크 원본(2026-08-11) | 고정 |
-| `simnode-files/{daytrade-it-data,scalp-it-data,of80}/` | DB 밖 파일 거울(삭제는 안 따라감), 매일 | 최신본만 |
+| `simnode-files/{daytrade-it-data,scalp-it-data,swing-it-data,of80}/` | DB 밖 파일 거울(삭제는 안 따라감), 매일. swing-it 은 쌍 파일(`eval/persistence_swing/pairs`, DB 에서 재생성)을 뺀다 | 최신본만 |
 | `simnode-files/trader-archive/` | 은퇴한 trader 의 남은 자료 묶음·크레덴셜(README 있음) | 고정 |
 
 덤프는 전부 **누적 스냅샷**이다(DB 에 보존정책이 없어 오래된 행이 안 지워진다) — 새 덤프가 옛

@@ -234,6 +234,9 @@ sync_host_files() {
   local -a specs=(
     "daytrade-it-data|$REPO/../daytrade-it/data"
     "scalp-it-data|$REPO/../scalp-it/data"
+    # swing-it: Opus 정답 라벨(labelset)·프롬프트·판정 작업 파일. 판정 자체는 DB(article_judgments)에도
+    # 있다. 쌍 파일(eval/persistence_swing/pairs, 1.1GB)은 DB 에서 다시 만든다 — 바이트 동일 실측(2026-10-08).
+    "swing-it-data|$REPO/../swing-it/data"
     "of80|$HOME/of80"
   )
   for spec in "${specs[@]}"; do
@@ -244,6 +247,7 @@ sync_host_files() {
     fi
     rclone copy "$src" "$FILES_REMOTE/$name" \
       --exclude ".rlvenv/**" --exclude "__pycache__/**" --exclude "*.pyc" \
+      --exclude "eval/persistence_swing/pairs/**" \
       --transfers 8 --checkers 16 --fast-list
     echo "[$(date '+%F %T')] $name 동기화 완료 — $FILES_REMOTE/$name"
   done
