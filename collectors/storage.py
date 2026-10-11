@@ -308,6 +308,14 @@ CREATE TABLE IF NOT EXISTS news_judgments (
 );
 CREATE INDEX IF NOT EXISTS idx_news_judgments_ticker ON news_judgments(ticker);
 CREATE INDEX IF NOT EXISTS idx_news_judgments_knowledge_date ON news_judgments(knowledge_date);
+CREATE TABLE IF NOT EXISTS news_judge_batches (
+    batch_id        TEXT PRIMARY KEY,   -- Message Batches id — create 직후 곧바로 기록(019)
+    model_id        TEXT NOT NULL,
+    prompt_version  TEXT NOT NULL,
+    submitted_at    TEXT NOT NULL,      -- UTC ISO
+    items           TEXT NOT NULL,      -- JSON [[source_type, source_id, ticker], ...] — custom_id r0, r1, … 순서
+    collected_at    TEXT                -- NULL = 아직 수거 안 함
+);
 """
 
 

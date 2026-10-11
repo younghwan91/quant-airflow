@@ -16,23 +16,29 @@ confidence/judged_at 두 필드는 scalp-it 세션이 2026-09-06 세션간 문�
 주장하는 값이 아니다 — knowledge_date가 날짜 단위라 초 단위 레이턴시
 측정에 못 쓰인다).
 
-순수 함수(build_prompt/parse_judgment)와 네트워크 I/O(judge_item)를
+순수 함수(build_prompt/build_request/parse_judgment)와 네트워크 I/O(ClaudeBatchAPI)를
 분리하는 이 레포의 관례(dart_earnings.py)를 따른다 — 전자는 이 파일
-단독으로, 후자는 실제 Claude 호출을 mock한 테스트로 검증한다.
+단독으로, 후자는 BatchAPI 를 가짜로 바꾼 테스트로 검증한다.
+
+v2(2026-10-12): Haiku 5.5 + 프롬프트 캐싱 + Message Batches API — 기사 LLM 분석의 의무
+규칙이다(CLAUDE.md §3). 동기 messages.create 루프로 되돌리지 않는다. 배치는 50% 할인,
+고정 지시문 캐시 읽기는 0.1배다. 배치 id 는 ``news_judge_batches`` 원장에 남아 태스크가
+죽거나 못 기다려도 다음 실행이 수거한다.
 
 CLI:
-    python -m collectors.news_judge --db <DSN>
+    python -m collectors.news_judge --db <DSN> [--poll-timeout 3600]
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Iterable, Protocol
 
-from .storage import fetchall, upsert_news_judgments
+from .storage import execute, fetchall, upsert_news_judgments
 
 EVENT_TYPES: tuple[str, ...] = (
     "실적", "유상증자", "자사주", "최대주주변경", "소송", "가이던스", "규제", "기타",
@@ -45,6 +51,17 @@ PROMPT_VERSION = "v2"
 #: 판단 모델. 2026-10-12 부터 Haiku 5.5 만 쓴다(4.5 대비 단가 1/10). DAG 는 --model-id 를
 #: 넘기지 않으므로 이 값이 운영 모델이다.
 MODEL_ID = "claude-haiku-5-5"
+
+MAX_TOKENS = 512
+
+#: 배치 하나를 기다리는 최대 시간. Batch API 는 24시간 안을 약속할 뿐이지만 수백 건은 보통
+#: 수 분이다(실측 전 값). 60분이면 08:45 → 09:45, 10:05 → 11:05 로 다음 실행과 안 겹친다.
+#: 못 기다린 배치는 원장에 남고 다음 실행(08:45/10:05/16:05)이 먼저 수거한다.
+POLL_TIMEOUT_S = 60 * 60
+POLL_INTERVAL_S = 30
+
+#: 수거 때 합산해 찍는 실제 과금 usage — 캐시가 걸렸는지(cache_read)를 여기서 본다.
+USAGE_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
 
 #: 최근 며칠 내 같은 (ticker, event_type) 판단이 있으면 재탕 후보로 본다.
 #: 이벤트 유형별로 다를 수 있다는 걸 알지만(유상증자는 실적보다 오래
@@ -200,64 +217,8 @@ def parse_judgment(llm_response: str) -> Judgment | None:
     )
 
 
-def judge_item(
-    generate: Callable[[str], str], item: dict, prior_context: list[dict],
-) -> Judgment | None:
-    """프롬프트 생성 → LLM 호출(generate) → 파싱. generate는 텍스트→텍스트 함수라
-    제공사가 뭐든(Claude든 다른 곳이든) 이 하나로 국한된다(model_id는 호출부가
-    별도로 남긴다)."""
-    prompt = build_prompt(item, prior_context)
-    response = generate(prompt)
-    return parse_judgment(response)
-
-
-def _claude_generate(model_id: str, api_key: str) -> Callable[[str], str]:
-    """실제 Claude API를 부르는 generate 함수를 만든다.
-
-    Gemini(2.5 Flash)에서 전환(2026-09-06) — scalp-it 세션 요청으로 가격·
-    효과성을 조사한 결과, 이 워크로드(하루 수십~수백 건) 규모에선 제공사간
-    토큰 단가 차이가 월 몇 달러 수준이라 무의미하고, scalp-it이 요구한
-    "오탐 최소화 우선"에는 구조화 출력 신뢰도가 더 중요하다는 결론이었다.
-    모델 교체는 model_id가 행마다 남으니 설정값 변경이지 재설계가 아니다
-    (docs/superpowers/specs/2026-09-06-news-llm-judgments-design.md).
-
-    SDK: 공식 ``anthropic`` 패키지(PyPI, 2026-09 기준 1.x). 공식 사용 예
-    (https://github.com/anthropics/anthropic-sdk-python):
-
-        import anthropic
-        client = anthropic.Anthropic(api_key=...)
-        response = client.messages.create(model=..., max_tokens=..., messages=[...])
-        response.content[0].text
-
-    Haiku 5.5(2026-10-12 전환)는 thinking 이 **기본으로 켜져** 있어 명시적으로
-    끈다 — 안 끄면 max_tokens 가 생각에 먹혀 빈 응답이 난다(swing-it 파일럿
-    2026-10-08: 500건 중 320건 빈 응답). 끄는 건 effort high 이하에서만 되는데
-    기본 effort 가 medium 이라 그대로 된다. temperature 는 5.5 가 받지 않는다.
-    max_tokens=512는 rationale(한두 문장) + related_codes 배열을 포함한 JSON
-    응답에 여유 있게 맞춘 값이다.
-
-    고정 지시문(:data:`SYSTEM_PROMPT`)은 cache_control 블록으로 보낸다 — 5.5 의
-    캐시 최소 접두는 512 토큰이고 지시문이 그 언저리라, 실제로 걸리는지는
-    ``usage.cache_read_input_tokens`` 로 확인한다(안 걸려도 오류 없이 정가 과금일 뿐).
-    """
-    import anthropic  # noqa: PLC0415 — optional dep, only needed for this path
-
-    client = anthropic.Anthropic(api_key=api_key)
-    system = [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
-
-    def generate(prompt: str) -> str:
-        response = client.messages.create(
-            model=model_id, max_tokens=512, system=system,
-            thinking={"type": "disabled"},
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return next(block.text for block in response.content if block.type == "text")
-
-    return generate
-
-
 def _pending_items(con: Any, since: str) -> list[tuple[str, str, dict]]:
-    """(source_type, source_id, item-dict) — 아직 v1 판단이 없는 것만.
+    """(source_type, source_id, item-dict) — 아직 현재 PROMPT_VERSION 판단이 없는 것만.
 
     ``since``는 ISO 날짜(``YYYY-MM-DD``, ``published_at``이 저장된
     ``datetime.isoformat()`` 형식과 같은 자릿수 규칙 — news_dart.py/news_toss.py의
@@ -326,71 +287,194 @@ def _prior_context(con: Any, ticker: str, cutoff: str) -> list[dict]:
             for knowledge_date, rationale in rows]
 
 
+def build_request(custom_id: str, prompt: str, model_id: str) -> dict:
+    """Message Batches 요청 한 건.
+
+    고정 지시문(:data:`SYSTEM_PROMPT`)은 cache_control 블록 — 같은 배치 안 요청들이 이 접두를
+    공유해 캐시 읽기(0.1배)로 과금된다. 5.5 의 캐시 최소 접두는 512 토큰이고 지시문이 그
+    언저리라, 실제로 걸리는지는 수거 때 찍는 ``cache_read`` 합계로 확인한다(안 걸려도 오류
+    없이 정가일 뿐). Haiku 5.5 는 thinking 이 **기본으로 켜져** 있어 끈다 — 안 끄면
+    max_tokens 가 생각에 먹혀 빈 응답이 난다(swing-it 파일럿 2026-10-08: 500건 중 320건).
+    temperature 는 5.5 가 받지 않는다. max_tokens=512 는 rationale(한두 문장) + related_codes
+    배열을 포함한 JSON 응답에 여유 있게 맞춘 값이다.
+    """
+    return {
+        "custom_id": custom_id,
+        "params": {
+            "model": model_id,
+            "max_tokens": MAX_TOKENS,
+            "system": [{"type": "text", "text": SYSTEM_PROMPT,
+                        "cache_control": {"type": "ephemeral"}}],
+            "thinking": {"type": "disabled"},
+            "messages": [{"role": "user", "content": prompt}],
+        },
+    }
+
+
+@dataclass(frozen=True)
+class BatchResult:
+    custom_id: str
+    text: str | None          # None = errored/expired/canceled — 다음 실행이 다시 판단한다
+    usage: dict[str, int]
+
+
+class BatchAPI(Protocol):
+    def submit(self, requests: list[dict]) -> str: ...
+    def ended_at(self, batch_id: str) -> str | None: ...   # None = 아직 처리 중
+    def results(self, batch_id: str) -> Iterable[BatchResult]: ...
+
+
+class ClaudeBatchAPI:
+    """공식 ``anthropic`` SDK 의 Message Batches(``client.messages.batches``).
+
+    **create 는 재시도하지 않는다**(``max_retries=0``) — 5xx·연결 오류 뒤에도 배치가 실제로
+    생겼을 수 있어, 재시도는 같은 기사를 두 번 과금한다(swing-it judge.py 의 SubmitUncertain 과
+    같은 원칙). 실패하면 태스크가 실패하고, 다음 실행이 원장에 없는 기사만 다시 낸다.
+    조회(retrieve·results)는 SDK 기본 재시도를 그대로 쓴다 — 읽기는 과금이 없다.
+    """
+
+    def __init__(self, api_key: str) -> None:
+        import anthropic  # noqa: PLC0415 — optional dep, only needed for this path
+
+        self._client = anthropic.Anthropic(api_key=api_key)
+
+    def submit(self, requests: list[dict]) -> str:
+        return self._client.with_options(max_retries=0).messages.batches.create(
+            requests=requests).id
+
+    def ended_at(self, batch_id: str) -> str | None:
+        batch = self._client.messages.batches.retrieve(batch_id)
+        if batch.processing_status != "ended":
+            return None
+        return batch.ended_at.astimezone(timezone.utc).isoformat()
+
+    def results(self, batch_id: str) -> Iterable[BatchResult]:
+        for r in self._client.messages.batches.results(batch_id):
+            if r.result.type != "succeeded":
+                yield BatchResult(r.custom_id, None, {})
+                continue
+            message = r.result.message
+            text = next((b.text for b in message.content if b.type == "text"), None)
+            usage = {k: getattr(message.usage, k, 0) or 0 for k in USAGE_FIELDS}
+            yield BatchResult(r.custom_id, text, usage)
+
+
+def _open_batches(con: Any) -> list[tuple[str, str, str, list]]:
+    """원장에서 아직 수거하지 않은 배치 — (batch_id, model_id, prompt_version, items)."""
+    rows = fetchall(con,
+        "SELECT batch_id, model_id, prompt_version, items FROM news_judge_batches "
+        "WHERE collected_at IS NULL ORDER BY submitted_at")
+    # Postgres 는 items 가 JSONB 라 psycopg2 가 이미 list 로 준다, sqlite 는 TEXT.
+    return [(b, m, v, items if isinstance(items, list) else json.loads(items))
+            for b, m, v, items in rows]
+
+
+def _collect_ended(con: Any, api: BatchAPI, today: str, stats: dict[str, int]) -> None:
+    """끝난 배치의 결과를 news_judgments 에 쓰고 원장에 수거 시각을 찍는다.
+
+    쓰고 나서 찍는다 — 그 사이에 죽으면 다음 실행이 같은 배치를 다시 수거하는데,
+    upsert 가 ``on_conflict="nothing"`` 이라 같은 판단이 두 번 들어가지 않는다.
+    judged_at = 배치 종료 시각(API 가 준 값) — 결과가 실제로 존재하게 된 시각이다.
+    """
+    for batch_id, model_id, prompt_version, items in _open_batches(con):
+        ended_at = api.ended_at(batch_id)
+        if ended_at is None:
+            continue
+        rows = []
+        for r in api.results(batch_id):
+            source_type, source_id, ticker = items[int(r.custom_id.removeprefix("r"))]
+            for k in USAGE_FIELDS:
+                stats[k] += r.usage.get(k, 0)
+            if r.text is None:
+                stats["api_failures"] += 1
+                continue
+            j = parse_judgment(r.text)
+            if j is None:
+                stats["parse_failures"] += 1
+                continue
+            rows.append((
+                source_type, source_id, ticker, j.event_type,
+                j.sentiment_direction, json.dumps(j.related_codes, ensure_ascii=False),
+                j.is_stale_repeat, j.first_seen_date, j.price_impact_likely,
+                j.rationale, model_id, prompt_version, today, j.confidence, ended_at,
+            ))
+        if rows:
+            upsert_news_judgments(con, rows)
+        stats["judged"] += len(rows)
+        execute(con, "UPDATE news_judge_batches SET collected_at = ? WHERE batch_id = ?",
+                (datetime.now(timezone.utc).isoformat(), batch_id))
+
+
 def collect(
-    con: Any, generate: Callable[[str], str], *, model_id: str,
-    today: str | None = None,
+    con: Any, api: BatchAPI, *, model_id: str, today: str | None = None,
+    poll_timeout_s: float = POLL_TIMEOUT_S, poll_interval_s: float = POLL_INTERVAL_S,
+    sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, int]:
-    """재개 가능한 판단 루프. 반환: {"target", "judged", "parse_failures", "api_failures"}.
+    """지난 배치 수거 → 새 기사 배치 제출 → 끝날 때까지(최대 ``poll_timeout_s``) 기다려 수거.
 
-    ``today``는 이 레포 관례대로 압축형 ``YYYYMMDD``(예: ``dart_earnings.py``의
-    ``today = datetime.now().strftime("%Y%m%d")``) — DATE 컬럼(Postgres)도
-    이 포맷을 그대로 받는다(``earnings.knowledge_date``와 동일 선례).
+    반환 stats: target(이번에 낸 기사 수)·judged·parse_failures·api_failures·in_flight(못
+    기다리고 남긴 기사 수 — 다음 실행이 먼저 수거한다)와 usage 토큰 합계.
 
-    건마다 즉시 upsert한다(끝에 몰아쓰지 않는다) — 중간에 프로세스가 죽어도
-    이미 판단한 건을 잃지 않고, 같은 런 안에서도 ``_prior_context``가 방금
-    쓴 판단을 바로 볼 수 있다(``is_stale_repeat`` 판별의 전제).
+    ``today``는 이 레포 관례대로 압축형 ``YYYYMMDD`` — knowledge_date 는 **수거한 날**이다
+    (어제 낸 배치를 오늘 수거하면 오늘 안 것). 늦게 잡을 뿐 앞당기지 않는다(CLAUDE.md §3).
+
+    배치 id 는 create 가 돌아오자마자 원장(``news_judge_batches``)에 쓴다 — 이후 어디서
+    죽어도(재시도 포함) 다음 실행이 그 배치를 알고, 그 안의 기사를 다시 내지 않는다.
+
+    v1(동기 루프)과 달라진 점: 같은 배치 안 기사끼리는 서로의 판단을 ``_prior_context`` 로
+    못 본다 — 같은 날 같은 종목의 재탕은 ``is_stale_repeat`` 로 덜 잡힌다. 이전 실행들의
+    판단은 그대로 보인다.
     """
     today = today or datetime.now().strftime("%Y%m%d")
     today_dt = datetime.strptime(today, "%Y%m%d")
     cutoff = (today_dt - timedelta(days=STALE_LOOKBACK_DAYS)).strftime("%Y%m%d")
-    # v1은 새로 들어오는 항목만 판단한다(스펙 "백필 범위") — since는
-    # published_at(ISO datetime 문자열)과 문자열 비교되므로 대시 포함 ISO
-    # 날짜(YYYY-MM-DD)여야 한다.
+    # 새로 들어오는 항목만 판단한다(스펙 "백필 범위") — since는 published_at(ISO datetime
+    # 문자열)과 문자열 비교되므로 대시 포함 ISO 날짜(YYYY-MM-DD)여야 한다.
     since = (today_dt - timedelta(days=PENDING_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
-    targets = _pending_items(con, since)
-    judged = parse_failures = api_failures = 0
-    for source_type, source_id, item in targets:
-        prior = _prior_context(con, item["ticker"], cutoff)
-        # judge_item(generate, item, prior)를 통째로 감싸지 않는다 —
-        # build_prompt의 버그(예: item에 키 누락)까지 "API실패"로 잘못
-        # 집계되면 재시도만 반복되고 진짜 원인이 안 드러난다. generate
-        # 호출(네트워크 I/O)만 예외를 잡는다; parse_judgment는 설계상
-        # 예외를 던지지 않는다(위 docstring 참고).
-        prompt = build_prompt(item, prior)
-        try:
-            response = generate(prompt)
-        except Exception:
-            api_failures += 1
-            continue
-        # generate()가 돌아온 직후를 judged_at으로 찍는다 — LLM이 스스로
-        # 주장하는 시각이 아니라 시스템이 관측한 시각이어야 scalp-it이
-        # 요청한 "published_at 대비 실제 레이턴시" 측정이 신뢰할 수 있다.
-        judged_at = datetime.now(timezone.utc).isoformat()
-        j = parse_judgment(response)
-        if j is None:
-            parse_failures += 1
-            continue
-        upsert_news_judgments(con, [(
-            source_type, source_id, item["ticker"], j.event_type,
-            j.sentiment_direction, json.dumps(j.related_codes, ensure_ascii=False),
-            j.is_stale_repeat, j.first_seen_date, j.price_impact_likely,
-            j.rationale, model_id, PROMPT_VERSION, today, j.confidence, judged_at,
-        )])
-        judged += 1
-    return {
-        "target": len(targets), "judged": judged,
-        "parse_failures": parse_failures, "api_failures": api_failures,
-    }
+    stats = dict.fromkeys(
+        ("target", "judged", "parse_failures", "api_failures", "in_flight", *USAGE_FIELDS), 0)
+
+    _collect_ended(con, api, today, stats)   # 지난 실행이 못 기다린 배치부터
+
+    in_flight = {tuple(it) for *_, items in _open_batches(con) for it in items}
+    targets = [(st, sid, item) for st, sid, item in _pending_items(con, since)
+               if (st, sid, item["ticker"]) not in in_flight]
+    if targets:
+        requests, items = [], []
+        for i, (source_type, source_id, item) in enumerate(targets):
+            prior = _prior_context(con, item["ticker"], cutoff)
+            requests.append(build_request(f"r{i}", build_prompt(item, prior), model_id))
+            items.append([source_type, source_id, item["ticker"]])
+        batch_id = api.submit(requests)
+        execute(con,
+            "INSERT INTO news_judge_batches (batch_id, model_id, prompt_version, submitted_at, items) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (batch_id, model_id, PROMPT_VERSION, datetime.now(timezone.utc).isoformat(),
+             json.dumps(items, ensure_ascii=False)))
+        stats["target"] = len(targets)
+
+    deadline = clock() + poll_timeout_s
+    while True:
+        _collect_ended(con, api, today, stats)
+        con.commit()   # 폴링 동안 psycopg2 트랜잭션을 열어두지 않는다(idle in transaction)
+        if not _open_batches(con) or clock() >= deadline:
+            break
+        sleep(poll_interval_s)
+    stats["in_flight"] = sum(len(items) for *_, items in _open_batches(con))
+    con.commit()
+    return stats
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="뉴스/공시 LLM 판단")
+    ap = argparse.ArgumentParser(description="뉴스/공시 LLM 판단 (Message Batches)")
     ap.add_argument("--db", default=None, help="DSN (postgresql://... 또는 sqlite 경로)")
-    ap.add_argument("--model-id", default=MODEL_ID,
-                    help="Claude 모델 ID (anthropic SDK, client.messages.create)")
+    ap.add_argument("--model-id", default=MODEL_ID, help="Claude 모델 ID — Haiku 5.5 만 쓴다")
+    ap.add_argument("--poll-timeout", type=float, default=POLL_TIMEOUT_S,
+                    help="배치를 기다리는 최대 초(못 기다린 배치는 다음 실행이 수거)")
     args = ap.parse_args()
 
     import os
+
     from .storage import connect
 
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -398,12 +482,15 @@ def main() -> int:
         raise SystemExit("환경변수 ANTHROPIC_API_KEY 필요")
 
     con = connect(args.db)
-    generate = _claude_generate(args.model_id, api_key)
-    stats = collect(con, generate, model_id=args.model_id)
+    stats = collect(con, ClaudeBatchAPI(api_key), model_id=args.model_id,
+                    poll_timeout_s=args.poll_timeout)
     con.close()
-    print(f"대상 {stats['target']}건 | 판단 {stats['judged']}건 | "
-          f"파싱실패 {stats['parse_failures']}건 | "
-          f"API실패 {stats['api_failures']}건", flush=True)
+    print(f"제출 {stats['target']}건 | 판단 {stats['judged']}건 | "
+          f"파싱실패 {stats['parse_failures']}건 | API실패 {stats['api_failures']}건 | "
+          f"진행중 {stats['in_flight']}건", flush=True)
+    print("usage: " + " ".join(f"{k}={stats[k]}" for k in USAGE_FIELDS), flush=True)
+    if stats["in_flight"]:
+        print(f"⚠️ 배치 {stats['in_flight']}건을 못 기다렸다 — 다음 실행이 먼저 수거한다", flush=True)
     if stats["api_failures"] > 0:
         return 1
     return 0

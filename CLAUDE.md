@@ -63,6 +63,15 @@
   전부 틀렸던 사고가 있다(migration 008 ③). **틀린 값보다 없는 값이 낫다.**
 - 쓰는 창(`--daily-days` 등)은 압축 경계(30일) 안에 둔다. 넘기면 upsert 마다
   압축해제→갱신→재압축이 돈다.
+- **기사·공시 LLM 분석은 Haiku 5.5 + 프롬프트 캐싱 + Batch API — 셋 다 의무다**
+  (2026-10-12 사용자 규칙). 모델은 `claude-haiku-5-5` 만, 고정 지시문은
+  `cache_control` 붙은 `system` 으로(기사 **뒤에** 두면 접두가 매번 달라 캐시가 안
+  걸린다), `thinking: disabled`·temperature 없음, 동기 `messages.create` 루프 대신
+  Message Batches. 참고 구현은 `collectors/news_judge.py`(배치 원장
+  `news_judge_batches` — create 는 재시도하지 않는다) 와 swing-it
+  `src/swing_it/news/judge.py`. Haiku 4.5 판정은 migration 018 로 `legacy` 스키마에
+  보관했다 — 운영 테이블로 되돌리지 않는다. 캐시가 실제로 걸렸는지는 usage 의
+  `cache_read_input_tokens` 로 본다(5.5 최소 접두 512토큰).
 
 ## 4. DAG 규약
 

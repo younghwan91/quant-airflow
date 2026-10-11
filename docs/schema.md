@@ -38,6 +38,7 @@
 | `delisted_stocks` | 상장폐지 종목 마스터(생존편향 보정). 과거 시세는 `daily_bars` 에 `source='naver'` 로 들어간다 |
 | `backfill_markers` | `(code, source)` — "조회해봤는데 자료가 없더라"를 기록해 백필이 같은 코드를 매 회차 다시 훑지 않게 한다 |
 | `news_judgments` | LLM이 news_articles/disclosures를 읽고 낸 판단. PK `(source_type, source_id, ticker, prompt_version)` — prompt_version이 바뀌면 새 행, 기존 행은 절대 안 고침(재현성). `confidence`(LLM 자체 확신도 0~100)·`judged_at`(응답 시각, 레이턴시 측정용)은 013 이후 행에만 있다(NULL=013 이전). **`judged_at`은 TIMESTAMPTZ(UTC 저장)** — scalp-it이 `ticks.ts`(naive KST)와 조인하다 9시간 밀리는 걸 실측했다(2026-09-06). naive KST 컬럼과 조인하는 쪽은 항상 KST로 변환해야 한다. **2026-10-12 부터 Haiku 5.5·`prompt_version` v2 만** — v1(Haiku 4.5) 14,534행은 018 로 `legacy.news_judgments_haiku45` 에 보관 |
+| `news_judge_batches` | `news_judge.py` 의 Message Batches 원장 `(batch_id)` — `items` JSONB = custom_id `r{i}` → `[source_type, source_id, ticker]`, `collected_at` NULL = 아직 수거 안 함. create 직후 곧바로 쓴다 — 태스크가 못 기다리거나 죽어도 다음 실행이 수거하고, 그 안의 기사를 다시 내지 않는다(이중 과금 방지) |
 
 ## TimescaleDB 설계 노트
 
@@ -87,6 +88,7 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 | `016_article_judgments` | `judges`·`article_judgments` 신설 — 파일 네 곳에 흩어져 있던 기사 LLM 판정(4.5 유니버스 156,605·5.5 지속성 36,171 등)을 한 원장으로. `news_judgments` 는 실매매 경로라 그대로 |
 | `017_dedupe_news_articles_edited` | **데이터 정정** — `news_articles` 의 같은 id 두 행 4건(토스가 고쳐 createdAt 이 바뀐 기사를 daily_news 가 새 행으로 넣었다)에서 먼저 본 판만 남긴다. 같은 날 `news_toss.py` 도 "이미 다른 시각으로 있는 id 는 건너뛴다" 로 고쳐 재발을 막았다. 롤백은 파일 하단(10-08 core 덤프) |
 | `018_archive_haiku45_judgments` | **데이터 보관** — Haiku 4.5 판정을 운영 테이블에서 `legacy` 스키마로 옮긴다: `news_judgments` v1 14,534 → `legacy.news_judgments_haiku45`, `article_judgments`·`judges` 의 `v2-haiku45` 157,834·1 → `legacy.article_judgments_haiku45`·`legacy.judges_haiku45`. 이후 판정은 Haiku 5.5 만(`news_judge.py` v2). `legacy.*` 는 코드가 읽지 않는 보관용이라 `init_timescale.sql` 에 없다. 롤백은 파일 하단 |
+| `019_news_judge_batches` | `news_judge_batches` 신설 — `news_judge.py` v2 가 동기 루프에서 Message Batches 로(기사 LLM 분석 = Haiku 5.5 + 캐싱 + 배치 의무, 2026-10-12). 배치는 최대 24시간이라 못 기다린 배치를 다음 실행이 수거하고, retries=1 재시도가 같은 기사를 다시 내지 않게 한다 |
 
 > ⚠️ 001 은 코드가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이 `daily_earnings` 가
 > 초록불이었던 건 비수기라 `rows=0` 이어서 DB 를 건드리기 전에 빠져나갔기 때문이지,

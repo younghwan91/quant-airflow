@@ -167,6 +167,17 @@ CREATE TABLE IF NOT EXISTS news_judgments (
 CREATE INDEX IF NOT EXISTS idx_news_judgments_ticker ON news_judgments(ticker);
 CREATE INDEX IF NOT EXISTS idx_news_judgments_knowledge_date ON news_judgments(knowledge_date);
 
+-- news_judge.py 배치 원장(019) — 태스크가 죽거나 못 기다려도 배치를 잃지 않고 두 번 내지 않는다
+CREATE TABLE IF NOT EXISTS news_judge_batches (
+    batch_id        TEXT PRIMARY KEY,      -- Message Batches id — create 직후 곧바로 기록
+    model_id        TEXT NOT NULL,
+    prompt_version  TEXT NOT NULL,
+    submitted_at    TIMESTAMPTZ NOT NULL,
+    items           JSONB NOT NULL,        -- [[source_type, source_id, ticker], ...] — custom_id r{i} 의 i 번째
+    collected_at    TIMESTAMPTZ            -- NULL = 아직 수거 안 함(news_judge.py 가 다음 실행에 먼저 수거)
+);
+CREATE INDEX IF NOT EXISTS idx_news_judge_batches_open ON news_judge_batches(submitted_at) WHERE collected_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS consensus (
     code         TEXT NOT NULL,
     date         DATE NOT NULL,

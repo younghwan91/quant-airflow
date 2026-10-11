@@ -1,5 +1,6 @@
 from collectors.news_judge import (
-    EVENT_TYPES, PROMPT_VERSION, SYSTEM_PROMPT, Judgment, build_prompt, collect, judge_item, parse_judgment,
+    EVENT_TYPES, PROMPT_VERSION, SYSTEM_PROMPT, BatchResult, Judgment, build_prompt, build_request, collect,
+    parse_judgment,
 )
 from collectors.storage import connect, upsert_disclosures, upsert_news_judgments
 
@@ -114,85 +115,6 @@ def test_parse_judgment_rejects_boolean_confidence():
     assert parse_judgment(response) is None
 
 
-def test_judge_item_returns_parsed_judgment_on_valid_response():
-    def fake_generate(prompt: str) -> str:
-        assert "005930" in prompt
-        return ('{"event_type": "실적", "sentiment_direction": 1, '
-                '"related_codes": [], "is_stale_repeat": false, '
-                '"first_seen_date": null, "price_impact_likely": true, '
-                '"rationale": "테스트", "confidence": 70}')
-
-    item = {"ticker": "005930", "title": "제목", "content": "본문",
-            "published_at": "2026-09-06T08:30:00"}
-    j = judge_item(fake_generate, item, prior_context=[])
-    assert j is not None
-    assert j.event_type == "실적"
-    assert j.confidence == 70
-
-
-def test_judge_item_returns_none_on_unparseable_response():
-    j = judge_item(lambda prompt: "JSON 아님",
-                    {"ticker": "005930", "title": "t", "content": "c",
-                     "published_at": "2026-09-06T08:30:00"}, prior_context=[])
-    assert j is None
-
-
-def test_collect_judges_new_disclosure_and_upserts(tmp_path):
-    con = connect(tmp_path / "t.db")
-    _seed_disclosure(con)
-
-    def fake_generate(prompt: str) -> str:
-        return ('{"event_type": "기타", "sentiment_direction": 0, '
-                '"related_codes": [], "is_stale_repeat": false, '
-                '"first_seen_date": null, "price_impact_likely": false, '
-                '"rationale": "테스트", "confidence": 60}')
-
-    stats = collect(con, fake_generate, model_id="claude-test", today="20260906")
-    assert stats == {"target": 1, "judged": 1, "parse_failures": 0, "api_failures": 0}
-
-    rows = con.execute("SELECT ticker, event_type FROM news_judgments").fetchall()
-    assert len(rows) == 1
-    assert rows[0]["ticker"] == "005930"
-
-
-def test_collect_skips_already_judged_at_same_prompt_version(tmp_path):
-    con = connect(tmp_path / "t.db")
-    _seed_disclosure(con)
-    upsert_news_judgments(con, [(
-        "disclosure", "dart:x", "005930", "기타", 0, "[]", 0, None, False,
-        "기존 판단", "claude-test", PROMPT_VERSION, "20260906", 60, "2026-09-06T00:00:00+00:00",
-    )])
-
-    calls = []
-    def fake_generate(prompt: str) -> str:
-        calls.append(prompt)
-        return "안 불려야 함"
-
-    stats = collect(con, fake_generate, model_id="claude-test", today="20260906")
-    assert calls == []
-    assert stats == {"target": 0, "judged": 0, "parse_failures": 0, "api_failures": 0}
-
-
-def test_collect_counts_api_failures_without_writing_a_row(tmp_path):
-    con = connect(tmp_path / "t.db")
-    _seed_disclosure(con)
-
-    def failing_generate(prompt: str) -> str:
-        raise RuntimeError("rate limited")
-
-    stats = collect(con, failing_generate, model_id="claude-test", today="20260906")
-    assert stats == {"target": 1, "judged": 0, "parse_failures": 0, "api_failures": 1}
-    assert con.execute("SELECT count(*) AS n FROM news_judgments").fetchone()["n"] == 0
-
-
-def test_collect_skips_malformed_output_without_counting_as_api_failure(tmp_path):
-    con = connect(tmp_path / "t.db")
-    _seed_disclosure(con)
-
-    stats = collect(con, lambda prompt: "JSON 아님", model_id="claude-test", today="20260906")
-    assert stats == {"target": 1, "judged": 0, "parse_failures": 1, "api_failures": 0}
-
-
 def test_parse_judgment_rejects_non_yyyymmdd_first_seen_date():
     response = ('{"event_type": "기타", "sentiment_direction": 0, '
                 '"related_codes": [], "is_stale_repeat": true, '
@@ -234,48 +156,196 @@ def test_pending_items_excludes_disclosures_published_before_since(tmp_path):
     assert ids == {"dart:new"}
 
 
-def test_collect_never_judges_old_disclosure_even_without_prior_judgment(tmp_path):
-    # C2: 백필 가드. since 하한 없이 그냥 _pending_items(con)만 부르던 예전
-    # 버그라면 이 오래된 공시(발행 2026-08-01)도 오늘(2026-09-06) 판단
-    # 대상에 잡혀 knowledge_date=오늘로 영구 기록됐을 것이다.
-    con = connect(tmp_path / "t.db")
-    _seed_disclosure(con, disclosure_id="dart:old", ticker="005930",
-                      published_at="2026-08-01T08:00:00")
-
-    calls = []
-    def fake_generate(prompt: str) -> str:
-        calls.append(prompt)
-        return "안 불려야 함"
-
-    stats = collect(con, fake_generate, model_id="claude-test", today="20260906")
-    assert calls == []
-    assert stats == {"target": 0, "judged": 0, "parse_failures": 0, "api_failures": 0}
-    assert con.execute("SELECT count(*) AS n FROM news_judgments").fetchone()["n"] == 0
+_OK = ('{"event_type": "기타", "sentiment_direction": 0, "related_codes": [], '
+       '"is_stale_repeat": false, "first_seen_date": null, "price_impact_likely": false, '
+       '"rationale": "테스트", "confidence": 60}')
+_USAGE = {"input_tokens": 120, "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 600, "output_tokens": 90}
 
 
-def test_collect_writes_each_judgment_immediately_surviving_a_later_failure(tmp_path):
-    # I2: 두 번째 항목에서 generate가 죽어도 첫 번째 항목의 판단은 이미
-    # DB에 남아 있어야 한다(끝에 몰아쓰면 이 테스트가 실패한다).
+class FakeBatchAPI:
+    """Message Batches 가짜. ``answer(prompt)`` → 응답 텍스트(None = errored), ``ends_after`` 번
+    조회한 뒤에 끝난 걸로 본다."""
+
+    def __init__(self, answer=lambda prompt: _OK, ends_after=0, fail_submit=False):
+        self.answer, self.ends_after, self.fail_submit = answer, ends_after, fail_submit
+        self.batches: dict[str, list[dict]] = {}
+        self.polls: dict[str, int] = {}
+
+    def submit(self, requests):
+        if self.fail_submit:
+            raise RuntimeError("503")
+        batch_id = f"msgbatch_{len(self.batches)}"
+        self.batches[batch_id] = requests
+        self.polls[batch_id] = 0
+        return batch_id
+
+    def ended_at(self, batch_id):
+        self.polls[batch_id] += 1
+        return "2026-09-06T00:10:00+00:00" if self.polls[batch_id] > self.ends_after else None
+
+    def results(self, batch_id):
+        for r in self.batches[batch_id]:
+            text = self.answer(r["params"]["messages"][0]["content"])
+            yield BatchResult(r["custom_id"], text, _USAGE if text is not None else {})
+
+
+def _collect(con, api, **kw):
+    kw.setdefault("poll_timeout_s", 0)
+    return collect(con, api, model_id="claude-haiku-5-5", today="20260906",
+                   sleep=lambda s: None, **kw)
+
+
+def test_build_request_caches_system_disables_thinking_and_omits_temperature():
+    # Haiku 5.5 는 thinking 이 기본으로 켜져 있다 — 안 끄면 max_tokens 가 생각에 먹혀 빈 응답.
+    # 고정 지시문은 cache_control 붙은 system 블록, 건마다 다른 부분만 user 로.
+    req = build_request("r0", "user 본문", "claude-haiku-5-5")
+    params = req["params"]
+    assert req["custom_id"] == "r0"
+    assert params["model"] == "claude-haiku-5-5"
+    assert params["thinking"] == {"type": "disabled"}
+    assert "temperature" not in params
+    assert params["system"] == [{"type": "text", "text": SYSTEM_PROMPT,
+                                 "cache_control": {"type": "ephemeral"}}]
+    assert params["messages"] == [{"role": "user", "content": "user 본문"}]
+
+
+def test_collect_submits_one_batch_and_writes_judgments_with_batch_end_time(tmp_path):
     con = connect(tmp_path / "t.db")
     _seed_disclosure(con, disclosure_id="dart:a", ticker="005930")
     _seed_disclosure(con, disclosure_id="dart:b", ticker="000660")
+    api = FakeBatchAPI()
 
-    call_count = {"n": 0}
-    def flaky_generate(prompt: str) -> str:
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            return ('{"event_type": "기타", "sentiment_direction": 0, '
-                     '"related_codes": [], "is_stale_repeat": false, '
-                     '"first_seen_date": null, "price_impact_likely": false, '
-                     '"rationale": "첫 건", "confidence": 55}')
-        raise RuntimeError("rate limited")
+    stats = _collect(con, api)
 
-    stats = collect(con, flaky_generate, model_id="claude-test", today="20260906")
-    assert stats["judged"] == 1
-    assert stats["api_failures"] == 1
+    assert len(api.batches) == 1 and len(api.batches["msgbatch_0"]) == 2
+    assert stats["target"] == 2 and stats["judged"] == 2 and stats["in_flight"] == 0
+    assert stats["cache_read_input_tokens"] == 1200
+    rows = con.execute("SELECT ticker, model_id, prompt_version, knowledge_date, judged_at "
+                       "FROM news_judgments ORDER BY ticker").fetchall()
+    assert [r["ticker"] for r in rows] == ["000660", "005930"]
+    assert {(r["model_id"], r["prompt_version"], r["knowledge_date"], r["judged_at"]) for r in rows} == {
+        ("claude-haiku-5-5", PROMPT_VERSION, "20260906", "2026-09-06T00:10:00+00:00")}
+    ledger = con.execute("SELECT collected_at FROM news_judge_batches").fetchall()
+    assert len(ledger) == 1 and ledger[0]["collected_at"] is not None
 
-    rows = con.execute("SELECT ticker FROM news_judgments").fetchall()
-    assert {r["ticker"] for r in rows} == {"005930"}
+
+def test_collect_skips_already_judged_at_same_prompt_version(tmp_path):
+    con = connect(tmp_path / "t.db")
+    _seed_disclosure(con)
+    upsert_news_judgments(con, [(
+        "disclosure", "dart:x", "005930", "기타", 0, "[]", 0, None, False,
+        "기존 판단", "claude-test", PROMPT_VERSION, "20260906", 60, "2026-09-06T00:00:00+00:00",
+    )])
+    api = FakeBatchAPI()
+
+    stats = _collect(con, api)
+    assert api.batches == {}
+    assert stats["target"] == 0 and stats["judged"] == 0
+
+
+def test_collect_leaves_unfinished_batch_and_next_run_collects_without_resubmitting(tmp_path):
+    # 못 기다린 배치는 원장에 남고, 다음 실행은 그 기사를 다시 내지 않고(이중 과금) 먼저 수거한다.
+    con = connect(tmp_path / "t.db")
+    _seed_disclosure(con)
+    api = FakeBatchAPI(ends_after=3)
+
+    first = _collect(con, api)
+    assert first["target"] == 1 and first["judged"] == 0 and first["in_flight"] == 1
+    assert con.execute("SELECT count(*) AS n FROM news_judgments").fetchone()["n"] == 0
+
+    second = _collect(con, api)
+    assert len(api.batches) == 1          # 다시 내지 않았다
+    assert second["target"] == 0 and second["in_flight"] == 1
+
+    third = _collect(con, api)
+    assert third["judged"] == 1 and third["in_flight"] == 0
+    assert con.execute("SELECT count(*) AS n FROM news_judgments").fetchone()["n"] == 1
+
+
+def test_collect_polls_until_batch_ends_within_timeout(tmp_path):
+    con = connect(tmp_path / "t.db")
+    _seed_disclosure(con)
+    api = FakeBatchAPI(ends_after=2)
+    sleeps = []
+    t = iter(range(100))
+
+    stats = collect(con, api, model_id="claude-haiku-5-5", today="20260906",
+                    poll_timeout_s=50, poll_interval_s=7, sleep=sleeps.append, clock=lambda: next(t))
+    assert stats["judged"] == 1 and stats["in_flight"] == 0
+    assert sleeps == [7, 7]
+
+
+def test_collect_counts_errored_and_malformed_results_without_writing_rows(tmp_path):
+    con = connect(tmp_path / "t.db")
+    _seed_disclosure(con, disclosure_id="dart:a", ticker="005930")
+    _seed_disclosure(con, disclosure_id="dart:b", ticker="000660")
+    api = FakeBatchAPI(answer=lambda prompt: None if "005930" in prompt else "JSON 아님")
+
+    stats = _collect(con, api)
+    assert stats["api_failures"] == 1 and stats["parse_failures"] == 1 and stats["judged"] == 0
+    assert con.execute("SELECT count(*) AS n FROM news_judgments").fetchone()["n"] == 0
+
+    # 실패한 기사는 판단이 없으니 다음 실행이 다시 낸다
+    api.answer = lambda prompt: _OK
+    again = _collect(con, api)
+    assert again["target"] == 2 and again["judged"] == 2
+
+
+def test_collect_records_nothing_when_submit_fails(tmp_path):
+    # create 는 재시도하지 않는다(5xx 뒤 배치가 생겼을 수도 — 이중 과금). 실패는 그대로 올라간다.
+    import pytest
+
+    con = connect(tmp_path / "t.db")
+    _seed_disclosure(con)
+    with pytest.raises(RuntimeError):
+        _collect(con, FakeBatchAPI(fail_submit=True))
+    assert con.execute("SELECT count(*) AS n FROM news_judge_batches").fetchone()["n"] == 0
+
+
+def test_collect_never_judges_old_disclosure_even_without_prior_judgment(tmp_path):
+    # C2: 백필 가드. since 하한이 없으면 이 오래된 공시(발행 2026-08-01)도 오늘(2026-09-06)
+    # 판단 대상에 잡혀 knowledge_date=오늘로 영구 기록된다.
+    con = connect(tmp_path / "t.db")
+    _seed_disclosure(con, disclosure_id="dart:old", ticker="005930",
+                      published_at="2026-08-01T08:00:00")
+    api = FakeBatchAPI()
+
+    stats = _collect(con, api)
+    assert api.batches == {}
+    assert stats["target"] == 0
+    assert con.execute("SELECT count(*) AS n FROM news_judgments").fetchone()["n"] == 0
+
+
+def test_claude_batch_api_never_retries_create(monkeypatch):
+    # SDK 기본 max_retries=2 는 5xx 뒤 create 를 다시 보낸다 — 배치가 이미 생겼으면 두 번 과금.
+    import sys
+    import types
+
+    from collectors import news_judge
+
+    seen = {}
+
+    class _Batches:
+        def __init__(self, retries):
+            self.retries = retries
+
+        def create(self, requests):
+            seen["retries"] = self.retries
+            seen["n"] = len(requests)
+            return types.SimpleNamespace(id="msgbatch_x")
+
+    class _Client:
+        def __init__(self, api_key=None, retries=2):
+            self.messages = types.SimpleNamespace(batches=_Batches(retries))
+
+        def with_options(self, max_retries):
+            return _Client(retries=max_retries)
+
+    monkeypatch.setitem(sys.modules, "anthropic", types.SimpleNamespace(Anthropic=_Client))
+    api = news_judge.ClaudeBatchAPI("k")
+    assert api.submit([build_request("r0", "x", "claude-haiku-5-5")]) == "msgbatch_x"
+    assert seen == {"retries": 0, "n": 1}
 
 
 def test_main_requires_anthropic_api_key(monkeypatch):
@@ -286,37 +356,3 @@ def test_main_requires_anthropic_api_key(monkeypatch):
     monkeypatch.setattr("sys.argv", ["news_judge", "--db", ":memory:"])
     with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY"):
         news_judge.main()
-
-
-def test_claude_generate_sends_cached_system_and_disables_thinking(monkeypatch):
-    # Haiku 5.5 는 thinking 이 기본으로 켜져 있다 — 안 끄면 max_tokens 가 생각에 먹혀 빈 응답.
-    # 고정 지시문은 cache_control 붙은 system 블록, 건마다 다른 부분만 user 로.
-    import sys
-    import types
-
-    from collectors import news_judge
-
-    sent = {}
-
-    class _Messages:
-        def create(self, **kw):
-            sent.update(kw)
-            return types.SimpleNamespace(content=[
-                types.SimpleNamespace(type="thinking", thinking=""),
-                types.SimpleNamespace(type="text", text="{}"),
-            ])
-
-    class _Client:
-        def __init__(self, api_key):
-            self.messages = _Messages()
-
-    monkeypatch.setitem(sys.modules, "anthropic", types.SimpleNamespace(Anthropic=_Client))
-    out = news_judge._claude_generate(news_judge.MODEL_ID, "k")("user 본문")
-
-    assert out == "{}"
-    assert sent["model"] == "claude-haiku-5-5"
-    assert sent["thinking"] == {"type": "disabled"}
-    assert "temperature" not in sent
-    assert sent["system"] == [{"type": "text", "text": news_judge.SYSTEM_PROMPT,
-                               "cache_control": {"type": "ephemeral"}}]
-    assert sent["messages"] == [{"role": "user", "content": "user 본문"}]
