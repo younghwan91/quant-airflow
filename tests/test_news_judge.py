@@ -1,4 +1,6 @@
-from collectors.news_judge import EVENT_TYPES, Judgment, build_prompt, collect, judge_item, parse_judgment
+from collectors.news_judge import (
+    EVENT_TYPES, PROMPT_VERSION, SYSTEM_PROMPT, Judgment, build_prompt, collect, judge_item, parse_judgment,
+)
 from collectors.storage import connect, upsert_disclosures, upsert_news_judgments
 
 
@@ -16,8 +18,11 @@ def test_build_prompt_includes_item_fields_and_event_type_choices():
     prompt = build_prompt(item, prior_context=[])
     assert "005930" in prompt
     assert "삼성전자 3분기 실적 발표" in prompt
+    # 고정 지시문은 system(프롬프트 캐시) 쪽에만 — user 에 섞이면 캐시 접두가 매번 달라진다
     for et in EVENT_TYPES:
-        assert et in prompt
+        assert et in SYSTEM_PROMPT
+    assert "응답 형식" in SYSTEM_PROMPT
+    assert "응답 형식" not in prompt
 
 
 def test_build_prompt_includes_prior_context_when_present():
@@ -155,7 +160,7 @@ def test_collect_skips_already_judged_at_same_prompt_version(tmp_path):
     _seed_disclosure(con)
     upsert_news_judgments(con, [(
         "disclosure", "dart:x", "005930", "기타", 0, "[]", 0, None, False,
-        "기존 판단", "claude-test", "v1", "20260906", 60, "2026-09-06T00:00:00+00:00",
+        "기존 판단", "claude-test", PROMPT_VERSION, "20260906", 60, "2026-09-06T00:00:00+00:00",
     )])
 
     calls = []
@@ -281,3 +286,37 @@ def test_main_requires_anthropic_api_key(monkeypatch):
     monkeypatch.setattr("sys.argv", ["news_judge", "--db", ":memory:"])
     with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY"):
         news_judge.main()
+
+
+def test_claude_generate_sends_cached_system_and_disables_thinking(monkeypatch):
+    # Haiku 5.5 는 thinking 이 기본으로 켜져 있다 — 안 끄면 max_tokens 가 생각에 먹혀 빈 응답.
+    # 고정 지시문은 cache_control 붙은 system 블록, 건마다 다른 부분만 user 로.
+    import sys
+    import types
+
+    from collectors import news_judge
+
+    sent = {}
+
+    class _Messages:
+        def create(self, **kw):
+            sent.update(kw)
+            return types.SimpleNamespace(content=[
+                types.SimpleNamespace(type="thinking", thinking=""),
+                types.SimpleNamespace(type="text", text="{}"),
+            ])
+
+    class _Client:
+        def __init__(self, api_key):
+            self.messages = _Messages()
+
+    monkeypatch.setitem(sys.modules, "anthropic", types.SimpleNamespace(Anthropic=_Client))
+    out = news_judge._claude_generate(news_judge.MODEL_ID, "k")("user 본문")
+
+    assert out == "{}"
+    assert sent["model"] == "claude-haiku-5-5"
+    assert sent["thinking"] == {"type": "disabled"}
+    assert "temperature" not in sent
+    assert sent["system"] == [{"type": "text", "text": news_judge.SYSTEM_PROMPT,
+                               "cache_control": {"type": "ephemeral"}}]
+    assert sent["messages"] == [{"role": "user", "content": "user 본문"}]

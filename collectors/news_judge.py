@@ -38,7 +38,13 @@ EVENT_TYPES: tuple[str, ...] = (
     "실적", "유상증자", "자사주", "최대주주변경", "소송", "가이던스", "규제", "기타",
 )
 
-PROMPT_VERSION = "v1"
+#: v2(2026-10-12): Haiku 4.5 → 5.5, 고정 지시문을 system(프롬프트 캐시)으로 분리.
+#: v1 행(전부 Haiku 4.5)은 migration 018 로 legacy.news_judgments_haiku45 에 보관했다.
+PROMPT_VERSION = "v2"
+
+#: 판단 모델. 2026-10-12 부터 Haiku 5.5 만 쓴다(4.5 대비 단가 1/10). DAG 는 --model-id 를
+#: 넘기지 않으므로 이 값이 운영 모델이다.
+MODEL_ID = "claude-haiku-5-5"
 
 #: 최근 며칠 내 같은 (ticker, event_type) 판단이 있으면 재탕 후보로 본다.
 #: 이벤트 유형별로 다를 수 있다는 걸 알지만(유상증자는 실적보다 오래
@@ -64,38 +70,47 @@ class Judgment:
     confidence: int
 
 
+#: 매 호출 똑같은 지시문 — system 으로 보내 프롬프트 캐시에 태운다(v2, 2026-10-12).
+#: v1 은 이 지시문이 user 메시지 안 기사 본문 **뒤에** 있어 앞부분이 매번 달랐다 —
+#: 캐시가 원리상 안 걸리는 순서였다(캐시는 접두 일치). 지시문 내용은 v1 그대로다.
+SYSTEM_PROMPT = "\n".join([
+    "다음 한국 주식시장 뉴스/공시를 읽고 JSON으로만 답하라.",
+    "",
+    f"event_type은 다음 중 하나여야 한다: {', '.join(EVENT_TYPES)}",
+    "sentiment_direction은 -1(부정)/0(중립)/1(긍정) 중 하나.",
+    "related_codes: 이 재료로 같이 움직일 만한 동일 테마 종목코드 목록(없으면 빈 배열).",
+    "is_stale_repeat: 메시지의 최근 유사 판단 이력에 비춰 이미 알려진 재탕 재료인가"
+    "(이력이 없으면 false).",
+    "first_seen_date: is_stale_repeat가 true면 최초로 본 날짜(YYYYMMDD), 아니면 null.",
+    "price_impact_likely: 단기(수일 내) 가격에 영향 줄 만한가 (true/false).",
+    "rationale: 판단 근거를 한두 문장으로.",
+    "confidence: 이 판단 전체에 대한 스스로의 확신도, 0(전혀 확신 없음)~"
+    "100(매우 확신) 정수. 정보가 불충분하거나 애매하면 낮게 매겨라 —"
+    " 낮은 확신도는 다운스트림에서 이 판단을 걸러내는 데 쓰인다.",
+    "",
+    '응답 형식(JSON만, 다른 텍스트 없이): {"event_type": "...", '
+    '"sentiment_direction": 0, "related_codes": [], "is_stale_repeat": false, '
+    '"first_seen_date": null, "price_impact_likely": false, "rationale": "...", '
+    '"confidence": 0}',
+])
+
+
 def build_prompt(item: dict, prior_context: list[dict]) -> str:
-    """LLM에 넘길 프롬프트. item={ticker,title,content,published_at}."""
+    """LLM에 넘길 user 메시지(건마다 다른 부분만). item={ticker,title,content,published_at}.
+
+    고정 지시문은 :data:`SYSTEM_PROMPT` 에 있다.
+    """
     lines = [
-        "다음 한국 주식시장 뉴스/공시를 읽고 JSON으로만 답하라.",
         f"종목코드: {item['ticker']}",
         f"발행일시: {item['published_at']}",
         f"제목: {item['title']}",
         f"본문: {item['content']}",
-        "",
-        f"event_type은 다음 중 하나여야 한다: {', '.join(EVENT_TYPES)}",
-        "sentiment_direction은 -1(부정)/0(중립)/1(긍정) 중 하나.",
-        "related_codes: 이 재료로 같이 움직일 만한 동일 테마 종목코드 목록(없으면 빈 배열).",
-        "is_stale_repeat: 아래 최근 유사 판단 목록에 비춰 이미 알려진 재탕 재료인가.",
-        "first_seen_date: is_stale_repeat가 true면 최초로 본 날짜(YYYYMMDD), 아니면 null.",
-        "price_impact_likely: 단기(수일 내) 가격에 영향 줄 만한가 (true/false).",
-        "rationale: 판단 근거를 한두 문장으로.",
-        "confidence: 이 판단 전체에 대한 스스로의 확신도, 0(전혀 확신 없음)~"
-        "100(매우 확신) 정수. 정보가 불충분하거나 애매하면 낮게 매겨라 —"
-        " 낮은 확신도는 다운스트림에서 이 판단을 걸러내는 데 쓰인다.",
     ]
     if prior_context:
         lines.append("")
         lines.append("최근 유사 판단 이력:")
         for p in prior_context:
             lines.append(f"- {p['date']}: {p['rationale']}")
-    lines.append("")
-    lines.append(
-        '응답 형식(JSON만, 다른 텍스트 없이): {"event_type": "...", '
-        '"sentiment_direction": 0, "related_codes": [], "is_stale_repeat": false, '
-        '"first_seen_date": null, "price_impact_likely": false, "rationale": "...", '
-        '"confidence": 0}'
-    )
     return "\n".join(lines)
 
 
@@ -214,18 +229,26 @@ def _claude_generate(model_id: str, api_key: str) -> Callable[[str], str]:
         response = client.messages.create(model=..., max_tokens=..., messages=[...])
         response.content[0].text
 
-    Haiku 4.5는 기본적으로 thinking을 안 켜므로(claude-api 스킬 참고) 이
-    분류 태스크에선 thinking 파라미터를 아예 생략한다 — 응답이 JSON 하나뿐이라
-    추론 과정을 노출할 이유가 없다. max_tokens=512는 rationale(한두 문장) +
-    related_codes 배열을 포함한 JSON 응답에 여유 있게 맞춘 값이다.
+    Haiku 5.5(2026-10-12 전환)는 thinking 이 **기본으로 켜져** 있어 명시적으로
+    끈다 — 안 끄면 max_tokens 가 생각에 먹혀 빈 응답이 난다(swing-it 파일럿
+    2026-10-08: 500건 중 320건 빈 응답). 끄는 건 effort high 이하에서만 되는데
+    기본 effort 가 medium 이라 그대로 된다. temperature 는 5.5 가 받지 않는다.
+    max_tokens=512는 rationale(한두 문장) + related_codes 배열을 포함한 JSON
+    응답에 여유 있게 맞춘 값이다.
+
+    고정 지시문(:data:`SYSTEM_PROMPT`)은 cache_control 블록으로 보낸다 — 5.5 의
+    캐시 최소 접두는 512 토큰이고 지시문이 그 언저리라, 실제로 걸리는지는
+    ``usage.cache_read_input_tokens`` 로 확인한다(안 걸려도 오류 없이 정가 과금일 뿐).
     """
     import anthropic  # noqa: PLC0415 — optional dep, only needed for this path
 
     client = anthropic.Anthropic(api_key=api_key)
+    system = [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
 
     def generate(prompt: str) -> str:
         response = client.messages.create(
-            model=model_id, max_tokens=512,
+            model=model_id, max_tokens=512, system=system,
+            thinking={"type": "disabled"},
             messages=[{"role": "user", "content": prompt}],
         )
         return next(block.text for block in response.content if block.type == "text")
@@ -363,7 +386,7 @@ def collect(
 def main() -> int:
     ap = argparse.ArgumentParser(description="뉴스/공시 LLM 판단")
     ap.add_argument("--db", default=None, help="DSN (postgresql://... 또는 sqlite 경로)")
-    ap.add_argument("--model-id", default="claude-haiku-4-5",
+    ap.add_argument("--model-id", default=MODEL_ID,
                     help="Claude 모델 ID (anthropic SDK, client.messages.create)")
     args = ap.parse_args()
 
