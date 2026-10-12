@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import timedelta
 
 import pendulum
 from airflow.decorators import dag, task
@@ -87,13 +88,18 @@ def daily_finalize():
             cwd="/opt/swing-it",
         )
 
-    @task(retries=0)
+    @task(retries=0, trigger_rule="all_done", execution_timeout=timedelta(minutes=10))
     def check_data_quality() -> None:
         # 읽기만 한다. 재시도 0: 같은 데이터면 같은 판정이라 10분 뒤 다시 돌려도 안 낫는다(CLAUDE.md §5).
-        # 실패 = 원천 정의가 바뀌었다(새 세션·flu_rt 기준가·수정주가 혼입) — 메시지대로 docs/schema.md 와 같이 본다.
-        run_collector([
-            sys.executable, "-m", "collectors.data_checks", "--db", timescale_dsn(),
-        ])
+        # all_done: 상류(재수집·조정주가)가 실패해도 검사는 돈다 — 그날 원천이 바뀐 것이 상류 실패의 원인일 수 있다.
+        # 평소 수 초(실DB 1회 ~6초), 10분이면 걸린 것이다.
+        # 실패 줄 머리 [FAIL:<원인>] = 접속 실패(종료 3)·표본 부족·항등식 불일치·세션 이탈·카나리아(종료 1).
+        # 데이터 실패 = 원천 정의가 바뀌었다(새 세션·flu_rt 기준가·수정주가 혼입) — 메시지대로 docs/schema.md 와 같이 본다.
+        # DSN 은 환경변수로 — 명령줄에 두면 ps 에 비밀번호가 찍힌다(data_checks 는 --db 에 DSN 을 거부한다).
+        run_collector(
+            [sys.executable, "-m", "collectors.data_checks"],
+            env={**os.environ, "KR_QUANT_DB": timescale_dsn()},
+        )
 
     finalize_sector() >> finalize_both() >> rebuild_adjusted() >> check_data_quality()
 

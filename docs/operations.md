@@ -130,7 +130,7 @@ git push (simnode)
 |---|---|---|
 | Airflow 태스크 | **재시도를 다 쓴 최종 실패**만 | `dags/_common.py` `DAG_DEFAULT_ARGS["on_failure_callback"]` |
 | `daily_health_check.sh` | `⚠️` 가 하나라도 있으면 실행당 1건 | `warn()` 모음 → `alert.sh` |
-| `daily_finalize.check_data_quality` | 전 거래일 분봉 세션 범위·기준가 항등식·원주가 카나리아 중 하나라도 깨질 때(재시도 0) | 위 Airflow 태스크 콜백 — 원천 정의 변경(새 세션·`flu_rt` 기준가·수정주가 혼입), `docs/schema.md` 애프터마켓 절 |
+| `daily_finalize.check_data_quality` | 전 거래일 분봉 세션 범위·기준가 항등식·원주가 카나리아 중 하나라도 깨질 때(재시도 0, 상류 실패에도 돈다, 10분 제한). 로그의 `[FAIL:<원인>]` 이 접속 실패·표본 부족·항등식 불일치·세션 이탈·카나리아를 가른다 | 위 Airflow 태스크 콜백 — 원천 정의 변경(새 세션·`flu_rt` 기준가·수정주가 혼입), `docs/schema.md` 애프터마켓 절 |
 | `backup_to_gdrive.sh` | rc≠0 로 끝날 때 | EXIT 트랩 → `alert.sh` (본문: `BACKUP_LOG` 꼬리) |
 | simnode 크론 3줄 | 스크립트가 뜨기 전에 죽을 때 | `cron_run.sh` (안에서 이미 알렸으면 `[alert.py]` 마커로 생략) |
 

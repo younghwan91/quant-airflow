@@ -24,6 +24,8 @@ def _bars(*times: str, n: int = 10) -> dict[dt.time, int]:
 
 
 NORMAL_AFTER = ("09:00", "12:00", "15:20", "15:30", "15:32", "15:35", "16:00", "18:00", "19:59", "20:02")
+#: 새 세션 한 분 — NXT 프리마켓이 섞이면 매분 ~1,000종목이다.
+NEW_SESSION_ROWS = 1_000
 NORMAL_BEFORE = ("09:00", "12:00", "15:20", "15:30", "15:35")
 
 
@@ -35,15 +37,52 @@ def test_session_passes_regular_and_aftermarket():
     assert dc.check_session(BEFORE_DAY, _bars(*NORMAL_BEFORE)).ok
 
 
-@pytest.mark.parametrize("bad", ["08:00", "08:30", "08:59", "15:36", "15:50", "15:59", "20:03", "20:30"])
+@pytest.mark.parametrize("bad", ["08:00", "08:30", "08:59", "15:36", "15:50", "15:59", "20:11", "20:30"])
 def test_session_fails_on_injected_out_of_session_bar(bad):
-    r = dc.check_session(AFTER_DAY, _bars(*NORMAL_AFTER, bad))
+    r = dc.check_session(AFTER_DAY, {**_bars(*NORMAL_AFTER), **_bars(bad, n=NEW_SESSION_ROWS)})
     assert not r.ok
+    assert r.kind == "session"
     assert bad in r.detail
 
 
+def test_session_fails_on_new_premarket_session_all_codes():
+    # 진짜 새 세션: 08:00~08:59 매분 전 종목 — 종목 수를 실제로 넘겨도 실패
+    premarket = {T(8, m): NEW_SESSION_ROWS for m in range(60)}
+    r = dc.check_session(AFTER_DAY, {**_bars(*NORMAL_AFTER), **premarket}, outside_codes=NEW_SESSION_ROWS)
+    assert not r.ok
+    assert "60000/" in r.detail
+
+
+def test_session_passes_stray_late_bars():
+    # 실측: 20:00~20:02 지연 체결 1~4행이 21거래일 중 12일 — 창 안(20:10 까지)
+    stray = {T(20, 0): 1, T(20, 1): 3, T(20, 2): 2, T(20, 7): 1}
+    r = dc.check_session(AFTER_DAY, {**_bars(*NORMAL_AFTER), **stray})
+    assert r.ok and "모두 세션 안" in r.detail
+    # 창 밖 1~2행 떠돌이 봉도 통과하되 상세에 남긴다
+    r = dc.check_session(AFTER_DAY, {**_bars(*NORMAL_AFTER), T(20, 31): 1, T(8, 40): 1})
+    assert r.ok
+    assert "떠돌이" in r.detail and "20:31" in r.detail and "08:40" in r.detail
+
+
+@pytest.mark.parametrize(("rows_per_min", "minutes", "codes", "ok"), [
+    (1, 49, 19, True),    # 49행·19종목 — 문턱 밑
+    (10, 5, 5, False),    # 50행 — 행 문턱
+    (1, 20, 20, False),   # 20종목 — 종목 문턱
+])
+def test_session_outside_thresholds(rows_per_min, minutes, codes, ok):
+    outside = {T(8, m): rows_per_min for m in range(minutes)}
+    r = dc.check_session(AFTER_DAY, {**_bars(*NORMAL_AFTER), **outside}, outside_codes=codes)
+    assert r.ok is ok
+
+
+def test_session_unknown_codes_falls_back_to_rows():
+    # outside_codes 없이 부르면 행 수를 종목 수로 본다(보수적) — 20행이면 종목 문턱에 걸린다
+    assert not dc.check_session(AFTER_DAY, {**_bars(*NORMAL_AFTER), **{T(8, m): 1 for m in range(20)}}).ok
+    assert dc.check_session(AFTER_DAY, {**_bars(*NORMAL_AFTER), **{T(8, m): 1 for m in range(19)}}).ok
+
+
 def test_session_fails_on_aftermarket_bar_before_aftermarket_start():
-    r = dc.check_session(BEFORE_DAY, _bars(*NORMAL_BEFORE, "16:30"))
+    r = dc.check_session(BEFORE_DAY, {**_bars(*NORMAL_BEFORE), **_bars("16:30", n=NEW_SESSION_ROWS)})
     assert not r.ok
 
 
@@ -53,9 +92,10 @@ def test_session_delayed_open_days_shift_one_hour():
     assert dc.check_session(dt.date(2025, 11, 13), {**csat_late, **_bars("10:00", "16:20", "16:30", "16:32", "16:35")}).ok
     assert dc.check_session(dt.date(2026, 1, 2), _bars("10:00", "15:30", "15:35")).ok
     # 지연일에도 창 밖은 실패
-    assert not dc.check_session(dt.date(2025, 11, 13), {**csat_late, **_bars("10:00", "16:35", "16:50")}).ok
+    big = NEW_SESSION_ROWS
+    assert not dc.check_session(dt.date(2025, 11, 13), {**csat_late, **_bars("10:00", "16:35"), **_bars("16:50", n=big)}).ok
     # 개장만 늦은 날(신년)은 마감이 그대로라 15:36~ 봉은 실패
-    assert not dc.check_session(dt.date(2026, 1, 2), _bars("10:00", "15:35", "16:10")).ok
+    assert not dc.check_session(dt.date(2026, 1, 2), {**_bars("10:00", "15:35"), **_bars("16:10", n=big)}).ok
 
 
 def test_session_new_year_open_delay_keeps_normal_close_and_aftermarket():
@@ -63,7 +103,7 @@ def test_session_new_year_open_delay_keeps_normal_close_and_aftermarket():
     # 15:36~15:59 는 여전히 창 밖이다.
     day = dt.date(2027, 1, 4)
     assert dc.check_session(day, _bars("10:00", "15:30", "15:35", "16:00", "16:45", "19:59")).ok
-    assert not dc.check_session(day, _bars("10:00", "15:30", "15:45", "16:00")).ok
+    assert not dc.check_session(day, {**_bars("10:00", "15:30", "16:00"), **_bars("15:45", n=NEW_SESSION_ROWS)}).ok
 
 
 def test_close_bar_window_by_day_profile():
@@ -76,7 +116,8 @@ def test_close_bar_window_by_day_profile():
 
 
 def test_session_fails_on_empty_day():
-    assert not dc.check_session(AFTER_DAY, {}).ok
+    r = dc.check_session(AFTER_DAY, {})
+    assert not r.ok and r.kind == "sample"
 
 
 # ── 기준가 항등식 ────────────────────────────────────────────────────────────
@@ -299,7 +340,12 @@ def test_canary():
 # ── 조회 경로(sqlite) ─────────────────────────────────────────────────────
 
 
-def _seed(tmp_path, *, extra_bar: str | None = None, canary: int | None = 2_060_000, shift_base: bool = False):
+def _seed(
+    tmp_path, *, extra_bar: str | None = None, extra_codes: int = 1, extra_day: dt.date | None = None,
+    premarket: bool = False, canary: int | None = 2_060_000, shift_base: bool = False,
+):
+    """``extra_bar``: 그 분에 ``extra_codes`` 종목 봉을 더한다(``extra_day`` 기본 T). ``premarket``: T 의
+    08:00~08:59 전 종목 봉(진짜 새 세션)."""
     path = tmp_path / "q.db"
     con = storage.connect(path)
     con.execute("CREATE TABLE minute_bars (code TEXT, ts TEXT, open REAL, high REAL, low REAL, close REAL,"
@@ -318,8 +364,14 @@ def _seed(tmp_path, *, extra_bar: str | None = None, canary: int | None = 2_060_
             con.execute("INSERT INTO supply_demand (code, date, close, flu_rt, source) VALUES (?,?,?,?, 'kiwoom')",
                         (code, day.isoformat(), cl, flu))
     if extra_bar:
-        con.execute("INSERT INTO minute_bars VALUES (?,?,?,?,?,?,?,?)",
-                    ("000000", f"{d1} {extra_bar}:00", 1, 1, 1, 1, 1, 1))
+        for i in range(extra_codes):
+            con.execute("INSERT INTO minute_bars VALUES (?,?,?,?,?,?,?,?)",
+                        (f"{i:06d}", f"{extra_day or d1} {extra_bar}:00", 1, 1, 1, 1, 1, 1))
+    if premarket:
+        for i in range(dc.IDENTITY_MIN_PAIRS):
+            for m in range(60):
+                con.execute("INSERT INTO minute_bars VALUES (?,?,?,?,?,?,?,?)",
+                            (f"{i:06d}", f"{d1} 08:{m:02d}:00", 1, 1, 1, 1, 1, 1))
     if canary is not None:
         con.execute("INSERT INTO daily_bars_raw (code, date, open, high, low, close, volume, trade_value)"
                     " VALUES ('005930', '2017-03-31', 0, 0, 0, ?, 0, 0)", (canary,))
@@ -338,12 +390,37 @@ def test_main_passes_on_current_shape(tmp_path, capsys):
     assert "불일치 0/300" in out
 
 
-def test_main_fails_on_injected_premarket_bar(tmp_path):
-    assert dc.main(["--db", _seed(tmp_path, extra_bar="08:30"), *ASOF]) == 1
+def test_main_fails_on_injected_premarket_session(tmp_path, capsys):
+    assert dc.main(["--db", _seed(tmp_path, premarket=True), *ASOF]) == dc.EXIT_DATA_FAIL
+    out = capsys.readouterr().out
+    assert "[FAIL:세션 이탈] session 2026-10-08" in out
+    assert "18000/" in out and "300종목" in out
+    assert "— 세션 이탈 1" in out
 
 
-def test_main_fails_on_injected_base_change(tmp_path):
+def test_main_passes_stray_bars(tmp_path, capsys):
+    # 떠돌이 1~2행(20:31·08:30)은 통과 — 1행 때문에 매일 경보가 울리던 결함(리뷰 M1)
+    assert dc.main(["--db", _seed(tmp_path, extra_bar="20:31", extra_codes=2), *ASOF]) == 0
+    assert "떠돌이" in capsys.readouterr().out
+    assert dc.main(["--db", _seed(tmp_path / "b", extra_bar="08:30"), *ASOF]) == 0
+
+
+def test_main_fails_on_wide_outside_minute_by_codes(tmp_path):
+    # 한 분이라도 20종목 이상이면 새 세션 — 행 문턱(50) 밑이어도
+    assert dc.main(["--db", _seed(tmp_path, extra_bar="08:30", extra_codes=dc.OUTSIDE_FAIL_CODES), *ASOF]) == 1
+
+
+def test_main_checks_prev_day_session_too(tmp_path, capsys):
+    # T 의 애프터마켓은 06:30 에 일부만 있다 — 다 적재된 T-1 에서 새 세션을 잡는다
+    path = _seed(tmp_path, extra_bar="21:00", extra_codes=100, extra_day=dt.date(2026, 10, 7))
+    assert dc.main(["--db", path, *ASOF]) == 1
+    assert "[FAIL:세션 이탈] session 2026-10-07" in capsys.readouterr().out
+
+
+def test_main_fails_on_injected_base_change(tmp_path, capsys):
     assert dc.main(["--db", _seed(tmp_path, shift_base=True), *ASOF]) == 1
+    out = capsys.readouterr().out
+    assert "[FAIL:항등식 불일치]" in out and "— 항등식 불일치 1" in out
 
 
 def test_main_fails_on_injected_adjusted_canary(tmp_path):
@@ -352,3 +429,57 @@ def test_main_fails_on_injected_adjusted_canary(tmp_path):
 
 def test_main_passes_without_canary_row(tmp_path):
     assert dc.main(["--db", _seed(tmp_path, canary=None), *ASOF]) == 0
+
+
+def test_main_too_few_pairs_is_sample_shortage(tmp_path, capsys):
+    path = _seed(tmp_path)
+    con = storage.connect(path)
+    con.execute("DELETE FROM supply_demand WHERE date = '2026-10-08' AND code >= '000100'")
+    con.commit()
+    con.close()
+    assert dc.main(["--db", path, *ASOF]) == 1
+    assert "[FAIL:표본 부족] identity" in capsys.readouterr().out
+
+
+# ── DSN 은 환경변수로만 ─────────────────────────────────────────────────────
+
+
+def test_main_rejects_dsn_on_command_line():
+    with pytest.raises(SystemExit) as e:
+        dc.main(["--db", "postgresql://u:pw@localhost/x", *ASOF])  # allowlist-secret
+    assert e.value.code == 2
+
+
+def test_main_reads_db_from_env(tmp_path, monkeypatch):
+    monkeypatch.setenv(dc.DSN_ENV, _seed(tmp_path))
+    assert dc.main(ASOF) == 0
+
+
+def test_main_without_db_is_connect_failure(monkeypatch, capsys):
+    monkeypatch.delenv(dc.DSN_ENV, raising=False)
+    assert dc.main(ASOF) == dc.EXIT_CONNECT_FAIL
+    assert "[FAIL:접속 실패]" in capsys.readouterr().out
+
+
+def test_main_connect_failure_is_distinct_and_masks_password(monkeypatch, capsys):
+    pytest.importorskip("psycopg2")
+    monkeypatch.setenv(dc.DSN_ENV, "postgresql://u:hunter2pw@127.0.0.1:1/x?connect_timeout=2")  # allowlist-secret
+    assert dc.main(ASOF) == dc.EXIT_CONNECT_FAIL
+    out = capsys.readouterr().out
+    assert "[FAIL:접속 실패]" in out
+    assert "hunter2pw" not in out
+
+
+def test_daily_finalize_check_task_shape():
+    """DAG: 상류가 실패해도 검사(all_done), 시간 제한, DSN 은 환경변수로(명령줄 --db 없음)."""
+    import ast
+
+    src = (pathlib.Path(__file__).parents[1] / "dags" / "daily_finalize.py").read_text()
+    fn = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef) and n.name == "check_data_quality")
+    kw = {k.arg: k.value for d in fn.decorator_list if isinstance(d, ast.Call) for k in d.keywords}
+    assert ast.literal_eval(kw["trigger_rule"]) == "all_done"
+    assert ast.literal_eval(kw["retries"]) == 0
+    assert "execution_timeout" in kw
+    body = ast.unparse(fn)
+    assert "'--db'" not in body
+    assert dc.DSN_ENV in body

@@ -7,15 +7,24 @@
 docstring 에 남았다(``daily_finalize``). 원천 정의가 조용히 바뀌는 것을 다음엔 그날 아침에 잡으려고
 세 검사를 코드로 둔다.
 
-1. **세션 범위**(``check_session``) — 그날 ``minute_bars`` 의 모든 봉 시각이 알려진 세션 안이어야 한다.
+1. **세션 범위**(``check_session``) — 그날 ``minute_bars`` 봉 시각이 알려진 세션 안이어야 한다.
    실측(2025-08-01~2026-10-12, 289거래일):
      정규장·동시호가·장후 시간외  09:00~15:35 (15:30 종가 단일가, 15:32·15:35 시간외 종가 봉)
-     애프터마켓(2026-09-14~)       16:00~19:59, 20:00~20:02 지연 체결 5행
+     애프터마켓(2026-09-14~)       16:00~19:59, 20:00~20:02 지연 체결 1~4행이 21거래일 중 12일
      개장 1시간 지연일              첫 봉 10:00 — 2026-01-02 신년 개장일(10:00~15:35, 마감은 그대로)
      개장·마감 1시간 지연일          2025-11-13 수능일(10:00~16:35, 15:21~15:29 에도 연속매매 봉 ~6,700행)
-   08:00~08:59·15:36~15:59 봉은 0 이다. 그 밖에 봉이 하나라도 있으면 새 세션이 생긴 것이다(NXT 프리마켓이
-   섞이는 등). 개장 지연(첫 봉 ≥10:00)과 마감 지연(15:21~15:29 봉 ≥100행 — 평일엔 0~1행)은 따로 판정한다
+   08:00~08:59·15:36~15:59 봉은 0 이다. 애프터마켓 창은 지연 체결 여유를 두고 20:10 까지 본다.
+   **창 밖 봉이 몇 행 있다고 실패하지 않는다** — 창 밖이 :data:`OUTSIDE_FAIL_ROWS` 행 이상이거나
+   :data:`OUTSIDE_FAIL_CODES` 종목 이상일 때만 새 세션이 생긴 것으로 본다(NXT 프리마켓이 섞이면 08:00~08:50
+   매분 ~1,000종목이라 수만 행이다). 1~2행짜리 떠돌이 봉으로 매일 아침 경보가 울리면 경보를 안 보게 된다.
+   개장 지연(첫 봉 ≥10:00)과 마감 지연(15:21~15:29 봉 ≥100행 — 평일엔 0~1행)은 따로 판정한다
    — 신년 개장일은 개장만 늦다.
+
+   **06:30 에 T 의 애프터마켓 봉은 일부만 있다.** scalp-it 분봉 수집(평일 15:45)이 T 의 16:00~ 봉을 다 못 받고
+   다음 거래일 런이 채운다 — 2026-10-13 01:30 실측 10-12 애프터마켓 17,721행·1,121종목(평소 ~135,000행·
+   ~2,280종목, ~13%). 그래서 T 만 보면 애프터마켓 쪽 새 세션(20:10 뒤 등)을 놓칠 수 있다(거짓 음성). 이를 덮으려고
+   세션 검사는 **T 와 T-1 둘 다** 본다 — T-1 은 06:30 에 다 적재돼 있다(10-08 134,462행). 08:00~ 프리마켓처럼
+   정규장 앞뒤의 새 세션은 T 에서 바로 잡힌다.
 2. **기준가 항등식**(``check_base_price_identity``) — t 의 정규장 종가(분봉 15:30~15:32 마지막 봉, 마감 지연일 16:30~16:32)는
    t+1 의 ``supply_demand`` 에서 ``틱반올림(close / (1 + flu_rt/1e4))`` 로 복원된다. ``flu_rt`` 의 기준가는
    애프터마켓 이후에도 전일 **정규장** 종가이고, 바뀐 건 ``close`` 쪽이다(09-14 이후 99.98% 정확).
@@ -31,6 +40,11 @@ docstring 에 남았다(``daily_finalize``). 원천 정의가 조용히 바뀌�
 ``minute_bars`` 는 scalp-it 이 쓰는 테이블이다(DDL 도 거기). 그날 분봉이 비면 두 검사가 표본 0 으로 실패한다
 — 빈 표본을 통과로 넘기지 않는다(CLAUDE.md §5).
 
+실패는 원인별로 구분해 찍는다(:data:`KIND_LABEL`) — 접속 실패(종료 코드 3, DB·환경변수 문제라 데이터와 무관) /
+표본 부족(수집이 빠지거나 반쪽) / 항등식 불일치 / 세션 이탈 / 카나리아(수정주가 혼입). 데이터 검사 실패는 종료 코드 1.
+
+DSN 은 명령줄로 받지 않는다(``ps`` 에 비밀번호가 찍힌다) — 환경변수 ``KR_QUANT_DB`` 로 받는다. ``--db`` 는 sqlite 경로 전용.
+
 판정은 순수 함수(DB 없이 테스트), 조회는 :func:`storage.fetchall`(sqlite·Postgres 양쪽, ``?`` 파라미터)에 둔다.
 """
 
@@ -39,6 +53,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import math
+import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
@@ -47,13 +62,18 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from . import storage
+from .config import mask_secrets
 
 #: 애프터마켓 개장일. 이 날 전에는 16:00 이후 봉이 있으면 안 된다.
 AFTERMARKET_START = dt.date(2026, 9, 14)
 
 #: (시작, 끝) 분 단위, 양끝 포함. 근거는 모듈 docstring 의 실측.
 REGULAR_WINDOW = (dt.time(9, 0), dt.time(15, 35))
-AFTERMARKET_WINDOW = (dt.time(16, 0), dt.time(20, 2))
+#: 애프터마켓 끝은 20:00 이지만 지연 체결 봉이 20:00~20:02 에 1~4행씩 찍힌다 — 여유를 둔다.
+AFTERMARKET_WINDOW = (dt.time(16, 0), dt.time(20, 10))
+#: 창 밖 봉이 이 행 수 이상이거나 이 종목 수 이상이면 새 세션 — 그 밑은 떠돌이 봉으로 통과(모듈 docstring).
+OUTSIDE_FAIL_ROWS = 50
+OUTSIDE_FAIL_CODES = 20
 #: 첫 봉이 이 시각 이후면 개장 지연일(수능·신년) — 정규장 창 시작을 10:00 으로.
 DELAYED_OPEN = dt.time(10, 0)
 #: 평소 종가 단일가(15:20~15:30)라 체결이 없는 구간. 여기 봉이 많으면 마감 지연일(수능)이다.
@@ -82,12 +102,29 @@ IDENTITY_MIN_PAIRS = 300
 
 CANARY = ("005930", dt.date(2017, 3, 31), 2_060_000)
 
+#: DSN 을 받는 환경변수(다른 레포가 이미 쓰는 이름).
+DSN_ENV = "KR_QUANT_DB"
+_PG_PREFIXES = ("postgresql://", "postgres://")
+
+#: 실패 원인 구분 — 메시지 머리와 끝 요약에 쓴다.
+KIND_LABEL = {
+    "connect": "접속 실패",
+    "sample": "표본 부족",
+    "identity": "항등식 불일치",
+    "session": "세션 이탈",
+    "canary": "카나리아",
+}
+EXIT_DATA_FAIL = 1
+EXIT_CONNECT_FAIL = 3
+
 
 @dataclass(frozen=True)
 class CheckResult:
     name: str
     ok: bool
     detail: str
+    #: 실패 원인(:data:`KIND_LABEL` 키). 통과면 그 검사의 종류.
+    kind: str = ""
 
 
 # ── 순수 함수 ──────────────────────────────────────────────────────────────
@@ -123,23 +160,46 @@ def close_bar_window(bar_counts: Mapping[dt.time, int]) -> tuple[dt.time, dt.tim
     return _shift(CLOSE_BAR_WINDOW[0], d), _shift(CLOSE_BAR_WINDOW[1], d)
 
 
-def check_session(day: dt.date, bar_counts: Mapping[dt.time, int]) -> CheckResult:
-    """``bar_counts``: 그날 분봉 시각(분) → 봉 수. 창 밖 봉이 하나라도 있으면 실패."""
+def outside_minutes(day: dt.date, bar_counts: Mapping[dt.time, int]) -> dict[dt.time, int]:
+    """그날 허용 세션 창 밖 분 → 봉 수."""
+    if not bar_counts:
+        return {}
+    windows = session_windows(day, bar_counts)
+    return {t: n for t, n in bar_counts.items() if not any(a <= t <= b for a, b in windows)}
+
+
+def check_session(
+    day: dt.date,
+    bar_counts: Mapping[dt.time, int],
+    outside_codes: int | None = None,
+    *,
+    fail_rows: int = OUTSIDE_FAIL_ROWS,
+    fail_codes: int = OUTSIDE_FAIL_CODES,
+) -> CheckResult:
+    """``bar_counts``: 그날 분봉 시각(분) → 봉 수. ``outside_codes``: 창 밖 봉의 서로 다른 종목 수
+    (없으면 행 수로 — 종목 수 ≤ 행 수라 보수적이다). 창 밖이 ``fail_rows`` 행 이상이거나 ``fail_codes``
+    종목 이상이면 실패, 그 밑은 떠돌이 봉으로 통과(상세에 남긴다)."""
     name = f"session {day}"
     if not bar_counts:
-        return CheckResult(name, False, "minute_bars 0행 — 분봉 수집이 빠졌다(scalp-it)")
+        return CheckResult(name, False, "minute_bars 0행 — 분봉 수집이 빠졌다(scalp-it)", "sample")
     windows = session_windows(day, bar_counts)
-    outside = {t: n for t, n in bar_counts.items() if not any(a <= t <= b for a, b in windows)}
+    outside = outside_minutes(day, bar_counts)
     total = sum(bar_counts.values())
     span = ", ".join(f"{a:%H:%M}~{b:%H:%M}" for a, b in windows)
-    if outside:
-        sample = ", ".join(f"{t:%H:%M}×{n}" for t, n in sorted(outside.items())[:10])
+    if not outside:
+        return CheckResult(name, True, f"{total}행 모두 세션 안({span})", "session")
+    rows = sum(outside.values())
+    codes = rows if outside_codes is None else outside_codes
+    sample = ", ".join(f"{t:%H:%M}×{n}" for t, n in sorted(outside.items())[:10])
+    head = f"알려진 세션({span}) 밖 봉 {rows}/{total}행·{codes}종목: {sample}"
+    if rows >= fail_rows or codes >= fail_codes:
         return CheckResult(
             name, False,
-            f"알려진 세션({span}) 밖 봉 {sum(outside.values())}/{total}행: {sample}"
-            " — 새 세션이 생겼다(원천 정의 변경). docs/schema.md 의 분봉 설명과 이 검사를 같이 고친다",
+            head + f" (문턱 {fail_rows}행 또는 {fail_codes}종목) — 새 세션이 생겼다(원천 정의 변경)."
+            " docs/schema.md 의 분봉 설명과 이 검사를 같이 고친다",
+            "session",
         )
-    return CheckResult(name, True, f"{total}행 모두 세션 안({span})")
+    return CheckResult(name, True, head + f" — 떠돌이 봉(문턱 {fail_rows}행·{fail_codes}종목 미만), 통과", "session")
 
 
 def krx_tick(price: float | Fraction, day: dt.date | None = None) -> int:
@@ -264,6 +324,7 @@ def check_base_price_identity(
         return CheckResult(
             name, False,
             f"대조 표본 {pairs} < {min_pairs} — {prev_day} 분봉 종가 봉이나 {day} 수급이 반쪽이다",
+            "sample",
         )
     rate = len(bad) / pairs
     sample = ", ".join(f"{c} 분봉 {int(r):,} vs 복원 {'없음' if i is None else f'{i:,}'}" for c, r, i in bad[:5])
@@ -272,21 +333,23 @@ def check_base_price_identity(
         return CheckResult(
             name, False,
             detail + " — supply_demand.flu_rt 의 기준가 정의나 close 수집이 바뀌었다",
+            "identity",
         )
-    return CheckResult(name, True, detail)
+    return CheckResult(name, True, detail, "identity")
 
 
 def check_raw_price_canary(close: float | None) -> CheckResult:
     code, day, expected = CANARY
     name = f"canary daily_bars_raw {code} {day}"
     if close is None:
-        return CheckResult(name, True, "행 없음 — 통과(백필 범위 밖)")
+        return CheckResult(name, True, "행 없음 — 통과(백필 범위 밖)", "canary")
     if int(close) != expected:
         return CheckResult(
             name, False,
             f"close {int(close):,} ≠ {expected:,} — 무수정 주가 테이블에 수정주가가 섞였다(upd_stkpc_tp)",
+            "canary",
         )
-    return CheckResult(name, True, f"close {expected:,}")
+    return CheckResult(name, True, f"close {expected:,}", "canary")
 
 
 # ── 조회(sqlite·Postgres 공용) ──────────────────────────────────────────────
@@ -334,6 +397,22 @@ def fetch_bar_counts(con: Any, day: dt.date) -> dict[dt.time, int]:
     return counts
 
 
+def fetch_outside_codes(con: Any, day: dt.date, minutes: Iterable[dt.time]) -> int:
+    """창 밖 분(``minutes``)에 봉이 있는 서로 다른 종목 수."""
+    stamps = [_ts(day, t) for t in sorted(minutes)]
+    if not stamps:
+        return 0
+    marks = ",".join("?" * len(stamps))
+    row = storage.fetchone(con, f"SELECT COUNT(DISTINCT code) FROM minute_bars WHERE ts IN ({marks})", tuple(stamps))
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def session_result(con: Any, day: dt.date) -> CheckResult:
+    counts = fetch_bar_counts(con, day)
+    outside = outside_minutes(day, counts)
+    return check_session(day, counts, fetch_outside_codes(con, day, outside) if outside else 0)
+
+
 def fetch_regular_close(con: Any, day: dt.date, window: tuple[dt.time, dt.time]) -> dict[str, float]:
     """day 의 종목별 정규장 종가 = ``window``(:func:`close_bar_window`) 안 마지막 분봉 종가."""
     lo, hi = window
@@ -362,13 +441,17 @@ def fetch_canary_close(con: Any) -> float | None:
 
 
 def run_checks(con: Any, asof: dt.date) -> list[CheckResult]:
-    """``asof`` 전 마지막 거래일 T 를 본다: T 의 세션, (T 직전 거래일 → T) 항등식, 카나리아."""
+    """``asof`` 전 마지막 거래일 T 를 본다: T-1·T 의 세션, (T-1 → T) 항등식, 카나리아.
+
+    T-1 세션도 보는 이유: 06:30 에 T 의 애프터마켓 봉은 ~13% 만 적재돼 있다(모듈 docstring) — T-1 은 다 있다.
+    """
     days = trading_days(con, asof, 2)
     if len(days) < 2:
-        return [CheckResult("trading days", False, f"{asof} 전 supply_demand 거래일이 2개 미만")]
+        return [CheckResult("trading days", False, f"{asof} 전 supply_demand 거래일이 2개 미만", "sample")]
     prev_day, day = days
     return [
-        check_session(day, fetch_bar_counts(con, day)),
+        session_result(con, prev_day),
+        session_result(con, day),
         check_base_price_identity(
             prev_day, day,
             fetch_regular_close(con, prev_day, close_bar_window(fetch_bar_counts(con, prev_day))),
@@ -380,33 +463,53 @@ def run_checks(con: Any, asof: dt.date) -> list[CheckResult]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--db", help="sqlite 경로 또는 postgresql:// DSN (읽기만 한다)")
+    ap.add_argument("--db", help=f"sqlite 경로(테스트용). 없으면 환경변수 {DSN_ENV} 의 DSN — DSN 은 명령줄로 받지 않는다(ps 노출)")
     ap.add_argument("--asof", type=dt.date.fromisoformat, default=None,
                     help="이 날짜 전 마지막 거래일을 본다(기본: 오늘 KST)")
     ap.add_argument("--days", type=int, default=1,
                     help="--asof 부터 거꾸로 거래일 N 개를 차례로 본다(이력 점검용, 기본 1)")
     args = ap.parse_args(argv)
+    if args.db and args.db.startswith(_PG_PREFIXES):
+        ap.error(f"--db 에 DSN 을 넘기지 않는다(ps 에 비밀번호가 찍힌다) — 환경변수 {DSN_ENV} 로 넘긴다")
+    target = args.db or os.environ.get(DSN_ENV)
+    if not target:
+        print(f"[FAIL:{KIND_LABEL['connect']}] --db 도 환경변수 {DSN_ENV} 도 없다", flush=True)
+        return EXIT_CONNECT_FAIL
 
-    con = storage.connect(args.db)
-    if storage._is_pg(con):
-        con.set_session(readonly=True)
     # 컨테이너 시계는 UTC 일 수 있다 — 06:30 KST 는 UTC 로 전날이라 하루 묵은 날을 보게 된다.
     asof = args.asof or dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
-    targets = [asof]
-    if args.days > 1:
-        targets = [d + dt.timedelta(days=1) for d in trading_days(con, asof, args.days)]
-    results: list[CheckResult] = []
-    for i, t in enumerate(targets):
-        batch = run_checks(con, t)
-        if i < len(targets) - 1:  # 카나리아는 날짜와 무관 — 한 번만
-            batch = [r for r in batch if not r.name.startswith("canary")]
-        results.extend(batch)
+    try:
+        con = storage.connect(target)
+        if storage._is_pg(con):
+            con.set_session(readonly=True)
+        targets = [asof]
+        if args.days > 1:
+            targets = [d + dt.timedelta(days=1) for d in trading_days(con, asof, args.days)]
+        results: list[CheckResult] = []
+        seen: set[str] = set()
+        for t in targets:
+            # 카나리아는 날짜와 무관, 세션은 이웃 날짜끼리 겹친다 — 같은 이름은 한 번만
+            for r in run_checks(con, t):
+                if r.name not in seen:
+                    seen.add(r.name)
+                    results.append(r)
+    except Exception as e:  # noqa: BLE001 — 접속·조회 실패를 데이터 실패와 구분해 찍는다
+        # 예외 문자열에 DSN 이 들어갈 수 있다 — 가리고 첫 줄만
+        msg = mask_secrets(str(e)).strip().splitlines()[:1]
+        print(f"[FAIL:{KIND_LABEL['connect']}] DB 접속·조회 실패: {type(e).__name__}: {''.join(msg)}", flush=True)
+        return EXIT_CONNECT_FAIL
     for r in results:
-        print(f"[{'OK' if r.ok else 'FAIL'}] {r.name}: {r.detail}", flush=True)
+        tag = "OK" if r.ok else f"FAIL:{KIND_LABEL.get(r.kind, r.kind)}"
+        print(f"[{tag}] {r.name}: {r.detail}", flush=True)
     failed = [r for r in results if not r.ok]
     if failed:
-        print(f"데이터 품질 검사 실패 {len(failed)}/{len(results)}", flush=True)
-        return 1
+        by_kind: dict[str, int] = {}
+        for r in failed:
+            label = KIND_LABEL.get(r.kind, r.kind)
+            by_kind[label] = by_kind.get(label, 0) + 1
+        kinds = ", ".join(f"{k} {n}" for k, n in by_kind.items())
+        print(f"데이터 품질 검사 실패 {len(failed)}/{len(results)} — {kinds}", flush=True)
+        return EXIT_DATA_FAIL
     print(f"데이터 품질 검사 통과 {len(results)}건", flush=True)
     return 0
 

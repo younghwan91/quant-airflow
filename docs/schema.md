@@ -76,8 +76,12 @@ ka10080(분봉)은 접미사 없는 KRX 코드 응답에 애프터마켓 체결�
   파이썬 판은 `collectors/data_checks.py` 의 `krx_tick`·`tick_round`·`base_close`·`derive_regular_close` — 표·격자·날짜가 어긋나면
   `tests/test_data_checks.py` 가 깨진다. `daily_finalize.check_data_quality` 의 항등식 검사가 같은 `base_close` 를 매일 분봉과 대조한다.
 
-`daily_finalize` 의 마지막 태스크 `check_data_quality`(`collectors/data_checks.py`)가 매일 전 거래일을 검사한다 — 분봉이 위 세션 밖에 있으면,
+`daily_finalize` 의 마지막 태스크 `check_data_quality`(`collectors/data_checks.py`, 상류가 실패해도 돈다)가 매일 전 거래일 T 를 검사한다 —
+T-1·T 분봉이 위 세션(애프터마켓은 지연 체결 여유로 20:10 까지) 밖에 50행 이상 또는 20종목 이상 있으면(1~2행 떠돌이 봉은 통과),
 항등식 불일치가 1% 를 넘으면(표본 300 미만도), `daily_bars_raw` 카나리아가 틀리면 실패한다. 새 세션이 생기거나 `flu_rt` 정의가 바뀌면 여기서 먼저 터진다.
+실패 줄은 원인을 머리에 단다(`[FAIL:접속 실패]` 종료 3 / `표본 부족`·`항등식 불일치`·`세션 이탈`·`카나리아` 종료 1).
+06:30 에 T 의 애프터마켓 봉은 ~13% 만 적재돼 있어(scalp-it 15:45 수집, 다음 거래일 런이 채운다) T 의 세션 검사는 애프터마켓 쪽 새 세션을
+놓칠 수 있다 — 그래서 다 적재된 T-1 도 본다.
 
 ## 관계형 (일반 테이블, 시계열 아님)
 
