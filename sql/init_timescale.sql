@@ -312,6 +312,52 @@ CREATE TABLE IF NOT EXISTS earnings_disclosures (
 );
 CREATE INDEX IF NOT EXISTS idx_earnings_disclosures_rcept_dt ON earnings_disclosures(rcept_dt);
 
+-- DART 정기보고서 원문 파싱 실적 2007~2015(034, collectors/dart_doc). 레코드 = 공시 한 건, knowledge_date = 접수일
+-- (정정은 정정본 접수일로 새 행). 의미·as-of 읽는 법은 docs/schema.md.
+CREATE TABLE IF NOT EXISTS earnings_dart_doc (
+    code                  TEXT    NOT NULL,
+    period                TEXT    NOT NULL,
+    knowledge_date        DATE    NOT NULL,
+    rcept_no              TEXT    NOT NULL,
+    is_correction         BOOLEAN NOT NULL,
+    basis                 TEXT,                 -- 'cfs' | 'ofs' | NULL
+    netinc                DOUBLE PRECISION,
+    derived               BOOLEAN NOT NULL DEFAULT FALSE,
+    basis_ctrl            TEXT,                 -- 'ctrl' | 'cfs' | 'ofs' | NULL
+    netinc_ctrl           DOUBLE PRECISION,
+    derived_ctrl          BOOLEAN NOT NULL DEFAULT FALSE,
+    ctrl_q                DOUBLE PRECISION,
+    ctrl_ytd              DOUBLE PRECISION,
+    ctrl_q_derived        BOOLEAN NOT NULL DEFAULT FALSE,
+    cfs_q                 DOUBLE PRECISION,
+    cfs_ytd               DOUBLE PRECISION,
+    cfs_q_derived         BOOLEAN NOT NULL DEFAULT FALSE,
+    ofs_q                 DOUBLE PRECISION,
+    ofs_ytd               DOUBLE PRECISION,
+    ofs_q_derived         BOOLEAN NOT NULL DEFAULT FALSE,
+    ytd_start             DATE,                 -- 누적 시작일이 1월 1일이 아닐 때만(설립 첫해 — *_ytd 는 이날부터)
+    -- 전년 동기 비교값(같은 보고서의 비교 열, earnings.netinc_prior 와 같은 정의) — 2단계에서 채운다, 그 전엔 NULL
+    netinc_prior          DOUBLE PRECISION,
+    netinc_ctrl_prior     DOUBLE PRECISION,
+    ctrl_prior_q          DOUBLE PRECISION,
+    cfs_prior_q           DOUBLE PRECISION,
+    ofs_prior_q           DOUBLE PRECISION,
+    prior_basis_note      TEXT,
+    shares_common         BIGINT,
+    shares_preferred      BIGINT,
+    shares_total          BIGINT,
+    shares_asof           DATE,
+    shares_asof_inferred  BOOLEAN NOT NULL DEFAULT FALSE,
+    shares_method         TEXT,                 -- 'acode'(ISU_STK3) | 'label' | 'voting'(의결권 현황 표)
+    src                   JSONB,                -- 기준별 출처 {"cfs": "is:<파일>", "cfs_cum": "is"|"cf"|"summary", ...}
+    flags                 TEXT[]  NOT NULL DEFAULT '{}',
+    source                TEXT    NOT NULL DEFAULT 'dart_doc',
+    PRIMARY KEY (code, period, knowledge_date),
+    CHECK (basis IS NULL OR basis IN ('cfs', 'ofs')),
+    CHECK (basis_ctrl IS NULL OR basis_ctrl IN ('ctrl', 'cfs', 'ofs'))
+);
+CREATE INDEX IF NOT EXISTS earnings_dart_doc_period_idx ON earnings_dart_doc (period, knowledge_date);
+
 -- 종목의 WICS 섹터·산업군 이력 — wiseindex 주간 스냅샷(020).
 CREATE TABLE IF NOT EXISTS wics_membership (
     date         DATE NOT NULL,

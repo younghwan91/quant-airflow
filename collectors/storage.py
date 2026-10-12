@@ -408,6 +408,47 @@ CREATE TABLE IF NOT EXISTS earnings_disclosures (
     report_nm  TEXT NOT NULL,
     PRIMARY KEY (code, period, kind)
 );
+-- DART 정기보고서 원문 파싱 실적 2007~2015(034, collectors/dart_doc·dart_doc_run). 레코드 = 공시 한 건,
+-- knowledge_date = 접수일(정정은 정정본 접수일 — 새 행). 불리언은 0/1, flags·src 는 JSON 문자열(Postgres 는 TEXT[]·JSONB).
+CREATE TABLE IF NOT EXISTS earnings_dart_doc (
+    code                  TEXT NOT NULL,
+    period                TEXT NOT NULL,
+    knowledge_date        TEXT NOT NULL,
+    rcept_no              TEXT NOT NULL,
+    is_correction         INTEGER NOT NULL,
+    basis                 TEXT,
+    netinc                REAL,
+    derived               INTEGER NOT NULL DEFAULT 0,
+    basis_ctrl            TEXT,
+    netinc_ctrl           REAL,
+    derived_ctrl          INTEGER NOT NULL DEFAULT 0,
+    ctrl_q                REAL,
+    ctrl_ytd              REAL,
+    ctrl_q_derived        INTEGER NOT NULL DEFAULT 0,
+    cfs_q                 REAL,
+    cfs_ytd               REAL,
+    cfs_q_derived         INTEGER NOT NULL DEFAULT 0,
+    ofs_q                 REAL,
+    ofs_ytd               REAL,
+    ofs_q_derived         INTEGER NOT NULL DEFAULT 0,
+    ytd_start             TEXT,
+    netinc_prior          REAL,
+    netinc_ctrl_prior     REAL,
+    ctrl_prior_q          REAL,
+    cfs_prior_q           REAL,
+    ofs_prior_q           REAL,
+    prior_basis_note      TEXT,
+    shares_common         INTEGER,
+    shares_preferred      INTEGER,
+    shares_total          INTEGER,
+    shares_asof           TEXT,
+    shares_asof_inferred  INTEGER NOT NULL DEFAULT 0,
+    shares_method         TEXT,
+    src                   TEXT,
+    flags                 TEXT NOT NULL DEFAULT '[]',
+    source                TEXT NOT NULL DEFAULT 'dart_doc',
+    PRIMARY KEY (code, period, knowledge_date)
+);
 CREATE TABLE IF NOT EXISTS wics_membership (
     date         TEXT NOT NULL,
     code         TEXT NOT NULL,
@@ -1058,6 +1099,27 @@ def insert_earnings_disclosures(con: Any, records: list[tuple]) -> int:
     """
     return _upsert(con, "earnings_disclosures", _EARNINGS_DISCLOSURES_COLS, records,
                    pk_cols=("code", "period", "kind"), on_conflict="nothing")
+
+
+EARNINGS_DART_DOC_COLS = [
+    "code", "period", "knowledge_date", "rcept_no", "is_correction",
+    "basis", "netinc", "derived", "basis_ctrl", "netinc_ctrl", "derived_ctrl",
+    "ctrl_q", "ctrl_ytd", "ctrl_q_derived", "cfs_q", "cfs_ytd", "cfs_q_derived", "ofs_q", "ofs_ytd", "ofs_q_derived",
+    "ytd_start", "netinc_prior", "netinc_ctrl_prior", "ctrl_prior_q", "cfs_prior_q", "ofs_prior_q", "prior_basis_note",
+    "shares_common", "shares_preferred", "shares_total", "shares_asof", "shares_asof_inferred",
+    "shares_method", "src", "flags", "source",
+]
+
+
+def upsert_earnings_dart_doc(con: Any, records: list[tuple]) -> int:
+    """``earnings_dart_doc`` upsert(034). PK (code, period, knowledge_date).
+
+    같은 PK 가 한 배치에 둘이면 접수번호가 늦은 행이 남도록 정렬해 넘긴다 — ``_upsert`` 의 Postgres 경로는
+    배치 안 중복 키에서 뒤에 온 행을 살린다(CardinalityViolation 방지, 4e2de05).
+    """
+    i = EARNINGS_DART_DOC_COLS.index("rcept_no")
+    return _upsert(con, "earnings_dart_doc", EARNINGS_DART_DOC_COLS, sorted(records, key=lambda r: r[i]),
+                   pk_cols=("code", "period", "knowledge_date"))
 
 
 _WICS_MEMBERSHIP_COLS = ["date", "code", "sector_cd", "sector_nm", "industry_cd", "industry_nm",

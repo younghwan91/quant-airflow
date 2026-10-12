@@ -93,3 +93,71 @@ def test_code_status_categories():
     assert dr.code_status({"error": "no_filing"}) == "no_filing"
     assert dr.code_status({"error": None, "records": [{"netinc": None}]}) == "parse_fail"
     assert dr.code_status({"error": None, "records": [{"netinc": 1.0}]}) == "ok"
+
+
+# ---------------------------------------------------------------- load(sqlite 경로)·상한·원자적 쓰기
+
+
+def _rec(period: str, kd: str, rno: str, netinc: float | None, corr: bool = False) -> dict:
+    return {"period": period, "knowledge_date": kd, "rcept_no": rno, "is_correction": corr, "basis": "ofs",
+            "netinc": netinc, "derived": False, "basis_ctrl": "ofs", "netinc_ctrl": netinc, "derived_ctrl": False,
+            "ctrl_q": None, "ctrl_ytd": None, "ctrl_q_derived": False, "cfs_q": None, "cfs_ytd": None,
+            "cfs_q_derived": False, "ofs_q": netinc, "ofs_ytd": netinc, "ofs_q_derived": False, "ytd_start": None,
+            "src": {"ofs": "is:x"}, "flags": ["ofs_x"],
+            "shares": {"common": 100, "preferred": 0, "total": 100, "asof": "2009-03-31", "asof_inferred": False,
+                       "method": "acode"}}
+
+
+def test_load_rows_upserts_into_sqlite_and_keeps_later_receipt(tmp_path):
+    from collectors.storage import connect, fetchall
+
+    con = connect(tmp_path / "t.db")
+    rows = [{"code": "005930", "records": [
+        _rec("2009Q1", "2009-05-15", "20090515000002", 2.0),
+        _rec("2009Q1", "2009-05-15", "20090515000001", 1.0),  # 같은 날 앞 접수번호 — 뒤 판이 남는다
+        _rec("2009Q2", "2009-08-14", "20090814000001", 3.0),
+    ]}]
+    assert dr.load_rows(con, rows) >= 2
+    con.commit()
+    got = fetchall(con, "SELECT period, rcept_no, netinc, shares_common, flags, netinc_prior FROM earnings_dart_doc "
+                        "ORDER BY period", ())
+    assert [tuple(r) for r in got] == [("2009Q1", "20090515000002", 2.0, 100, '["ofs_x"]', None),
+                                       ("2009Q2", "20090814000001", 3.0, 100, '["ofs_x"]', None)]
+    # 다시 넣어도 같은 행(멱등)
+    dr.load_rows(con, rows)
+    con.commit()
+    assert fetchall(con, "SELECT count(*) FROM earnings_dart_doc", ())[0][0] == 2
+
+
+def test_load_rows_with_zero_records_raises(tmp_path):
+    from collectors.storage import connect
+
+    con = connect(tmp_path / "t.db")
+    with pytest.raises(RuntimeError, match="0건"):
+        dr.load_rows(con, [{"code": "x", "records": [], "error": "no_map"}])
+
+
+def test_record_row_fills_prior_when_present():
+    from collectors.storage import EARNINGS_DART_DOC_COLS
+
+    rec = {**_rec("2009Q1", "2009-05-15", "1", 2.0), "netinc_prior": 1.5, "prior_basis_note": "x"}
+    row = dict(zip(EARNINGS_DART_DOC_COLS, dr.record_row("005930", rec, pg=False), strict=True))
+    assert (row["netinc_prior"], row["prior_basis_note"], row["ofs_prior_q"]) == (1.5, "x", None)
+    assert row["is_correction"] == 0 and row["shares_method"] == "acode"
+
+
+def test_call_budget_stops_cleanly_and_persists_per_key_per_day(tmp_path):
+    d = dr.Dart("k", tmp_path, key_name="DART_API_KEY_X", max_calls=2)
+    d._tick()
+    d._tick()
+    with pytest.raises(dr.DartBudget):
+        d._tick()
+    again = dr.Dart("k", tmp_path, key_name="DART_API_KEY_X", max_calls=2)  # 같은 날 다시 시작해도 이어진다
+    assert again.today == 2
+
+
+def test_atomic_write_leaves_no_temp(tmp_path):
+    p = tmp_path / "doc_1.zip"
+    dr.atomic_write(p, b"PK")
+    assert p.read_bytes() == b"PK"
+    assert [x.name for x in tmp_path.iterdir()] == ["doc_1.zip"]

@@ -103,6 +103,7 @@ T-1·T 분봉이 위 세션(애프터마켓은 지연 체결 여유로 20:10 까
 | `stocks` | 종목 마스터(코드·이름·시장·섹터) |
 | `earnings` | DART 분기 실적(순이익·매출·영업이익, 당기/전년동기), lookahead-safe `avail_date` + 정정 이력을 보존하는 `knowledge_date`(PK: code, period, knowledge_date) |
 | `earnings_disclosures` | 실적이 **실제로 알려진 날** — DART 원본 공시 접수일, `(code, period, kind)` 마다 가장 이른 것. `kind` = `prelim`(영업(잠정)실적 공정공시)·`pl_change`(매출액또는손익구조 30%/15% 변경)·`periodic`(사업·반기·분기보고서). `earnings` 와 `(code, period)` 로 조인 — `avail_date` 는 법정 마감 근사라 늦다(005930 2020Q1: avail 05-15, prelim 04-07). 날짜만 있고 잠정은 장 마감 뒤 제출이 많아 **다음 거래일부터** 거래 가능으로 본다. 비12월 결산·정정·자회사 공시는 없다. `collectors/dart_filing_dates.py`, 2019~ |
+| `earnings_dart_doc` | **2007~2015 DART 정기보고서 원문에서 읽은 분기 순이익·발행주식총수**(034, `collectors/dart_doc.py`·`dart_doc_run.py`). `earnings`(2016~, API)와 따로 둔다 — 정의·기준이 다르다. 행 = 공시 한 건, PK `(code, period, knowledge_date)`, 원 단위. 읽는 법은 아래 [earnings_dart_doc](#earnings_dart_doc--20072015-원문-실적-migration-034) |
 | `wics_membership` | 종목의 WICS 섹터(G10..G55)·산업군(중분류 G1010..G5510) **주간 스냅샷**(매주 첫 거래일), 2019~. wiseindex 가 그날 구성으로 답해 point-in-time 이다(NC 036570: 2019 G45 → 2026 G50). 분류 셋을 같이 둔다 — `sector_cd`(섹터 지수, 완전)·`industry_cd`(중분류, 2019 미디어 등 NULL)·`wi26_cd`(WI26 26업종, 2026 은 일부 NULL). 어느 쪽도 전 종목을 덮지 못한다(migration 020 실측). WICS 지수에 없는 종목(스팩·리츠 등)은 행이 없다. `collectors/wics.py` |
 | `index_changes` | KOSPI 200·KOSDAQ 150·KRX 300·KOSPI 100·50 **정기변경 편입·편출** — KOSDAQ 150 2015-12~, KOSPI 200 2016-06~(2019 까지 6월만), KRX 300 2018-06~, KOSPI 100·50 은 2019-06 까지만 같은 공지에 있다. `effective_date` = 정기변경일(동시만기일 다음 거래일 — 그날부터 새 구성, 패시브 매매는 **전 거래일 종가**), `announce_date` = 공지 게시일(시각 없음). KRX 지수운영공지 첨부 엑셀에서. 수시변경(특례편입·분할·합병·신규상장)은 없다 — `index_notices` 원문 |
 | `index_constituents` | 정기변경 후 **전체 명단**(그 `effective_date` 부터 다음 정기변경 전까지, 사이 수시변경 미반영). 명단 크기가 200/150/300/100/50 이 아니면 수집기가 예외 |
@@ -111,6 +112,29 @@ T-1·T 분봉이 위 세션(애프터마켓은 지연 체결 여유로 20:10 까
 | `backfill_markers` | `(code, source)` — "조회해봤는데 자료가 없더라"를 기록해 백필이 같은 코드를 매 회차 다시 훑지 않게 한다 |
 | `news_judgments` | LLM이 news_articles/disclosures를 읽고 낸 판단. PK `(source_type, source_id, ticker, prompt_version)` — prompt_version이 바뀌면 새 행, 기존 행은 절대 안 고침(재현성). `confidence`(LLM 자체 확신도 0~100)·`judged_at`(응답 시각, 레이턴시 측정용)은 013 이후 행에만 있다(NULL=013 이전). **`judged_at`은 TIMESTAMPTZ(UTC 저장)** — scalp-it이 `ticks.ts`(naive KST)와 조인하다 9시간 밀리는 걸 실측했다(2026-09-06). naive KST 컬럼과 조인하는 쪽은 항상 KST로 변환해야 한다. **2026-10-12 부터 Haiku 5.5·`prompt_version` v2 만** — v1(Haiku 4.5) 14,534행은 018 로 `legacy.news_judgments_haiku45` 에 보관 |
 | `news_judge_batches` | `news_judge.py` 의 Message Batches 원장 `(batch_id)` — `items` JSONB = custom_id `r{i}` → `[source_type, source_id, ticker]`, `collected_at` NULL = 아직 수거 안 함. create 직후 곧바로 쓴다 — 태스크가 못 기다리거나 죽어도 다음 실행이 수거하고, 그 안의 기사를 다시 내지 않는다(이중 과금 방지) |
+
+### `earnings_dart_doc` — 2007~2015 원문 실적 (migration 034)
+
+- **knowledge_date = 그 레코드를 실은 공시의 접수일**(접수번호 앞 8자리). 시각이 없고 정기보고서는 장 마감 뒤
+  제출이 많아 **다음 거래일부터** 쓴다. 정정공시는 정정본 접수일로 **새 행**이다(`is_correction`, `rcept_no`).
+- **as-of 로 읽기**: 시점 T 에 알 수 있던 값 = `(code, period)` 마다 `knowledge_date < T`(다음 거래일 규칙) 인 행 중
+  `knowledge_date` 가 가장 늦은 것. 순이익 값이 하나도 없는 정정본은 적재하지 않으므로 최신 행이 원본 값을 NULL 로 가리지 않는다.
+  ```sql
+  SELECT DISTINCT ON (code, period) * FROM earnings_dart_doc
+   WHERE knowledge_date < :asof ORDER BY code, period, knowledge_date DESC;
+  ```
+- **netinc / basis** = `earnings` 와 같은 정의: 연결 당기순이익(비지배 포함, `cfs`) → 없으면 별도(`ofs`). 연결이
+  요약재무정보뿐이고 별도는 손익계산서가 있으면 별도가 먼저(XBRL 이 본표를 따른다). **netinc_ctrl / basis_ctrl** =
+  지배기업 소유주 귀속(`ctrl`) → 연결 합계 → 별도. 값은 그 분기 몫: Q1~Q3 = 3개월, **Q4 = 사업연도 전체**(`earnings` 와 같다).
+  기준별 3개월·누적은 `{ctrl,cfs,ofs}_q`·`_ytd`(Q4 `_q` 는 연간 − 3분기 누적), 차분으로 만든 3개월은 `*_derived`.
+  차분은 같은 기준·같은 누적 시작일(`ytd_start`, 설립 첫해만 1월 1일이 아님)끼리만 한다.
+- **비12월 결산 미지원**: 3·6월 결산사는 넣지 않는다(달력분기 라벨이 회계분기와 어긋난다). `earnings` 는 이들을 회계분기
+  그대로 달력 라벨로 담고 있어 두 표를 이으면 그 종목은 이음매가 생긴다. 증권·보험사는 2013 까지 3월 결산이라 빠진다.
+- **2008(K-GAAP) 기준 혼합**: 2010 까지 분기보고서는 별도만, 사업보고서(Q4)만 연결이다(분기 연결 의무 없음). 한 해 안에서
+  Q1~Q3 `basis='ofs'`, Q4 `'cfs'` 가 섞인다 — 시계열로 쓸 때 `basis` 를 같이 본다(같은 기준 열 `ofs_*` 는 연간까지 이어진다).
+  2011 K-IFRS 부터 분기도 연결.
+- 검증(2016 겹침): `earnings` 와 대조 가능한 보고서 기준 97.9%, 같은 공시를 다르게 읽은 것 0. `flags` 의
+  `cfs_ctrl_inconsistent`(회사 표의 지배+비지배 ≠ 합계 — ctrl 을 비웠다)·`unit_rescaled`·`*_unit_conflict` 는 걸러 쓸 수 있다.
 
 ## TimescaleDB 설계 노트
 
@@ -175,6 +199,7 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 | `031_regular_close` | `regular_close` 뷰 + `krx_tick_size`·`krx_tick_round`·`krx_base_close` 함수 — 2026-09-14~ 정규장 종가를 기준가 항등식으로 파생(사용자 승인 10-13 "항등식 파생부터"). 테이블·기존 행은 건드리지 않는다 |
 | `032_naver_mstock` | `naver_investor_trend`·`naver_research_reports` 신설 — 2008~ 수급·보유율·리포트 목표가(swing-it 요청). 키움 ka10008 은 50일, 옛 frgn.naver 는 개편으로 사라짐 |
 | `033_program_trading` | `program_trading` 신설 — 종목별 일별 프로그램 매매(swing-it 요청, 2016-09~) |
+| `034_earnings_dart_doc` | `earnings_dart_doc` 신설 — 2007~2015 DART 정기보고서 원문 파싱 실적·발행주식총수(2006~2016 이력 확장 완료 조건 C, 2016 겹침 97.9%). `earnings` 와 정의가 달라 섞지 않는다 |
 
 > ⚠️ 001 은 코드가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이 `daily_earnings` 가
 > 초록불이었던 건 비수기라 `rows=0` 이어서 DB 를 건드리기 전에 빠져나갔기 때문이지,

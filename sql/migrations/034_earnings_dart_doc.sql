@@ -15,7 +15,10 @@
 --   rcept_no        그 공시 접수번호, is_correction = [기재정정]·[첨부추가] 등 정정본
 --   netinc/basis    earnings 와 같은 정의(연결 합계 → 별도), 그 분기 값: Q1~Q3 = 3개월, Q4 = 사업연도 전체(원)
 --   netinc_ctrl/basis_ctrl  지배기업 소유주 귀속 우선(ctrl → cfs → ofs)
---   derived*        3개월 값을 같은 기준의 누적 − 직전 분기 누적(그 접수일까지 알려진 판)으로 만들었다
+--   derived*        3개월 값을 같은 기준의 누적 − 직전 분기 누적(그 접수일까지 알려진 판, 누적 시작일이 같을 때만)으로 만들었다
+--   *_prior         전년 동기(Q1~Q3 3개월, Q4 전년 연간) — 같은 보고서·같은 표의 비교 열(재작성 반영), 없으면 NULL.
+--                   prior_basis_note = 비교 열 사정(3개월 비교 열 없음 등). 당기 적재 뒤 reparse-prior 로 채운다
+--   ytd_start       누적 시작일이 1월 1일이 아니면 그 날(설립 첫해, 139130 DGB 2011-05-17) — NULL = 1월 1일
 --   {ctrl,cfs,ofs}_q / _ytd  기준별 3개월·누적(Q4 _ytd = 연간, ofs_ytd = 별도 연간). 기준이 다른 값끼리 빼지 않는다
 --   shares_*        '주식의 총수 등' 발행주식총수(유통주식수 아님) — shares_asof 를 못 찾으면 NULL + shares_asof_inferred,
 --                   shares_method = 어느 표에서 읽었나
@@ -48,6 +51,14 @@ CREATE TABLE IF NOT EXISTS earnings_dart_doc (
     ofs_q                 DOUBLE PRECISION,
     ofs_ytd               DOUBLE PRECISION,
     ofs_q_derived         BOOLEAN NOT NULL DEFAULT FALSE,
+    ytd_start             DATE,                 -- 누적 시작일이 1월 1일이 아닐 때만(설립 첫해 — *_ytd 는 이날부터)
+    -- 전년 동기 비교값(같은 보고서의 비교 열, earnings.netinc_prior 와 같은 정의) — 2단계에서 채운다, 그 전엔 NULL
+    netinc_prior          DOUBLE PRECISION,
+    netinc_ctrl_prior     DOUBLE PRECISION,
+    ctrl_prior_q          DOUBLE PRECISION,
+    cfs_prior_q           DOUBLE PRECISION,
+    ofs_prior_q           DOUBLE PRECISION,
+    prior_basis_note      TEXT,
     shares_common         BIGINT,
     shares_preferred      BIGINT,
     shares_total          BIGINT,
