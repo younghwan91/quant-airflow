@@ -48,3 +48,35 @@ def test_resume_checks_the_table_being_written(tmp_path):
     collect(api, con, [{"code": "005930", "name": "삼성전자"}], progress_every=1)          # daily_bars 에만 있음
     stats = collect(api, con, [{"code": "005930", "name": "삼성전자"}], raw=True, resume=True, progress_every=1)
     assert stats["done"] == 1 and stats["skipped"] == 0          # raw 쪽은 비었으니 건너뛰지 않는다
+
+
+class _EventChart:
+    """005930 50:1 분할 창 — 키움은 이벤트 행에만 upd_stkpc_tp·upd_rt 를 채운다(2026-10-12 프로브)."""
+
+    def stock_daily_chart(self, **kw):
+        rows = [
+            {"dt": "20180508", "cur_prc": "52600", "upd_stkpc_tp": "", "upd_rt": ""},
+            {"dt": "20180504", "cur_prc": "51900", "upd_stkpc_tp": "8", "upd_rt": "-98.00"},
+            {"dt": "20180503", "cur_prc": "2650000", "upd_stkpc_tp": "", "upd_rt": ""},
+        ]
+        return {"stk_dt_pole_chart_qry": rows, "cont_yn": "N"}
+
+
+def test_events_are_kept_from_the_same_response(tmp_path):
+    con = connect(tmp_path / "t.db")
+    api = _Api()
+    api.chart = _EventChart()
+    stats = collect(api, con, [{"code": "005930", "name": "삼성전자"}], raw=True, progress_every=1)
+    assert stats["events"] == 1
+    rows = con.execute("SELECT code, date, upd_stkpc_tp, upd_rt, kind, source FROM corporate_actions").fetchall()
+    assert [tuple(r) for r in rows] == [("005930", "20180504", "8", -98.0, "split", "kiwoom_ka10081")]
+    assert con.execute("SELECT count(*) FROM daily_bars_raw").fetchone()[0] == 3
+
+
+def test_event_kind_decodes_bits_and_keeps_unknowns():
+    from collectors.daily_bars import event_kind
+
+    assert event_kind("8") == "split"
+    assert event_kind("3") == "rights+bonus"
+    assert event_kind("512") == "bit512"
+    assert event_kind("A") == "raw:A"

@@ -124,6 +124,16 @@ CREATE TABLE IF NOT EXISTS daily_bars_raw (
     source      TEXT NOT NULL DEFAULT 'kiwoom_raw',   -- upd_stkpc_tp=0 무수정(026)
     PRIMARY KEY (code, date)
 );
+CREATE TABLE IF NOT EXISTS corporate_actions (
+    code         TEXT NOT NULL,
+    date         TEXT NOT NULL,
+    upd_stkpc_tp TEXT NOT NULL,     -- ka10081 수정주가구분(비트 합, 027)
+    upd_rt       REAL,              -- 수정비율 % — 그날 이전 가격 × (1 + upd_rt/100)
+    kind         TEXT,
+    source       TEXT NOT NULL DEFAULT 'kiwoom_ka10081',
+    fetched_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (code, date)
+);
 CREATE TABLE IF NOT EXISTS short_selling (
     code            TEXT NOT NULL,
     date            TEXT NOT NULL,
@@ -730,6 +740,14 @@ def upsert_daily_bars(con: Any, records: list[tuple], table: str = "daily_bars")
     if table not in ("daily_bars", "daily_bars_raw"):
         raise ValueError(f"unexpected table {table!r}")
     return _upsert(con, table, DAILY_BAR_COLUMNS, records)
+
+
+CORPORATE_ACTION_COLUMNS = ["code", "date", "upd_stkpc_tp", "upd_rt", "kind"]
+
+
+def upsert_corporate_actions(con: Any, records: list[tuple]) -> int:
+    """Insert/replace corporate_actions rows (027, tuples ordered by CORPORATE_ACTION_COLUMNS)."""
+    return _upsert(con, "corporate_actions", CORPORATE_ACTION_COLUMNS, records)
 
 
 _SHORT_SELLING_COLS = [

@@ -47,6 +47,19 @@ CREATE TABLE IF NOT EXISTS daily_bars_raw (
 );
 SELECT create_hypertable('daily_bars_raw', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
 
+-- 키움 ka10081 수정주가 이벤트(027) — 분할·병합·증자·배당락. 이 날 이전 가격 × (1 + upd_rt/100).
+CREATE TABLE IF NOT EXISTS corporate_actions (
+    code         TEXT NOT NULL,
+    date         DATE NOT NULL,
+    upd_stkpc_tp TEXT NOT NULL,
+    upd_rt       NUMERIC,
+    kind         TEXT,
+    source       TEXT NOT NULL DEFAULT 'kiwoom_ka10081',
+    fetched_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (code, date)
+);
+CREATE INDEX IF NOT EXISTS idx_corporate_actions_date ON corporate_actions(date);
+
 CREATE TABLE IF NOT EXISTS supply_demand (
     code         TEXT NOT NULL,
     date         DATE NOT NULL,

@@ -34,6 +34,7 @@ from .storage import (
     fetchone,
     progress_line,
     to_int,
+    upsert_corporate_actions,
     upsert_daily_bars,
 )
 
@@ -141,6 +142,45 @@ def _row_to_record(code: str, row: dict) -> tuple:
     )
 
 
+#: ka10081 ``upd_stkpc_tp`` 비트 → 종류. 키움 OpenAPI 의 수정주가구분 관례다. 실측으로 확인한 것은
+#: 8(005930 2018-05-04 50:1 액면분할, ``upd_rt=-98.00``) 하나뿐 — 나머지는 원주가 점프와 대조해 확인한다.
+EVENT_BITS = {
+    1: "rights",              # 유상증자
+    2: "bonus",               # 무상증자
+    4: "dividend",            # 배당락
+    8: "split",               # 액면분할
+    16: "reverse_split",      # 액면병합
+    32: "merger",             # 기업합병
+    64: "capital_reduction",  # 감자
+    256: "rights_ex",         # 권리락
+}
+
+
+def event_kind(tp: str) -> str:
+    """``"10"`` → ``"bonus+split"``. 숫자가 아니거나 모르는 비트는 그대로 남긴다(버리지 않는다)."""
+    if not tp.isdigit():
+        return f"raw:{tp}"
+    v = int(tp)
+    names = [name for bit, name in EVENT_BITS.items() if v & bit]
+    rest = v & ~sum(EVENT_BITS)
+    if rest:
+        names.append(f"bit{rest}")
+    return "+".join(names) or f"raw:{tp}"
+
+
+def _row_to_event(code: str, row: dict) -> tuple | None:
+    """수정 이벤트가 찍힌 행이면 (code, dt, tp, upd_rt, kind), 아니면 None (027)."""
+    tp = (row.get("upd_stkpc_tp") or "").strip()
+    if not tp:
+        return None
+    rt = (row.get("upd_rt") or "").strip()
+    try:
+        upd_rt = float(rt) if rt else None
+    except ValueError:
+        upd_rt = None
+    return (code, row.get("dt", ""), tp, upd_rt, event_kind(tp))
+
+
 def collect(
     api: KiwoomAPI,
     con: sqlite3.Connection,
@@ -176,7 +216,7 @@ def collect(
     market_latest = _market_latest_date(api, base_dt) if update else base_dt
     if update:
         print(f"📅 시장 최신 거래일: {market_latest}")
-    stats = {"done": 0, "skipped": 0, "failed": 0, "rows": 0}
+    stats = {"done": 0, "skipped": 0, "failed": 0, "rows": 0, "events": 0}
     started = time.monotonic()
 
     for i, stock in enumerate(stocks, 1):
@@ -195,6 +235,7 @@ def collect(
             lower = latest or ""
         try:
             records: list[tuple] = []
+            events: list[tuple] = []
             cont_yn, next_key = "N", ""
             for _ in range(max_pages):
                 resp = api.chart.stock_daily_chart(
@@ -216,12 +257,17 @@ def collect(
                         stop = True
                         break
                     records.append(_row_to_record(code, row))
+                    ev = _row_to_event(code, row)
+                    if ev is not None:
+                        events.append(ev)
                 resp_cont = resp.get("cont_yn") or resp.get("cont-yn", "N")
                 resp_next = resp.get("next_key") or resp.get("next-key", "")
                 if stop or resp_cont != "Y" or not resp_next:
                     break
                 cont_yn, next_key = "Y", resp_next
             stats["rows"] += upsert_daily_bars(con, records, table)
+            # 수정주가 이벤트(분할·병합·증자…)는 수정·무수정 응답에 똑같이 실린다 — 어느 경로든 남긴다(027).
+            stats["events"] += upsert_corporate_actions(con, events)
             stats["done"] += 1
         except KiwoomAPIError as e:
             stats["failed"] += 1
@@ -281,7 +327,7 @@ def main() -> int:
     con.close()
     print(
         f"\n✅ 완료: done={stats['done']} skip={stats['skipped']} "
-        f"fail={stats['failed']} rows={stats['rows']:,}"
+        f"fail={stats['failed']} rows={stats['rows']:,} events={stats['events']:,}"
     )
     return 0
 
