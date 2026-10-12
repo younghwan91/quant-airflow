@@ -67,3 +67,8 @@ def test_infer_events_ignores_seam_and_real_moves():
     rows = [(D(2020, 1, 1), 100, 0, 0, 100, 1, 1), (D(2020, 1, 2), 100, 0, 0, 200, 1, 1)]
     assert av.infer_events(rows, {D(2020, 1, 1): 100.0, D(2020, 1, 2): 200.0}, {}) == {}   # 키움도 같이 뛴다
     assert av.infer_events(rows, {D(2020, 1, 1): 10.0, D(2020, 1, 2): 200.0}, {}) == {}    # 수집 이음매(키움 +1900%)
+
+
+def test_krx_patch_keeps_halted_day_without_minutes():
+    row = (D(2026, 10, 8), 1000.0, 1000.0, 1000.0, 1000.0, 0, 0, 1000, 1.0)
+    assert av.krx_patch(row, None) == (row, "halted")

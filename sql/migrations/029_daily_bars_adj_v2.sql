@@ -13,7 +13,7 @@
 --   volume      수정 거래량(원 거래량 ÷ factor). trade_value 는 백만원(daily_bars 와 같은 단위, 조정 안 함).
 --   raw_close   그날 실제 KRX 종가(시총 = raw_close × 그날 주식수). 폐지 종목(네이버 수정가격)은 NULL.
 --   factor      그날 원주가에 곱한 계수. 폐지 종목은 NULL.
---   close_src   kiwoom_raw | minute_krx | naver_adj | no_krx_source | minute_basis_mismatch
+--   close_src   kiwoom_raw | minute_krx | halted | naver_adj | no_krx_source | minute_basis_mismatch
 --   source      kiwoom_raw | naver_adj
 --
 -- 압축하지 않는다 — 이벤트가 새로 찍히면 그 종목 전체 이력을 다시 쓴다(daily_bars_adjusted 와 같은 이유, 008).

@@ -13,6 +13,7 @@ KRX 애프터마켓(16:00~20:00, 2026-09-14~) 20:00 마지막가다(종목-일 8
   09-14 이전 한 달로 검증: 마지막 봉 종가 = 일봉 종가 99.7%, 시가 99.0%, 고저 99.2%, 거래량 중앙 비율 0.9994.
   분봉 시가가 원주가 시가와 0.5% 넘게 다르면(분봉이 수집 뒤 소급 조정된 경우) 쓰지 않는다 → ``close_src``
   'minute_basis_mismatch', 분봉이 아예 없으면 'no_krx_source' — 둘 다 OHLCV 를 NULL 로 둔다(틀린 값보다 없는 값).
+  거래정지일(거래량 0)은 체결이 없어 일봉 그대로 둔다('halted').
 - **폐지 종목 = daily_bars_delisted_naver(수정가격).** 키움이 폐지 종목 원주가·이벤트를 안 주므로 계수를 만들
   수 없다 — 네이버 수정가격을 그대로 넣고 ``factor``·``raw_close`` 는 NULL, ``close_src``='naver_adj'.
   상장 종목 원주가가 시작하는 날부터만 넣는다 — 그 앞을 넣으면 그 구간은 폐지 종목만 있는 유니버스가 된다.
@@ -88,8 +89,12 @@ def krx_patch(row: tuple, minute: tuple | None) -> tuple[tuple, str]:
     ``row``: adjust() 한 행. ``minute``: (open, high, low, close, volume, trade_value_won) 또는 None.
     분봉은 원 가격(수집 당시 기준)이라 원주가 시가와 같은지로 기준을 확인하고, 같으면 계수를 곱한다.
     """
-    d, o, _h, _l, _c, _v, _tv, raw_c, f = row
+    d, o, _h, _l, _c, v, _tv, raw_c, f = row
     raw_open = None if o is None else o / f
+    if minute is None and v == 0:
+        # 거래정지일 — KRX·NXT 둘 다 체결이 없어 분봉이 없고, 일봉은 전일 종가 그대로라 오염이 없다
+        # (2026-10-13 재계산: 분봉 없는 1,982행 중 1,878행이 거래량 0)
+        return row, "halted"
     if minute is None:
         return (d, None, None, None, None, None, None, None, f), "no_krx_source"
     mo, mh, ml, mc, mv, mtv = minute
