@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(reboot *)",
+      "Bash(sudo reboot *)",
+      "Bash(shutdown *)",
+      "Bash(sudo shutdown *)",
+      "Bash(systemctl reboot *)",
+      "Bash(sudo systemctl reboot *)",
+      "Bash(crontab -e *)",
+      "Bash(crontab -r *)",
+      "Bash(docker volume rm *)",
+      "Bash(docker volume prune *)"
+    ],
+    "ask": [
+      "Bash(docker compose up *)",
+      "Bash(docker compose * up *)",
+      "Bash(docker compose down *)",
+      "Bash(docker compose * down *)",
+      "Bash(docker compose stop *)",
+      "Bash(docker compose * stop *)",
+      "Bash(docker compose restart *)",
+      "Bash(docker compose * restart *)",
+      "Bash(docker compose rm *)",
+      "Bash(docker compose * rm *)",
+      "Bash(docker restart *)",
+      "Bash(docker stop *)",
+      "Bash(docker rm *)"
+    ]
+  }
+}
