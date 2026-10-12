@@ -87,6 +87,8 @@ $V/ruff check collectors/ dags/ tests/ scripts/   # ruff 0.14.0 핀 — CI 와 �
 $V/python -m pytest -q
 ```
 - CI(푸시 때 pre-push 가 로컬에서도 돌림)는 추가로 DAG AST 파싱·시크릿 스캔·커밋 신원 가드를 돈다.
+- 개인 비영리 연구다(회사 파이프라인 아님, 2026-07-17 사용자 확인). 넘지 않는 선: 수집 데이터를 레포·공개 위치에 올리기,
+  수집 데이터를 다시 공급하는 공개 API 띄우기, 로그인이 필요한 소스 긁기. 상업화(펀드·판매)하면 이 전제가 사라진다.
 - 공개 레포다 — 키 모양 문자열·수집 데이터를 커밋하지 않는다. 스캐너(32자 hex·`api_key=` 16자+·DSN 비번 6자+)에 걸리는 테스트 가짜 시크릿은 그 줄에 `allowlist-secret`.
 - 테스트는 sqlite·mock 경로라 **Postgres 전용 동작**(`ON CONFLICT` 한 문장 내 중복 키, `%s`/`?`, date 타입)을 못 잡는다
   (4e2de05·0068e64) — `storage.py` 의 PG 분기를 고치면 운영 DB 에서 읽기 전용 쿼리나 트랜잭션 롤백으로 확인한다.
