@@ -212,7 +212,8 @@ _NUM_RE = re.compile(r"^(?P<neg>\(\s*[-−]\s*\)|[\(△▲Δ∆\-−–]|\(\s*-)
 
 def parse_number(text: str) -> float | None:
     """``'1,234'``·``'(1,234)'``·``'△1,234'``·``'-1,234'`` → 수. ``'-'``·빈칸·날짜·문장 → ``None``."""
-    s = _ws(text).replace(" ", "")
+    # K-GAAP 감사보고서 표기: '￦ 33,295,643,940', 합계 밑줄 '33,295,643,940 ==========' / '-----'
+    s = re.sub(r"[=＝]{2,}|-{3,}|[￦₩]", "", _ws(text)).replace(" ", "")
     if not s or s in ("-", "–", "−", "0"):
         return 0.0 if s == "0" else None
     m = _NUM_RE.match(s)
@@ -354,7 +355,11 @@ _EXCLUDE = ("주당", "포괄", "계속", "중단", "차감전", "법인세", "�
 
 
 def _core(label: str) -> str:
-    return re.sub(r"\([^)]*\)", "", label)
+    """괄호주 제거 — 중첩('(대손준비금반영후조정이익당반기(누적): …)')·닫히지 않은 꼬리('…(대손준비금 반')까지."""
+    prev = None
+    while prev != label:
+        prev, label = label, re.sub(r"\([^()]*\)", "", label)
+    return re.sub(r"\(.*$", "", label)
 
 
 def is_total_ni(label: str) -> bool:
@@ -373,7 +378,8 @@ def _attribution_rows(labels: list[str], i_ni: int) -> tuple[int | None, int | N
     """총 순이익 행 다음의 ``(지배기업 소유주 귀속 행, 비지배지분 귀속 행)``. 총포괄손익 귀속은 건너뛴다.
 
     K-GAAP 표기 '지배회사지분순이익'·'소수주주지분순이익', IFRS '지배기업소유주지분순이익(손실)'·
-    '비지배지분순이익', '당기순이익의 귀속' 아래 '지배기업의 소유주' 를 모두 잡는다.
+    '비지배지분순이익', '당기순이익의 귀속' 아래 '지배기업의 소유주' 를 모두 잡는다. 옛 K-GAAP(~2007)
+    '총당기순이익 → 외부주주지분순이익 → 연결당기순이익' 에서는 비지배 뒤의 합계 행이 지배지분이다(005380 2007).
     """
     in_ni_attr = in_ci_attr = seen_ci = False
     r_ctrl = r_nci = None
@@ -383,7 +389,7 @@ def _attribution_rows(labels: list[str], i_ni: int) -> tuple[int | None, int | N
             continue
         if "주당" in lab:
             break
-        is_nci = "비지배" in lab or "소수주주" in lab
+        is_nci = "비지배" in lab or "소수주주" in lab or "소수지분" in lab or "외부주주" in lab
         is_ctrl = "지배" in lab and not is_nci and "소수" not in lab
         if "귀속" in lab and not is_ctrl and not is_nci:
             in_ci_attr = "포괄" in lab
@@ -400,6 +406,10 @@ def _attribution_rows(labels: list[str], i_ni: int) -> tuple[int | None, int | N
         elif is_nci and r_nci is None and near:
             r_nci = j
         if r_ctrl is not None and r_nci is not None:
+            break
+        # 옛 K-GAAP: '총당기순이익 → 외부주주지분순이익 → 연결당기순이익' — 비지배 다음의 합계 행이 지배지분이다
+        if r_nci is not None and r_ctrl is None and j > r_nci and is_total_ni(labels[j]):
+            r_ctrl = j
             break
     return r_ctrl, r_nci
 
@@ -588,8 +598,10 @@ def _current_columns(
     cc = [c for c in group if "누적" in sub(c)]
     if c3 or cc:
         return c3, cc, flags
-    if len(group) >= 2:
+    if len(group) >= 2 and len({tuple(heads[c - 1]) for c in group}) > 1:
         return [group[0]], [group[1]], flags + ["subcols_assumed"]
+    # 머리가 똑같은 칸 여럿 = 한 기간의 '세부 금액 | 소계' 두 칸(은행·K-GAAP 양식) — 한 열로 보고 첫 숫자 칸을 쓴다
+    #(024110 2012 반기: 순이익은 둘째 칸 780,323, 지배기업주주지분은 첫 칸 777,785)
     # 열 하나 — 머리의 기간이 3개월이면 3개월, 아니면 누적(요약재무정보·현금흐름표는 누적)
     r0 = date_ranges(" ".join(heads[group[0] - 1])) or rng
     if r0 and r0[0][0].month == pend.month - 2:
@@ -633,16 +645,25 @@ def financial_section(blocks: list[Block]) -> tuple[int, int]:
     return span
 
 
+_SUBSECTION_RE = re.compile(r"^\s*[가-하]\s*[.,)]\s*(요\s*약)?\s*(연\s*결|별\s*도|개\s*별)?\s*재\s*무")
+_SUBSIDIARY_RE = re.compile(r"종\s*속\s*(회\s*사|기\s*업)|연\s*결\s*실\s*체")
+_COMPANY_RE = re.compile(r"주\s*식\s*회\s*사|㈜|\(\s*주\s*\)")
+
+
 def _iter_ni_tables(blocks: list[Block], span: tuple[int, int] | None = None):
     """순이익 행이 있는 표마다 ``(i, g, labels, hdr, ctx_list, own, kind, fs, r_ni, (r_ctrl, r_nci))``."""
     section = ""
+    seen_cfs_is = False  # 이 문서에서 '연결 …손익계산서' 로 명시된 표를 이미 봤다
     lo, hi = span or (0, len(blocks))
     for i, b in enumerate(blocks):
         if b.kind == "title":
             section = b.text
             continue
-        if b.kind == "text" and re.search(r"^\s*\d\s*\.\s*(요약)?\s*(연결|별도|개별)?\s*재무", b.text):
-            section = b.text[:40]  # 2010~2013 보고서는 절 제목이 TITLE 이 아니라 본문 문단(머리)이다
+        if b.kind == "text" and (re.search(r"^\s*\d\s*\.\s*(요약)?\s*(연결|별도|개별)?\s*재무", b.text)
+                                 or (len(b.text) < 40 and _SUBSECTION_RE.search(b.text))):
+            # 2010~2013 보고서는 절 제목이 TITLE 이 아니라 본문 문단(머리)이다. '가.요약재무정보' 같은 소제목도
+            # 절로 친다 — '1. 연결 재무제표에 관한 사항' 아래 별도 요약이 이어지는 보고서가 있다(011320 2012)
+            section = b.text[:40]
             continue
         if b.kind != "table":
             continue
@@ -657,7 +678,9 @@ def _iter_ni_tables(blocks: list[Block], span: tuple[int, int] | None = None):
         if hdr >= len(g):
             continue
         ctx_list = _context_text(blocks, i)
-        own = " ".join(c.text for line in g[:hdr] for c in line if c is not None)
+        # 머리의 '주석'·'비고' 열 이름은 표 이름이 아니다(012320 2012 별도 감사보고서 — '주석' 열 때문에 표를 버렸다)
+        own = " ".join(c.text for line in g[:hdr] for c in line
+                       if c is not None and not re.fullmatch(r"\s*(주\s*석|비\s*고)\s*", c.text))
         kind, fs = _heading(_heading_text(ctx_list) + " " + own)
         if kind == "fsword":  # 'N. 요약재무정보' 절 안의 소제목일 때만 요약표로 본다
             kind = "summary" if "요약" in section.replace(" ", "") else None
@@ -668,7 +691,19 @@ def _iter_ni_tables(blocks: list[Block], span: tuple[int, int] | None = None):
             fs = "cfs"
         r_ctrl, r_nci = _attribution_rows(labels, r_ni)
         if fs is None:
-            fs = "cfs" if (r_ctrl is not None or "연결" in section.replace(" ", "")) else "ofs"
+            # 수식어 없는 '손 익 계 산 서' — 표 머리의 회사 표기가 먼저다: '주식회사 유니크 및 종속회사' 면 연결,
+            # '주식회사 유니크' 만이면 별도(011320 2012: 별도 손익을 연결로 읽어 +16% 틀린 값).
+            # 같은 문서에서 '연결 …손익계산서' 를 이미 봤으면 수식어 없는 손익계산서는 별도다(012320 2012).
+            # 그다음 귀속 행, 마지막으로 절 제목.
+            head = " ".join(ctx_list[-2:])
+            if _SUBSIDIARY_RE.search(head):
+                fs = "cfs"
+            elif _COMPANY_RE.search(head) or (kind == "is" and seen_cfs_is):
+                fs = "ofs"
+            else:
+                fs = "cfs" if (r_ctrl is not None or r_nci is not None or "연결" in section.replace(" ", "")) else "ofs"
+        elif kind == "is" and fs == "cfs":
+            seen_cfs_is = True
         if fs == "ofs":
             r_ctrl = r_nci = None
         yield i, g, labels, hdr, ctx_list, own, kind, fs, r_ni, (r_ctrl, r_nci)
@@ -717,6 +752,9 @@ def extract_ni_candidates(
         if not c3 and not cc:
             continue
         sign = -1 if _loss_only(labels[r_ni]) else 1
+        nci_before = r_nci is None and any(
+            any(w in norm_label(labels[j]) for w in ("소수주주", "소수지분", "비지배", "외부주주")) and "포괄" not in labels[j]
+            for j in range(max(0, r_ni - 4), r_ni))
 
         def val(r: int | None, c: list[int], s: int = 1) -> float | None:
             if r is None:
@@ -734,7 +772,8 @@ def extract_ni_candidates(
             nci = val(r_nci, cols)  # '-'·빈칸 = 0
             if r_ctrl is None:
                 if not nci:  # 귀속·비지배 행이 둘 다 없거나 비지배가 '-' — 전부 지배지분
-                    flags.append("ctrl_eq_total")
+                    # 옛 K-GAAP 연결 양식은 '소수주주지분순이익' 을 먼저 빼고 당기순이익을 낸다 — 합계가 곧 지배지분
+                    flags.append("ctrl_eq_total_nci_deducted" if nci_before else "ctrl_eq_total")
                     return tot
                 flags.append("ctrl_missing")
                 return None
@@ -863,7 +902,7 @@ def choose_net_income(cands: list[NICandidate]) -> NetIncome:
             ni.ctrl_3m = c3.ctrl_3m if c3 else None
             ni.ctrl_cum = cc.ctrl_cum if cc and cc.kind == "is" else None
             for c in (c3, cc):
-                ni.flags += [f"cfs_{f}" for f in (c.flags if c else []) if f.startswith("ctrl_") and f"cfs_{f}" not in ni.flags]
+                ni.flags += [f"cfs_{f}" for f in dict.fromkeys(c.flags if c else []) if f.startswith("ctrl_") and f"cfs_{f}" not in ni.flags]
         else:
             ni.ofs_3m, ni.ofs_cum = t3, tc
         best = ok[0]
@@ -1233,7 +1272,8 @@ def build_records(code: str, reports: dict[str, list[ReportResult]]) -> list[dic
       ``*_ytd`` 가 사업연도 전체(별도 연간 ``ofs_ytd`` 포함).
     - ``netinc``/``basis`` 는 ``earnings`` 정의(연결 합계 → 별도, :func:`basis_order`), ``netinc_ctrl``/
       ``basis_ctrl`` 는 지배지분 우선. 둘 다 그 분기 값(Q1~Q3 3개월, Q4 연간)이다.
-    - PK (code, period, knowledge_date) — 같은 날 두 판이면 늦은 접수번호만 남긴다.
+    - PK (code, period, knowledge_date) — 같은 날 두 판이면 늦은 접수번호만 남긴다. 순이익 값이 하나도 없는
+      판(정정본, 또는 주식수도 없는 원본)은 내지 않는다 — PK 경쟁에도 끼지 않는다.
     """
     out: dict[tuple[str, str], dict] = {}
     for period, versions in reports.items():
@@ -1260,6 +1300,11 @@ def build_records(code: str, reports: dict[str, list[ReportResult]]) -> list[dic
             rec["shares"] = None if sh is None else {
                 "common": sh.common, "preferred": sh.preferred, "total": sh.total,
                 "asof": sh.asof.isoformat() if sh.asof else None, "asof_inferred": sh.asof_inferred, "method": sh.method}
+            # 값이 하나도 없는 판은 내지 않는다 — 정정본이면 원본 값을 NULL 로 가리고, 같은 날 원본과 PK 를
+            # 다투어 원본을 떨어뜨린다(2026-10-13 재리뷰). 원본은 주식수만 있어도 낸다.
+            has_ni = any(rec[k] is not None for k in ("netinc", "netinc_ctrl", *(f"{b}_{w}" for b in BASES for w in ("q", "ytd"))))
+            if not has_ni and (rr.is_correction or rec["shares"] is None):
+                continue
             key = (period, rec["knowledge_date"])
             if key not in out or out[key]["rcept_no"] < rec["rcept_no"]:
                 out[key] = rec

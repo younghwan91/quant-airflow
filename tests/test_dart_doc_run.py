@@ -54,3 +54,33 @@ def test_list_json_error_body_is_retried(tmp_path):
 def test_list_window_is_shared_across_commands():
     assert dr.list_window([2015, 2016]) == ("20070101", "20170630")
     assert dr.list_window([2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015]) == ("20070101", "20170630")
+
+
+def test_corp_map_drops_unconfirmed_delisted_mapping():
+    """corpCode 의 그 코드 주인이 거래하던 해에 보고서가 없으면(코드 재사용) 쓰지 않는다."""
+    rows = [{"corp_code": "A", "stock_code": "015670"}, {"corp_code": "B", "stock_code": "005930"}]
+    mapping = {"015670": {"corp_code": "A", "status": "stock_code_unconfirmed"},
+               "012655": {"corp_code": "C", "status": "class_share_of_012650"},
+               "000280": {"corp_code": None, "status": "ambiguous"}}
+    m = dr.corp_map(rows, mapping)
+    assert "015670" not in m and "000280" not in m
+    assert m["012655"] == ["C"] and m["005930"] == ["B"]
+
+
+def test_read_jsonl_drops_truncated_last_line(tmp_path):
+    p = tmp_path / "out.jsonl"
+    p.write_text('{"code": "000001", "records": []}\n{"code": "0000')
+    assert [r["code"] for r in dr.read_jsonl(p)] == ["000001"]
+    assert p.read_text() == '{"code": "000001", "records": []}\n'
+
+
+def test_yield_counts_unmapped_codes_and_fails_empty_years():
+    rows = [
+        {"code": "a", "filings": {"2010Q1": {}}, "records": [{"period": "2010Q1", "netinc": 1.0, "is_correction": False}]},
+        {"code": "b", "filings": {}, "records": [], "error": "no_filing"},
+    ]
+    st = dr.yield_report(rows)
+    bad = dr.yield_failures(st, [2010, 2011], 0.9)
+    assert "2011: 보고서 0건" in bad
+    assert any(b.startswith("종목: 1/2") for b in bad)
+    assert not any(b.startswith("2010") for b in bad)

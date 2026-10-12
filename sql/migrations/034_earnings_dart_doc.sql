@@ -17,8 +17,11 @@
 --   netinc_ctrl/basis_ctrl  지배기업 소유주 귀속 우선(ctrl → cfs → ofs)
 --   derived*        3개월 값을 같은 기준의 누적 − 직전 분기 누적(그 접수일까지 알려진 판)으로 만들었다
 --   {ctrl,cfs,ofs}_q / _ytd  기준별 3개월·누적(Q4 _ytd = 연간, ofs_ytd = 별도 연간). 기준이 다른 값끼리 빼지 않는다
---   shares_*        '주식의 총수 등' 발행주식총수(유통주식수 아님) — shares_asof 를 못 찾으면 NULL + shares_asof_inferred
---   flags           파서 표시(ctrl_inconsistent·unit_rescaled·*_unit_conflict 등)
+--   shares_*        '주식의 총수 등' 발행주식총수(유통주식수 아님) — shares_asof 를 못 찾으면 NULL + shares_asof_inferred,
+--                   shares_method = 어느 표에서 읽었나
+--   src             기준별 출처 표(손익계산서·현금흐름표·요약표, 본문/첨부 파일) — 요약표 값은 백만원 반올림이다
+--   flags           파서 표시(cfs_ctrl_inconsistent·cfs_ctrl_eq_total·unit_rescaled·*_unit_conflict 등)
+--   값이 하나도 없는 판(빈 정정본)은 적재하지 않는다 — 원본 값을 NULL 로 가리지 않게
 --
 -- 적용(승인 뒤): docker exec -i quant-airflow-timescaledb-replica-1 psql -U "$TIMESCALE_USER" -d "$TIMESCALE_DB" \
 --                  -v ON_ERROR_STOP=1 < sql/migrations/034_earnings_dart_doc.sql
@@ -50,6 +53,8 @@ CREATE TABLE IF NOT EXISTS earnings_dart_doc (
     shares_total          BIGINT,
     shares_asof           DATE,
     shares_asof_inferred  BOOLEAN NOT NULL DEFAULT FALSE,
+    shares_method         TEXT,                 -- 'acode'(ISU_STK3) | 'label' | 'voting'(의결권 현황 표)
+    src                   JSONB,                -- 기준별 출처 {"cfs": "is:<파일>", "cfs_cum": "is"|"cf"|"summary", ...}
     flags                 TEXT[]  NOT NULL DEFAULT '{}',
     source                TEXT    NOT NULL DEFAULT 'dart_doc',
     PRIMARY KEY (code, period, knowledge_date),

@@ -175,17 +175,85 @@ def _dart(a: argparse.Namespace) -> Dart:  # pragma: no cover
     return Dart(os.environ[a.key_env], Path(a.cache).expanduser())
 
 
-def _corp_map(dart: Dart, map_path: str | None) -> dict[str, list[str]]:
-    """stock_code → [corp_code]. ``--map`` 이 주어지면 폐지 종목 매핑(map-delisted 결과)을 덧붙인다."""
+#: 매핑으로 쓰지 않는 상태 — corpCode 의 그 stock_code 주인이 거래하던 해에 정기보고서가 없다(코드 재사용·펀드)
+UNUSABLE_MAP = {"stock_code_unconfirmed", "unconfirmed", "ambiguous", "no_name_match", "not_verified", "class_share_unmapped"}
+
+
+def corp_map(rows: list[dict], mapping: dict[str, dict] | None) -> dict[str, list[str]]:
+    """stock_code → [corp_code]. 폐지 종목 매핑(map-delisted 결과)이 있으면 그 판정이 corpCode 보다 먼저다.
+
+    확인되지 않은 매핑(``stock_code_unconfirmed`` 등)은 **빼낸다** — corpCode 의 현재 주인이 코드를 재사용한
+    다른 회사면 그 회사 실적이 붙는다(2026-10-13 재리뷰).
+    """
     out: dict[str, list[str]] = {}
-    for r in dart.corp_rows():
+    for r in rows:
         if r["stock_code"]:
             out.setdefault(r["stock_code"], []).append(r["corp_code"])
-    if map_path:
-        for code, m in json.loads(Path(map_path).read_text()).items():
-            if m.get("corp_code") and code not in out:
-                out[code] = [m["corp_code"]]
+    for code, m in (mapping or {}).items():
+        if m.get("status") in UNUSABLE_MAP or not m.get("corp_code"):
+            out.pop(code, None)
+        else:
+            out[code] = [m["corp_code"]]
     return out
+
+
+def _corp_map(dart: Dart, map_path: str | None) -> dict[str, list[str]]:  # pragma: no cover
+    return corp_map(dart.corp_rows(), json.loads(Path(map_path).read_text()) if map_path else None)
+
+
+def read_jsonl(path: Path) -> list[dict]:
+    """종목 단위 jsonl — 마지막 줄이 쓰다 잘렸으면(중단) 그 줄을 버리고 파일도 거기까지로 줄인다."""
+    if not path.exists():
+        return []
+    lines = path.read_text().splitlines()
+    out = []
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            if i != len(lines) - 1:
+                raise
+            log.warning("잘린 마지막 줄을 버린다: %s…", line[:60])
+            path.write_text("".join(x + "\n" for x in lines[:i]))
+    return out
+
+
+#: 실행 실패 하한(기본 90%) — 이걸 밑돌면 장애로 끝낸다(CLAUDE.md §5). 완료 조건 C 의 합격 바(95%, 사용자 승인)
+#: 와 다르다: 합격 바는 earnings 와의 **일치율**이고, 이 하한은 받은 보고서 중 값을 낸 **산출률**이다.
+def yield_report(rows: list[dict]) -> dict:
+    """누적 jsonl 전체로 산출률을 잰다(이어 하기여도 지금까지 전부).
+
+    - 연도별: 그해 원본 보고서 중 netinc 를 낸 비율. 보고서가 0건인 연도도 실패다.
+    - 종목별: 매핑이 없거나 보고서가 없는 종목(no_filing·no_dec_fye_filing)까지 분모에 넣은, 값이 하나라도 있는 종목 비율.
+    """
+    st: Counter = Counter()
+    for r in rows:
+        st["codes"] += 1
+        st["codes_with_value"] += any(x["netinc"] is not None for x in r.get("records", []))
+        if r.get("error"):
+            st[f"code_{r['error']}"] += 1
+        for period in r.get("filings", {}):
+            st[f"y{period[:4]}_filings"] += 1
+        for x in r.get("records", []):
+            if not x["is_correction"]:
+                st[f"y{x['period'][:4]}_with_value"] += x["netinc"] is not None
+    return dict(st)
+
+
+def yield_failures(st: dict, years: list[int], floor: float) -> list[str]:
+    bad = []
+    for y in years:
+        n, v = st.get(f"y{y}_filings", 0), st.get(f"y{y}_with_value", 0)
+        if n == 0:
+            bad.append(f"{y}: 보고서 0건")
+        elif v / n < floor:
+            bad.append(f"{y}: {v}/{n} = {v / n:.1%}")
+    n, v = st.get("codes", 0), st.get("codes_with_value", 0)
+    if n and v / n < floor:
+        bad.append(f"종목: {v}/{n} = {v / n:.1%}(매핑 없음·보고서 없음 포함)")
+    return bad
 
 
 # --------------------------------------------------------------------------- run: 전체 실행 → 종목별 jsonl
@@ -196,11 +264,7 @@ def run(a: argparse.Namespace) -> int:  # pragma: no cover — 네트워크
     dart = _dart(a)
     corp = _corp_map(dart, a.map)
     out = Path(a.out)
-    done = set()
-    if out.exists():  # 이어 하기 — 이미 쓴 종목은 건너뛴다
-        for line in out.read_text().splitlines():
-            if line.strip():
-                done.add(json.loads(line)["code"])
+    done = {r["code"] for r in read_jsonl(out)}  # 이어 하기 — 이미 쓴 종목은 건너뛴다
     errlog = out.with_suffix(".errors.log")
     bgn, end = list_window(years)
     stats: Counter = Counter()
@@ -227,31 +291,23 @@ def run(a: argparse.Namespace) -> int:  # pragma: no cover — 네트워크
                         stats["parse_error"] += 1
                         fe.write(f"{code} {period} {rno}\n{traceback.format_exc()}\n")
                         continue
-                    rr.is_correction = k > 0
+                    # 원본이 목록에 없으면 첫 판도 정정본이다
+                    rr.is_correction = k > 0 or f["original_missing"]
                     reports.setdefault(period, []).append(rr)
                 meta[period] = {"rcept_no": f["rcept_no"], "corrections": f["corrections"],
                                 "original_missing": f["original_missing"]}
             recs = dd.build_records(code, reports)
-            for r in recs:
-                stats["records"] += 1
-                if not r["is_correction"]:
-                    stats[f"y{r['period'][:4]}_with_value"] += r["netinc"] is not None
-            for period in filings:
-                stats[f"y{period[:4]}_filings"] += 1
+            stats["records"] += len(recs)
             fo.write(json.dumps({"code": code, "filings": meta, "records": recs,
                                  "error": None if filings else ("no_filing" if not items else "no_dec_fye_filing")},
                                 ensure_ascii=False, default=str) + "\n")
             fo.flush()
     stats["dart_calls"] = dart.calls
-    print(json.dumps(dict(stats), ensure_ascii=False))
-    # 연도별 산출률 하한 — 밑돌면 실패(CLAUDE.md §5: 빈 결과를 성공으로 넘기지 않는다)
-    low = []
-    for y in years:
-        n = stats.get(f"y{y}_filings", 0)
-        if n and stats.get(f"y{y}_with_value", 0) / n < a.min_yield:
-            low.append((y, stats.get(f"y{y}_with_value", 0), n))
-    if low:
-        print(f"⚠️ 산출률 하한 {a.min_yield:.0%} 미달: {low}", file=sys.stderr)
+    st = yield_report(read_jsonl(out))
+    print(json.dumps({**dict(stats), **st}, ensure_ascii=False))
+    bad = yield_failures(st, years, a.min_yield)
+    if bad:
+        print(f"⚠️ 산출률 하한 {a.min_yield:.0%} 미달(누적): {bad}", file=sys.stderr)
         return 1
     return 0
 
@@ -478,7 +534,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover
     p.add_argument("--years", default="2007-2015")
     p.add_argument("--out", required=True, help="종목 단위 jsonl — 있으면 이어 쓴다")
     p.add_argument("--corrections", action="store_true", help="정정본도 받아 별도 레코드로")
-    p.add_argument("--min-yield", type=float, default=0.9, help="연도별 (값 있는 레코드 / 보고서) 하한")
+    p.add_argument("--min-yield", type=float, default=0.9,
+                   help="실행 실패 하한(연도별·종목별 산출률) — 완료 조건 C 의 일치율 바(95%%)와 다른 값이다")
     p.set_defaults(fn=run)
     p = sub.add_parser("compare")
     p.add_argument("--jsonl", required=True)

@@ -558,3 +558,119 @@ def test_correction_errata_before_body_is_skipped():
     blocks = dd.parse_blocks(xml)
     assert dd.report_body_start(blocks) > 0
     assert _report(xml, 2016, 2).ni.cfs_cum == 5_971.0
+
+
+# ---------------------------------------------------------------- 연대별 손 검증(2026-10-13) 회귀
+
+
+def _annual_is(title: str, company: str, rows: list[tuple[str, ...]], *, unit: str = "(단위 : 원)",
+               head: tuple[str, ...] = ("과 목", "제 37 기", "제 36 기")) -> str:
+    body = [_row(*head, tag="TH"), _row("매 출 액", "1,000", "900"), _row("영 업 이 익", "100", "90"),
+            _row("법인세비용", "10", "9")] + [_row(*r) for r in rows]
+    return _table(_row(f"{title} 제37기 : 2012년 1월 1일부터 2012년 12월 31일까지 제36기 : 2011년 1월 1일부터 "
+                       f"2011년 12월 31일까지 {company} {unit}")) + _table(*body)
+
+
+def test_unqualified_statement_with_company_only_header_is_separate():
+    """011320 FY2012: '연결 재무제표에 관한 사항' 절 아래 '손 익 계 산 서 … 주식회사 유니크' 는 별도 — 연결로 읽어 +16%."""
+    xml = _doc("<TITLE>III. 재무에 관한 사항</TITLE><P>1. 연결 재무제표에 관한 사항</P>",
+               _annual_is("연 결 손 익 계 산 서", "주식회사 유니크 및 종속회사", [("당기순이익", "8,439,607,574", "1")]),
+               "<P>가.요약재무정보</P>",
+               _annual_is("손 익 계 산 서", "주식회사 유니크", [("당기순이익", "9,813,677,800", "1")]),
+               cover="(제 37 기)")
+    ni = _report(xml, 2012, 4).ni
+    assert (ni.cfs_cum, ni.ofs_cum) == (8_439_607_574.0, 9_813_677_800.0)
+
+
+def test_unqualified_statement_after_consolidated_is_separate():
+    """012320 FY2012: 본문 '연결 포괄손익계산서' 다음의 수식어 없는 '포괄손익계산서' 는 별도."""
+    xml = _doc("<TITLE>III. 재무에 관한 사항</TITLE><TITLE>2. 연결재무제표</TITLE>",
+               _annual_is("연결 포괄손익계산서", "", [("당기순이익", "42,879,202,491", "1")]),
+               _annual_is("포괄손익계산서", "", [("당기순이익", "56,917,579,696", "1")]), cover="(제 37 기)")
+    ni = _report(xml, 2012, 4).ni
+    assert (ni.cfs_cum, ni.ofs_cum) == (42_879_202_491.0, 56_917_579_696.0)
+
+
+def test_note_column_header_does_not_hide_statement():
+    """012320 FY2012 별도 감사보고서: 머리의 '주석' 열이 표 이름 판정을 가로채 손익계산서를 버리던 것."""
+    xml = _doc(_annual_is("포 괄 손 익 계 산 서", "주식회사 경동도시가스", [("당기순이익", "", "56,917,579,696", "", "1")],
+                          head=("과 목", "주석", "제36(당)기", "제36(당)기", "제35(전)기")), cover="(제 37 기)")
+    assert _report(xml, 2012, 4).ni.ofs_cum == 56_917_579_696.0
+
+
+@pytest.mark.parametrize(("text", "want"), [("33,295,643,940 ==========", 33_295_643_940.0), ("￦ 637,119,009", 637_119_009.0),
+                                            ("(141,703,827,180)", -141_703_827_180.0)])
+def test_kgaap_audit_report_number_marks(text, want):
+    """012320·089480 2010 연결감사보고서: 합계 밑줄 '=====' 와 '￦' 가 붙은 숫자."""
+    assert dd.parse_number(text) == want
+
+
+def test_kgaap_controlling_and_minority_labels():
+    """012320 2010: '지배회사지분순이익 (주석24)'·'소수주주지분순손실', 089480 2010: '당기순손실'·'지배회사지분순손실'."""
+    xml = _doc(_annual_is("연 결 손 익 계 산 서", "주식회사 경동도시가스와 종속회사", [
+        ("Ⅹ.연결당기순이익", "", "33,295,643,940 =====", "", "1"),
+        ("1. 지배회사지분순이익 (주석24)", "", "33,646,051,672", "", "1"),
+        ("2. 소수주주지분순손실 (주석24)", "", "(350,407,732)", "", "1"),
+    ], head=("과 목", "제 34(당) 기", "제 34(당) 기", "제 33(전) 기", "제 33(전) 기")), cover="(제 37 기)")
+    ni = _report(xml, 2012, 4).ni
+    assert (ni.cfs_cum, ni.ctrl_cum) == (33_295_643_940.0, 33_646_051_672.0)
+    xml2 = _doc(_annual_is("연 결 손 익 계 산 서", "주식회사 평산 및 종속회사", [
+        ("ⅩⅡ.당기순손실", "", "141,703,827,180 ====", "", "1"),
+        ("1. 지배회사지분순손실", "", "(141,703,827,180)", "", "1"),
+    ], head=("과 목", "제 17(당) 기", "제 17(당) 기", "제 16(전) 기", "제 16(전) 기")), cover="(제 37 기)")
+    ni2 = _report(xml2, 2012, 4).ni
+    assert (ni2.cfs_cum, ni2.ctrl_cum) == (-141_703_827_180.0, -141_703_827_180.0)
+
+
+def test_old_kgaap_total_minus_outside_shareholders():
+    """005380 FY2007: '총당기순이익 → 외부주주지분순이익 → 연결당기순이익'(지배), FY2008 '소수지분순이익'."""
+    xml = _doc(_annual_is("연 결 손 익 계 산 서", "", [
+        ("XIII.총당기순이익", "1,956,087", "1"), ("XIV.외부주주지분순이익", "355,607", "1"), ("XV.연결당기순이익", "1,600,480", "1"),
+    ], unit="(단위 : 백만원)"), cover="(제 37 기)")
+    ni = _report(xml, 2012, 4).ni
+    assert (ni.cfs_cum, ni.ctrl_cum) == (1_956_087e6, 1_600_480e6)
+    xml2 = _doc(_annual_is("연 결 손 익 계 산 서", "", [
+        ("XI.연결총당기순이익", "1,092,552", "1"), ("1.지배회사지분순이익", "857,751", "1"), ("2.소수지분순이익", "234,801", "1"),
+    ], unit="(단위 : 백만원)"), cover="(제 37 기)")
+    assert _report(xml2, 2012, 4).ni.ctrl_cum == 857_751e6
+
+
+def test_bank_half_year_statement_with_detail_and_subtotal_cells():
+    """024110 기업은행 2012 반기: '반기연결순이익 (대손준비금…(누적)…' 라벨, 한 기간이 '세부 | 소계' 두 칸, 백만원."""
+    rows = [
+        _row("과 목", '<TH COLSPAN="2">제52(당)기 반기</TH>', '<TH COLSPAN="2">제51(전)기 반기</TH>', tag="TH"),
+        _row("I. 순이자손익", "", "2,279,194", "", "2,332,563"),
+        _row("1. 이자수익", "4,782,970", "", "4,540,090", ""),
+        _row("XX. 영업이익", "", "1,000,000", "", "1"),
+        _row("XVIII. 법인세비용차감전순이익", "", "1,043,760", "", "1,318,956"),
+        _row("XX. 반기연결순이익 (대손준비금 반영후 조정이익 당반기(누적): 1,000 원", "", "780,323", "", "993,091"),
+        _row("반기연결순이익의 귀속", "", "", "", ""),
+        _row("지배기업주주지분반기순이익", "777,785", "", "995,628", ""),
+        _row("비지배지분반기순이익(손실)", "2,538", "", "(2,537)", ""),
+    ]
+    xml = _doc("<TITLE>III. 재무에 관한 사항</TITLE><P>나. 연결포괄손익계산서</P>",
+               _table(_row("제 52 기 반기 2012년 01월 01일부터 2012년 06월 30일까지 중소기업은행과 그 종속회사 (단위 : 백만원)")),
+               _table(*rows), cover="(제 52 기 반기)")
+    ni = _report(xml, 2012, 2).ni
+    assert (ni.cfs_3m, ni.cfs_cum, ni.ctrl_cum) == (None, 780_323e6, 777_785e6)
+
+
+def test_same_day_original_and_empty_correction_keeps_original():
+    """같은 날 원본(값 있음)과 정정본(값 없음)이 들어오면 원본이 남는다 — 빈 판은 PK 경쟁에 끼지 않는다."""
+    reports = {"2016Q1": [_rv("20160516000001", 2016, 1, ofs_3m=100.0, ofs_cum=100.0, src={"ofs": "is:x"}),
+                          _rv("20160516000099", 2016, 1, True)]}
+    recs = dd.build_records("x", reports)
+    assert [(r["rcept_no"], r["netinc"]) for r in recs] == [("20160516000001", 100.0)]
+
+
+def test_same_day_two_valued_versions_keep_later_receipt():
+    reports = {"2016Q1": [_rv("20160516000001", 2016, 1, ofs_3m=100.0, ofs_cum=100.0, src={"ofs": "is:x"}),
+                          _rv("20160516000099", 2016, 1, True, ofs_3m=110.0, ofs_cum=110.0, src={"ofs": "is:x"})]}
+    recs = dd.build_records("x", reports)
+    assert [(r["rcept_no"], r["netinc"], r["is_correction"]) for r in recs] == [("20160516000099", 110.0, True)]
+
+
+def test_empty_correction_on_later_day_is_not_emitted():
+    reports = {"2016Q1": [_rv("20160516000001", 2016, 1, ofs_3m=100.0, ofs_cum=100.0, src={"ofs": "is:x"}),
+                          _rv("20160601000001", 2016, 1, True)]}
+    assert [r["knowledge_date"] for r in dd.build_records("x", reports)] == ["2016-05-16"]
