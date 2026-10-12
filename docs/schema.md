@@ -97,6 +97,8 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 | `020_earnings_disclosures_wics` | `earnings_disclosures`·`wics_membership` 신설 — swing-it 결합 전략 연구(설계 구간 2020~2023)가 실제 실적 공시일과 섹터 이력을 요청. `earnings` 행은 건드리지 않는다 |
 | `021_index_changes` | `index_notices`·`index_changes`·`index_constituents` 신설 — 지수 편입·편출 수급 검증용(swing-it 요청). data.krx 는 로그인이 필요하지만 KRX 지수 사이트 공지 게시판은 아니다 |
 | `022_archive_dart_shares_unit_errors` | **데이터 정정** — `shares_outstanding_history` 의 DART 단위 오류 31행(27종목, ×1,000·×1,000,000)을 `legacy.shares_outstanding_dart_unit_errors` 로 옮기고 삭제(사용자 승인). 원천(stockTotqySttus)이 회사 제출 그대로 틀린다 — `dart_shares.py` 의 `drop_unit_errors` 가 재발을 막는다. 롤백은 파일 하단 |
+| `023_archive_earnings_unit_errors` | **데이터 정정** — `earnings` 의 DART 단위 오류 20행(그 종목 중앙값 500배 이상·1e11 원 초과를 앞뒤 분기와 대조해 확정)을 `legacy.earnings_unit_errors` 로(사용자 승인). 008700 처럼 **여러 해 줄곧 1/1,000** 인 종목은 이 기준이 거꾸로 걸려 제외 — 별도 조사. 다음 해 같은 분기의 `*_prior` 에 오류가 남을 수 있다 |
+| `024_prune_delisted_from_stocks` | `stocks`(상장 마스터)에 남은 폐지 31종목(2026-06-26~10-07 폐지)을 `legacy.stocks_delisted_20261012` 로(사용자 승인). `upsert_stocks` 가 빼지 않아 다시 쌓인다 |
 
 > ⚠️ 001 은 코드가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이 `daily_earnings` 가
 > 초록불이었던 건 비수기라 `rows=0` 이어서 DB 를 건드리기 전에 빠져나갔기 때문이지,
