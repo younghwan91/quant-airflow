@@ -678,7 +678,13 @@ def _prior_columns(
         d = _mkdate(*near_asof[1])
         rng = [(d, d)] if d else []
     if rng:
-        if (rng[0][1].year, rng[0][1].month) != (pend.year - 1, pend.month):
+        start, stop = rng[0]
+        if (stop.year, stop.month) != (pend.year - 1, pend.month):
+            return [], "prior_period_mismatch"
+        # 시작일도 본다 — 전년 1/1(누적) 또는 그 분기 첫날(3개월)만. 결산월 변경 기간('제27기 2010.11.01~2010.12.31',
+        # 030190 2011Q4)처럼 다른 길이의 기간은 전년 동기가 아니다. 설립 첫해(비교 열이 제1기)는 설립일부터라 허용
+        ok_starts = {date(pend.year - 1, 1, 1), date(pend.year - 1, 3 * ((pend.month - 1) // 3) + 1, 1)}
+        if start != stop and start not in ok_starts and not (km and int(km.group(1)) == 1):
             return [], "prior_period_mismatch"
     elif ym:
         if (int(ym.group(1)), int(ym.group(2))) != (pend.year - 1, pend.month):

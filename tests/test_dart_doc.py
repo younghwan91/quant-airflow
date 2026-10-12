@@ -820,3 +820,23 @@ def test_reparse_prior_rows_reads_cache_only(tmp_path):
     out, st = dr.reparse_prior_rows(rows, tmp_path)
     assert out[0]["records"][0]["netinc_prior"] == 5_958.0
     assert (st["records"], st["doc_not_cached"], st["drift"]) == (1, 1, 0)
+
+
+def test_q4_prior_rejects_fiscal_year_change_stub_period():
+    """030190 2011Q4: 비교 열 '제27기 2010.11.01~2010.12.31'(결산월 변경 2개월) 은 전년 연간이 아니다 — NULL."""
+    rows = [_row("과 목", "제 28 기", "제 27 기", tag="TH"), _row("매출액", "1", "1"), _row("영업이익", "1", "1"),
+            _row("법인세비용", "1", "1"), _row("당기순이익", "15,374", "2,100")]
+
+    def doc(prior_range: str, prior_head: str = "제 27 기") -> str:
+        r = [_row("과 목", "제 28 기", prior_head, tag="TH"), *rows[1:]]
+        return _doc("<P>연결 포괄손익계산서</P>",
+                    _table(_row(f"제 28 기 2011.01.01 부터 2011.12.31 까지 {prior_range} (단위 : 원)")), _table(*r),
+                    cover="(제 28 기)")
+
+    ni = _report(doc("제 27 기 2010.11.01 부터 2010.12.31 까지"), 2011, 4).ni
+    assert ni.cfs_cum == 15_374.0 and ni.cfs_prior is None and ni.prior_note["cfs"] == "prior_period_mismatch"
+    rec = dd.build_records("030190", {"2011Q4": [_report(doc("제 27 기 2010.11.01 부터 2010.12.31 까지"), 2011, 4)]})[0]
+    assert rec["netinc_prior"] is None and rec["cfs_prior_q"] is None and "prior_period_mismatch" in rec["prior_basis_note"]
+    # 전년 1/1~12/31 이면 쓴다, 비교 열이 설립 첫해(제 1 기)면 설립일부터라도 쓴다
+    assert _report(doc("제 27 기 2010.01.01 부터 2010.12.31 까지"), 2011, 4).ni.cfs_prior == 2_100.0
+    assert _report(doc("제 1 기 2010.05.17 부터 2010.12.31 까지", "제 1 기"), 2011, 4).ni.cfs_prior == 2_100.0
