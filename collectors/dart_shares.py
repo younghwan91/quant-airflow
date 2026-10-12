@@ -143,6 +143,34 @@ async def shares_series(
     return out
 
 
+#: 발행주식총수 상한 — 삼성전자가 ~5.97e9 로 최대다. 넘으면 단위 오류다.
+MAX_PLAUSIBLE_SHARES = 10_000_000_000
+#: 같은 종목 다른 해의 중앙값보다 이 배수 이상 크고 1,000 의 배수면 단위 오류로 본다.
+UNIT_ERROR_RATIO = 500
+
+
+def drop_unit_errors(series: list[tuple[int, str, str]],
+                     reference: list[int] = ()) -> tuple[list[tuple[int, str, str]], list[tuple[int, str, str]]]:
+    """(남길 점, 버린 점) — 회사가 "주식의 총수"를 천 주·백만 주 단위로 잘못 낸 해를 뺀다.
+
+    **DART 원천이 틀린다(2026-10-12 실측, migration 022).** stockTotqySttus 가 082640 2019 를
+    "161,358,585,000,000", 063170 2023 을 "17,774,267,000"(2022 는 "17,774,267")으로 준다 —
+    27종목 31행, 거의 정확히 ×1,000·×1,000,000. 시총이 수천~수백만 배로 튄다.
+    나눠서 "고치지" 않는다(원천과 다른 값을 만들지 않는다 — 틀린 값보다 없는 값).
+    ``reference`` 는 DB 에 이미 있는 그 종목 값(키움 등) — 점이 하나뿐일 때 비교 기준이 된다.
+    1e10 상한만으로는 ×1,000 된 소형주(500만 주 → 50억 주)를 못 잡아서 비율도 본다.
+    """
+    pool = sorted([sh for sh, *_ in series] + list(reference))
+    median = pool[len(pool) // 2] if pool else 0
+    keep, drop = [], []
+    for point in series:
+        shares = point[0]
+        bad = shares > MAX_PLAUSIBLE_SHARES or (
+            median and shares % 1000 == 0 and shares >= UNIT_ERROR_RATIO * median)
+        (drop if bad else keep).append(point)
+    return keep, drop
+
+
 def _targets(con, *, refetch: bool = False) -> list[tuple[str, str, str]]:
     """``(code, 첫 거래일, 마지막 거래일)`` — 폐지 시세는 있는데 주식수가 없는 종목.
 
@@ -286,6 +314,12 @@ async def _run(args: argparse.Namespace) -> int:
                 exhausted.append(code)
                 continue
             found += 1
+            reference = [r[0] for r in fetchall(
+                con, "SELECT shares_outstanding FROM shares_outstanding_history WHERE code=?", (code,))
+                if r[0]]
+            series, dropped = drop_unit_errors(series, reference)
+            for shares, stlm, _ in dropped:
+                print(f"⚠️ {code} {stlm}: 발행주식총수 {shares:,} — DART 단위 오류로 보고 버린다", flush=True)
             if not args.dry_run:
                 written += _write(con, [(code, stlm, shares, rcept, "dart")
                                         for shares, stlm, rcept in series])

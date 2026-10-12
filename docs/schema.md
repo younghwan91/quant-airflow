@@ -96,6 +96,7 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 | `019_news_judge_batches` | `news_judge_batches` 신설 — `news_judge.py` v2 가 동기 루프에서 Message Batches 로(기사 LLM 분석 = Haiku 5.5 + 캐싱 + 배치 의무, 2026-10-12). 배치는 최대 24시간이라 못 기다린 배치를 다음 실행이 수거하고, retries=1 재시도가 같은 기사를 다시 내지 않게 한다 |
 | `020_earnings_disclosures_wics` | `earnings_disclosures`·`wics_membership` 신설 — swing-it 결합 전략 연구(설계 구간 2020~2023)가 실제 실적 공시일과 섹터 이력을 요청. `earnings` 행은 건드리지 않는다 |
 | `021_index_changes` | `index_notices`·`index_changes`·`index_constituents` 신설 — 지수 편입·편출 수급 검증용(swing-it 요청). data.krx 는 로그인이 필요하지만 KRX 지수 사이트 공지 게시판은 아니다 |
+| `022_archive_dart_shares_unit_errors` | **데이터 정정** — `shares_outstanding_history` 의 DART 단위 오류 31행(27종목, ×1,000·×1,000,000)을 `legacy.shares_outstanding_dart_unit_errors` 로 옮기고 삭제(사용자 승인). 원천(stockTotqySttus)이 회사 제출 그대로 틀린다 — `dart_shares.py` 의 `drop_unit_errors` 가 재발을 막는다. 롤백은 파일 하단 |
 
 > ⚠️ 001 은 코드가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이 `daily_earnings` 가
 > 초록불이었던 건 비수기라 `rows=0` 이어서 DB 를 건드리기 전에 빠져나갔기 때문이지,

@@ -217,3 +217,24 @@ def test_markers_are_per_source_not_per_column(tmp_path):
     assert checked_codes(con, CHECKED_DART_SHARES_LISTED) == {"A", "B"}
     assert checked_codes(con, ds.CHECKED_DART_SHARES) == {"A"}
     con.close()
+
+
+def test_drop_unit_errors_catches_thousand_and_million_multiples():
+    from collectors.dart_shares import drop_unit_errors
+    series = [(17774267, "2022-12-31", "2023-03-21"), (17774267000, "2023-12-31", "2024-03-14"),
+              (17774267, "2024-12-31", "2025-03-21")]
+    keep, drop = drop_unit_errors(series)
+    assert [p[1] for p in keep] == ["2022-12-31", "2024-12-31"]
+    assert drop == [(17774267000, "2023-12-31", "2024-03-14")]
+
+
+def test_drop_unit_errors_single_point_uses_db_reference_and_hard_cap():
+    from collectors.dart_shares import drop_unit_errors
+    # 점 하나뿐이어도 DB 의 키움 값과 비교한다 — ×1,000 된 소형주(44.6억 주)는 1e10 상한으로는 못 잡는다
+    keep, drop = drop_unit_errors([(4463032000, "2026-06-30", "2026-08-14")], reference=[4463000, 4463000])
+    assert keep == [] and len(drop) == 1
+    keep, drop = drop_unit_errors([(161358585000000, "2019-12-31", "2021-05-20")])
+    assert keep == [] and len(drop) == 1
+    # 정상 증자(×3)는 남긴다
+    keep, _ = drop_unit_errors([(10000000, "2020-12-31", "x"), (30000000, "2021-12-31", "y")])
+    assert len(keep) == 2
