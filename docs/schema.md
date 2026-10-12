@@ -9,20 +9,43 @@
 
 | 테이블 | 내용 |
 |---|---|
-| `daily_bars` | 일봉 OHLCV + 거래대금. `source`='kiwoom'(상장 종목) / 'naver'(폐지 종목 백필 — 거래대금은 close×volume 근사). **`trade_value` 는 백만원 단위다**(두 source 모두, `minute_bars.trade_value` 는 원) — 원으로 읽어 문턱이 1e6 배 틀어진 사고가 있다(daytrade-it volume_entry, 2026-10-09) **원 일봉이 아니다** — 키움 수정주가(upd_stkpc_tp=1)로 받아 수집 시점보다 앞선 병합·분할만큼 과거가 소급 조정돼 있다(005930 2017-03-31 41,200 vs 실제 2,060,000). 그날 주식수와 곱하는 시총은 `daily_bars_raw` 로 |
-| `daily_bars_raw` | **무수정 주가** 일봉(upd_stkpc_tp=0, 026) — 상장 종목 + ETF(278530·069500·229200), 2016-09-09~. 시총 = `close` × 그날 `shares_outstanding_history`. 폐지 종목은 키움이 안 줘서 없다(그쪽 원 종가는 `supply_demand.close`). `daily_bars_raw` DAG(평일 19:00)가 최근 5일을 다시 받는다 |
+| `daily_bars` | 일봉 OHLCV + 거래대금. `source`='kiwoom'(상장 종목) / 'naver'(폐지 종목 백필 — 거래대금은 close×volume 근사). **`trade_value` 는 백만원 단위다**(두 source 모두, `minute_bars.trade_value` 는 원) — 원으로 읽어 문턱이 1e6 배 틀어진 사고가 있다(daytrade-it volume_entry, 2026-10-09) **원 일봉이 아니다** — 키움 수정주가(upd_stkpc_tp=1)로 받아 수집 시점보다 앞선 병합·분할만큼 과거가 소급 조정돼 있다(005930 2017-03-31 41,200 vs 실제 2,060,000). 그날 주식수와 곱하는 시총은 `daily_bars_raw` 로. **2026-09-14~ 고가·저가·종가·거래량은 KRX 애프터마켓 포함 통합값, 시가만 정규장**(아래 [애프터마켓](#2026-09-14-krx-애프터마켓--일봉수급은-정규장-값이-아니다)) |
+| `daily_bars_raw` | **무수정 주가** 일봉(upd_stkpc_tp=0, 026) — 상장 종목 + ETF(278530·069500·229200), 2016-09-09~. 시총 = `close` × 그날 `shares_outstanding_history`. 폐지 종목은 키움이 안 줘서 없다(그쪽 원 종가는 `supply_demand.close`). `daily_bars_raw` DAG(평일 19:00)가 최근 5일을 다시 받는다. **2026-09-14~ 고가·저가·종가·거래량은 KRX 애프터마켓 포함 통합값, 시가만 정규장**(아래 [애프터마켓](#2026-09-14-krx-애프터마켓--일봉수급은-정규장-값이-아니다)). 005930 2017-03-31 = 2,060,000 이 카나리아(`collectors/data_checks.py`) |
 | `corporate_actions` | 키움 ka10081 **수정주가 이벤트**(027) — 이벤트가 찍힌 날만, `upd_stkpc_tp`(비트 합: 1 유상·2 무상·4 배당락·8 분할·16 병합·32 합병·64 감자·256 권리락 — 8 만 실측 확인)·`upd_rt`(%) 원천 그대로. `date` 는 새 기준 첫 거래일, 그 이전 가격 × (1 + upd_rt/100). 005930 2018-05-04 = 8, −98.00. 일봉 백필·`daily_bars_raw` DAG 가 채운다(16:00 수집은 안 넣는다), 상장 종목만 |
 | `daily_bars_delisted_naver` | **폐지 종목** 일봉 2006~폐지일(028, 네이버 siseJson). **수정가격**(`source='naver_adj'`) — 폐지 종목은 수정 이벤트가 없어 원 가격으로 못 돌린다(시총에 주의). `trade_value` 는 close×volume 근사(백만원). 2016-09 이후는 `daily_bars` 의 naver 행과 겹친다. `daily_bars` 에 넣지 않은 이유: 2016 이전이 폐지 종목만인 유니버스가 된다 |
 | `kind_delistings` | KIND 상장폐지 현황 원문(028) — 코드·폐지일·사유, 1991~. 2006~2008 이 연 16~35건뿐이라 완전하지 않다 — 폐지 유니버스는 이것 ∪ `delisted_stocks` 로 |
-| `daily_bars_adj_v2` | **원주가 × 이벤트 누적계수** 수정 일봉(029·030, `collectors/adjusted_v2.py`) — `daily_bars_raw` × `corporate_actions`(`upd_rt`≠0 전부 + 키움이 빠뜨린 날은 `daily_bars`÷원주가 비율 계단으로 추정 83건), 2026-09-14~ OHLCV 는 분봉 09:00~15:32(KRX 정규장 — 일봉 종가는 NXT 20:00 가), 폐지 종목은 `daily_bars_delisted_naver` 수정가격 그대로. `raw_close` = 그날 KRX 원 종가(시총용, 폐지는 NULL), `factor`, `close_src`(kiwoom_raw·minute_krx·naver_adj·no_krx_source·minute_basis_mismatch — 뒤 둘은 OHLCV NULL). 합격 검사 4종(swing-it 87955ba) 결과는 030 머리말. 2016-09-05~, 아직 매일 갱신하지 않는다(재계산은 `python -m collectors.adjusted_v2`) |
-| `daily_bars_adjusted` | 액면분할 백조정 일봉. 평일 `daily_price_adjust` + 토요일 `weekly_price_adjust` 가 **전량 재계산**한다(back-adjust 는 종목별 전체 이력을 봐야 해서 증분이 불가능하다 — 실측 6분 23초 / 피크 RSS 5.2GB). `source` 는 `daily_bars` 에서 전파 |
-| `supply_demand` | 투자자별 순매매 **수량(주)** — 금액이 아니다(`amt_qty_tp="2"`). `flu_rt` 는 **키움이 준 등락률 × 100(bp)**: 175 = +1.75%. ⚠️ **2026-09-15 부터 전일 KRX 종가 대비가 아니다** — 키움의 기준가가 바뀌었다(005930 10-07: 종가 269,000 · 전일대비 −3,000 → 기준가 272,000, 그런데 전일 KRX 종가는 273,000). 그 전엔 종가 대비 수익률과 상관 0.9975 였고 그 뒤로는 80% 가 5bp 넘게 어긋난다. 출처 값을 그대로 두므로 **수익률은 `daily_bars_adjusted` 에서 계산할 것**(이 컬럼을 읽는 소비자는 2026-10-08 현재 없다). `natn`(국가)은 실측상 늘 0. `source`='kiwoom'(전체) / 'naver'(폐지 부분 백필 — 기관·외국인만, 개인·기관세부는 NULL → **지표마다 유니버스가 달라진다**) |
+| `daily_bars_adj_v2` | **원주가 × 이벤트 누적계수** 수정 일봉(029·030, `collectors/adjusted_v2.py`) — `daily_bars_raw` × `corporate_actions`(`upd_rt`≠0 전부 + 키움이 빠뜨린 날은 `daily_bars`÷원주가 비율 계단으로 추정 83건), 2026-09-14~ OHLCV 는 분봉 09:00~15:32(KRX 정규장 — 일봉 종가는 KRX 애프터마켓 20:00 까지의 통합값), 폐지 종목은 `daily_bars_delisted_naver` 수정가격 그대로. `raw_close` = 그날 KRX 원 종가(시총용, 폐지는 NULL), `factor`, `close_src`(kiwoom_raw·minute_krx·naver_adj·no_krx_source·minute_basis_mismatch — 뒤 둘은 OHLCV NULL). 합격 검사 4종(swing-it 87955ba) 결과는 030 머리말. 2016-09-05~, 아직 매일 갱신하지 않는다(재계산은 `python -m collectors.adjusted_v2`) |
+| `daily_bars_adjusted` | 액면분할 백조정 일봉. 평일 `daily_price_adjust` + 토요일 `weekly_price_adjust` 가 **전량 재계산**한다(back-adjust 는 종목별 전체 이력을 봐야 해서 증분이 불가능하다 — 실측 6분 23초 / 피크 RSS 5.2GB). `source` 는 `daily_bars` 에서 전파. `daily_bars` 를 그대로 조정하므로 **2026-09-14~ 고가·저가·종가·거래량은 KRX 애프터마켓 포함 통합값, 시가만 정규장**(아래 [애프터마켓](#2026-09-14-krx-애프터마켓--일봉수급은-정규장-값이-아니다)) |
+| `supply_demand` | 투자자별 순매매 **수량(주)** — 금액이 아니다(`amt_qty_tp="2"`). `flu_rt` 는 **키움이 준 등락률 × 100(bp)**: 175 = +1.75%. 기준가는 애프터마켓 뒤에도 **전일 정규장 종가**다 — `close/(1+flu_rt/1e4)` 를 틱 반올림하면 전일 정규장 종가(분봉 15:30)와 같다(09-14 이후 99.98%, 005930 10-07: close 269,000 · flu_rt −110 → 272,000 = 10-06 15:30 봉, 통합 종가는 273,000). 2026-09-15 무렵부터 `flu_rt` 가 종가 대비 수익률과 어긋나는 것은 `close` 가 애프터마켓 포함 통합값으로 바뀌었기 때문이다(전에 여기 적었던 "기준가가 바뀌었다"는 오진). 그래서 `flu_rt` 를 수익률로 쓰지 않는다 — 수익률은 `daily_bars_adjusted` 에서. `close`·`acc_trde_qty` 는 **2026-09-14~ 고가·저가·종가·거래량은 KRX 애프터마켓 포함 통합값, 시가만 정규장**(아래 [애프터마켓](#2026-09-14-krx-애프터마켓--일봉수급은-정규장-값이-아니다)). `natn`(국가)은 실측상 늘 0. `source`='kiwoom'(전체) / 'naver'(폐지 부분 백필 — 기관·외국인만, 개인·기관세부는 NULL → **지표마다 유니버스가 달라진다**) |
 | `short_selling` | 공매도 추이(수량·잔고·비율·평균가) |
 | `credit_balance` | 신용잔고(신규·상환·잔고·비율) |
 | `sector_index` | 업종지수 OHLCV |
 | `shares_outstanding_history` | 상장주식수 이력(point-in-time 시총 계산용). `source` 가 kiwoom(주간 스냅샷)/krx(중단)/dart(과거 백필)를 구분. 키움은 현재 스냅샷만 주므로 **2016~2025 구간은 DART `--listed` 백필로 채운다** |
 | `consensus` | 네이버 애널리스트 컨센서스(목표가·투자의견·EPS) |
 | `news_articles` | krx-news-client(pip)로 수집한 뉴스(현재 토스만). PK `(id, published_at)` — `id`=`make_article_id(source,url)`라 재크롤링해도 같은 행을 갱신한다. 백테스팅+실매매, 추후 LLM 매매판단용. 두 경로가 같은 id 로 들어온다 — `daily_news`(하이라이트 피드, 최신 수십 건)와 `daily_toss_company_news`(종목별 피드, 2023-03-16~). 후자는 **이미 있는 id 를 건너뛴다**(토스가 고친 기사는 createdAt 이 바뀌어 PK 로는 두 행이 된다 — 먼저 본 판을 남긴다). 종목별 피드 기사는 `content` 가 NULL(피드는 본문을 안 준다) |
+
+### 2026-09-14 KRX 애프터마켓 — 일봉·수급은 정규장 값이 아니다
+
+2026-09-14 KRX 애프터마켓(16:00~20:00 연속매매, ETF·ETN 제외, 시간외 단일가 폐지)이 열렸다. 키움 ka10081(일봉)·
+ka10080(분봉)은 접미사 없는 KRX 코드 응답에 애프터마켓 체결을 포함한다(NXT 가 아니다 — NXT 프리마켓 08:00~08:50 봉은 없다).
+그래서 그날부터:
+
+| 테이블·컬럼 | 상태 |
+|---|---|
+| `daily_bars`·`daily_bars_adjusted`·`daily_bars_raw` 의 `high`·`low`·`close`·`volume`·`trade_value` | 애프터마켓 포함 통합값(종가가 정규장 종가와 다른 종목-일 86%). **`open` 만 정규장** |
+| `supply_demand.close`·`acc_trde_qty` | 같은 통합값 |
+| `supply_demand.flu_rt` | 기준가 = 전일 **정규장** 종가 그대로 — 아래 항등식이 성립한다 |
+| `minute_bars`(scalp-it 소관, DDL 도 거기) | 16:00~19:59(드물게 20:00~20:02) 봉이 생겼다. 정규장 09:00~15:20, 15:30 종가 단일가 봉, 15:32·15:35 장후 시간외 봉. 08:00~08:59·15:36~15:59 봉은 없다. 개장 1시간 지연일(신년 첫 거래일 10:00~15:35, 수능일 10:00~16:35). **과거분은 수정주가다** — 수집 뒤에 일어난 분할·병합이 소급돼 있어(001520 2025-08-01 15:30 봉 1,310 = 수정 일봉, 원 종가 655) 원 가격으로 읽으면 안 된다. 아래 항등식 대조가 2025-08 12% → 2026-07 2.5% → 2026-09~ 0.07% 로 어긋나는 게 그 몫이다 |
+
+네이버 일별시세도 같은 통합값이라 그것과 맞는다고 정규장 값인 것은 아니다(`daily_finalize` docstring 의 옛 "오진" 판정은 이 때문에 틀렸다).
+정규장 종가가 필요하면:
+
+- 분봉: 그날 15:30~15:32 마지막 봉 `close`.
+- 항등식: **정규장 종가(t) = 틱반올림(`supply_demand.close`(t+1) / (1 + `flu_rt`(t+1)/1e4))** — 09-14 이후 99.98% 정확(나머지는 권리락 등 기준가 조정).
+  호가단위는 2023-01-25 개편 뒤 기준(1·5·10·50·100·500·1,000원, 경계 2천·5천·2만·5만·20만·50만).
+
+`daily_finalize` 의 마지막 태스크 `check_data_quality`(`collectors/data_checks.py`)가 매일 전 거래일을 검사한다 — 분봉이 위 세션 밖에 있으면,
+항등식 불일치가 1% 를 넘으면(표본 300 미만도), `daily_bars_raw` 카나리아가 틀리면 실패한다. 새 세션이 생기거나 `flu_rt` 정의가 바뀌면 여기서 먼저 터진다.
 
 ## 관계형 (일반 테이블, 시계열 아님)
 
@@ -108,7 +131,7 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 | `026_daily_bars_raw` | `daily_bars_raw` 신설 — `daily_bars` 가 수정주가라 과거 시총이 수 배 부풀던 것(swing-it 실측 월말 종목-월 3~14%). `daily_bars` 는 덮지 않는다(사용자 승인) |
 | `027_corporate_actions` | `corporate_actions` 신설 — 수정주가를 ±30% 점프 탐지(가짜 이음매 423 종목-일) 대신 원주가 × 이벤트 누적계수로 다시 만들기 위해(swing-it 요청). ka10081 이 행마다 `upd_stkpc_tp`·`upd_rt` 를 준다(10-12 프로브) |
 | `028_delisted_history` | `daily_bars_delisted_naver`·`kind_delistings` 신설 — 2006~2016 이력 확장의 생존편향 쪽(사용자 승인 2026-10-12). 키움은 폐지 코드를 안 준다 |
-| `029_daily_bars_adj_v2` | `daily_bars_adj_v2_build` 신설 — `daily_bars_adjusted` 의 가짜 이음매(423 종목-일)와 2026-09-14~ NXT 종가를 원주가 × 이벤트 계수·KRX 분봉으로 대신한다(사용자 승인 10-12, 기존 표 보존) |
+| `029_daily_bars_adj_v2` | `daily_bars_adj_v2_build` 신설 — `daily_bars_adjusted` 의 가짜 이음매(423 종목-일)와 2026-09-14~ KRX 애프터마켓 포함 종가를 원주가 × 이벤트 계수·KRX 분봉으로 대신한다(사용자 승인 10-12, 기존 표 보존) |
 | `030_daily_bars_adj_v2_rename` | `daily_bars_adj_v2_build` → `daily_bars_adj_v2` — 합격 검사 4종 통과(카나리아·이음매 날 최대 30.0%·이벤트↔키움 비율 2,397/2,400) |
 
 > ⚠️ 001 은 코드가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이 `daily_earnings` 가

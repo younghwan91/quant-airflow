@@ -51,6 +51,9 @@ kr_quant(TimescaleDB) 수집·운영 레포. 다른 레포(swing-it·scalp-it·d
 - 읽을 때 함정(상세 `docs/schema.md`): `daily_bars.trade_value` 는 **백만원**(`minute_bars` 는 원 — 1e6 배 문턱
   사고 2회), `supply_demand` 는 수량(주), `flu_rt` 는 수익률로 쓰지 않는다. `daily_bars` 는 수집 당시 값이라 기업행동
   이음매가 있다 — 연속 시계열은 `daily_bars_adjusted`. T 당일 16:00 값은 잠정, `daily_finalize`(화~토 06:30)가 확정치로 덮는다.
+- **2026-09-14~ 일봉 3종·`supply_demand.close`·`acc_trde_qty` 의 고가·저가·종가·거래량은 KRX 애프터마켓(16:00~20:00) 포함 통합값,
+  시가만 정규장**(NXT 아님, 네이버도 같은 통합값). 정규장 종가(t) = 분봉 15:30 봉 = 틱반올림(`close`(t+1)/(1+`flu_rt`(t+1)/1e4)) —
+  `flu_rt` 기준가는 그대로다. `daily_finalize.check_data_quality`(`collectors/data_checks.py`)가 분봉 세션 범위·이 항등식·원주가 카나리아를 매일 검사한다.
 - 소스 호출·파싱은 클라이언트 라이브러리(`~/git/kiwoom-client`·`krx-fundamentals-client`·`krx-news-client`)에 넣고,
   `collectors/` 는 조립·적재만 한다. 라이브러리 변경은 이미지 재빌드 전엔 안 들어온다.
 - 분석·연구·매매 판정 코드는 여기 두지 않는다(swing-it 등 트레이더 레포). 이 레포는 원본 수집·적재만.
