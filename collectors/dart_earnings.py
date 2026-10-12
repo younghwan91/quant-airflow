@@ -373,6 +373,29 @@ def _write_row_db(con: Any, code: str, period: str, avail: str, known: str,
     upsert_earnings(con, [(code, period, avail, known, ni, nip, rev, revp, oi, oip)])
 
 
+#: 이 분기부터 줄곧 원화가 아닌 단위로 들어오는 종목(migration 025) — 다시 받아도 같은 값이라 받지 않는다.
+#: 008700 은 천 원 단위로 추정(×1/1,000), 241560 은 달러 보고 전환(×1/1,300, 환율 비).
+SCALE_SHIFT_FROM: dict[str, str] = {"008700": "2019Q1", "241560": "2023Q4"}
+
+
+def _known_bad(con: Any, periods: list[tuple[int, int]]) -> set[tuple[str, str]]:
+    """다시 넣으면 안 되는 (code, period) — 단위 오류로 legacy 에 옮긴 행(023·025) + 장기 단위 오류 종목.
+
+    지운 행은 ``done_periods`` 에 없으므로 그대로 두면 daily_earnings(최근 분기)·earnings_backfill(과거)
+    이 "없는 분기" 로 보고 같은 틀린 값을 다시 넣는다. legacy 테이블은 Postgres 에만 있다.
+    """
+    wanted = {f"{y}Q{q}" for y, q in periods}
+    bad = {(c, p) for c, start in SCALE_SHIFT_FROM.items() for p in wanted if p >= start}
+    from .storage import _is_pg, fetchall
+    if _is_pg(con):
+        for table in ("legacy.earnings_unit_errors", "legacy.earnings_scale_shift"):
+            try:
+                bad |= {(c, p) for c, p in fetchall(con, f"SELECT code, period FROM {table}", ()) if p in wanted}  # noqa: S608 — 고정 테이블명
+            except Exception:  # noqa: BLE001 — 그 마이그레이션 전 DB
+                con.rollback()
+    return bad
+
+
 def _recent_quarters(n: int, today: datetime | None = None) -> list[tuple[int, int]]:
     """가용일(:func:`_available_date`)이 ``today`` 이전인 가장 최근 N개 분기.
 
@@ -438,6 +461,7 @@ async def _run(args: argparse.Namespace, keys: list[str], con: Any,
                 f"SELECT DISTINCT code, period FROM earnings WHERE period IN ({ph})",  # noqa: S608 — 자리표시자만 조립
                 con, params=ph_params)
             done_periods = set(zip(existing["code"], existing["period"]))
+            done_periods |= _known_bad(con, periods)   # 단위 오류로 뺀 분기는 다시 받지 않는다(023·025)
         else:
             con.close()
 

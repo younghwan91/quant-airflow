@@ -508,3 +508,13 @@ def test_period_placeholders_empty_is_caller_guarded():
     ph, params = _period_placeholders([])
     assert ph == "" and params == {}
 
+
+
+def test_known_bad_blocks_scale_shift_codes_from_their_start(tmp_path):
+    from collectors.dart_earnings import _known_bad
+    from collectors.storage import connect
+
+    con = connect(tmp_path / "t.db")          # sqlite: legacy 테이블 없음 → 장기 단위 오류 규칙만
+    bad = _known_bad(con, [(2026, 2), (2018, 4), (2023, 3), (2023, 4)])
+    assert ("008700", "2026Q2") in bad and ("008700", "2018Q4") not in bad
+    assert ("241560", "2023Q4") in bad and ("241560", "2023Q3") not in bad

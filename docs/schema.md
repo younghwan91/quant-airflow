@@ -99,6 +99,7 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 | `022_archive_dart_shares_unit_errors` | **데이터 정정** — `shares_outstanding_history` 의 DART 단위 오류 31행(27종목, ×1,000·×1,000,000)을 `legacy.shares_outstanding_dart_unit_errors` 로 옮기고 삭제(사용자 승인). 원천(stockTotqySttus)이 회사 제출 그대로 틀린다 — `dart_shares.py` 의 `drop_unit_errors` 가 재발을 막는다. 롤백은 파일 하단 |
 | `023_archive_earnings_unit_errors` | **데이터 정정** — `earnings` 의 DART 단위 오류 20행(그 종목 중앙값 500배 이상·1e11 원 초과를 앞뒤 분기와 대조해 확정)을 `legacy.earnings_unit_errors` 로(사용자 승인). 008700 처럼 **여러 해 줄곧 1/1,000** 인 종목은 이 기준이 거꾸로 걸려 제외 — 별도 조사. 다음 해 같은 분기의 `*_prior` 에 오류가 남을 수 있다 |
 | `024_prune_delisted_from_stocks` | `stocks`(상장 마스터)에 남은 폐지 31종목(2026-06-26~10-07 폐지)을 `legacy.stocks_delisted_20261012` 로(사용자 승인). `upsert_stocks` 가 빼지 않아 다시 쌓인다 |
+| `025_archive_earnings_scale_shift` | **데이터 정정** — 여러 해 줄곧 원화가 아닌 단위로 들어온 2종목 41행(008700 2019Q1~ ×1/1,000, 241560 두산밥캣 2023Q4~ ×1/1,300 달러 보고)을 `legacy.earnings_scale_shift` 로(사용자 승인). `dart_earnings._known_bad` 가 023·025 로 뺀 분기를 다시 받지 않는다 |
 
 > ⚠️ 001 은 코드가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이 `daily_earnings` 가
 > 초록불이었던 건 비수기라 `rows=0` 이어서 DB 를 건드리기 전에 빠져나갔기 때문이지,
