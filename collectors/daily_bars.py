@@ -192,6 +192,7 @@ def collect(
     update: bool = False,
     progress_every: int = 50,
     raw: bool = False,
+    base_dt: str = "",
 ) -> dict[str, int]:
     """Collect daily bars for ``stocks`` into the DB. Returns a summary dict.
 
@@ -206,11 +207,15 @@ def collect(
         raw: 무수정 주가(``upd_stkpc_tp="0"``)를 ``daily_bars_raw`` 에 쓴다(migration 026).
             기본(수정주가 → ``daily_bars``)은 수집 시점보다 앞선 병합·분할만큼 과거가 소급 조정돼
             "그날 실제 가격 × 그날 주식수" 시총이 틀린다.
+        base_dt: 이 날짜(YYYYMMDD)부터 과거로 받는다. 기본은 오늘. 이미 받은 구간 앞을 이어 붙일 때
+            (2006~2016 확장: ``--base-dt 20160908``). ``update`` 와 같이 쓰지 않는다.
     """
     table = "daily_bars_raw" if raw else "daily_bars"
     upd = "0" if raw else "1"
     cutoff = days_ago(days)
-    base_dt = time.strftime("%Y%m%d")
+    if base_dt and update:
+        raise ValueError("base_dt 와 update 는 같이 쓰지 않는다")
+    base_dt = base_dt or time.strftime("%Y%m%d")
     # In update mode, learn the newest trading day once so we can skip stocks
     # already current (makes same-day re-runs near-instant).
     market_latest = _market_latest_date(api, base_dt) if update else base_dt
@@ -305,6 +310,10 @@ def main() -> int:
         help="무수정 주가(upd_stkpc_tp=0)를 daily_bars_raw 에 (migration 026)",
     )
     parser.add_argument(
+        "--base-dt", default="",
+        help="이 날짜(YYYYMMDD)부터 과거로 — 이미 받은 구간 앞을 이어 붙일 때(예: 20160908)",
+    )
+    parser.add_argument(
         "--codes", default="",
         help="쉼표로 준 코드만(ETF 등) — 상장 종목 유니버스·stocks 마스터를 건드리지 않는다",
     )
@@ -320,7 +329,7 @@ def main() -> int:
 
     stats = collect(
         api, con, stocks, days=args.days, max_pages=args.max_pages,
-        resume=args.resume, update=args.update, raw=args.raw,
+        resume=args.resume, update=args.update, raw=args.raw, base_dt=args.base_dt,
     )
 
     api.close()

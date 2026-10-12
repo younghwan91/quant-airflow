@@ -80,3 +80,14 @@ def test_event_kind_decodes_bits_and_keeps_unknowns():
     assert event_kind("3") == "rights+bonus"
     assert event_kind("512") == "bit512"
     assert event_kind("A") == "raw:A"
+
+
+def test_base_dt_anchors_the_first_call():
+    import pytest
+
+    api = _Api()
+    collect(api, connect(":memory:"), [{"code": "005930", "name": "삼성전자"}], raw=True, base_dt="20160908",
+            progress_every=1)
+    assert api.chart.calls[0]["base_dt"] == "20160908"
+    with pytest.raises(ValueError):
+        collect(api, connect(":memory:"), [], base_dt="20160908", update=True)
