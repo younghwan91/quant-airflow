@@ -178,6 +178,33 @@ CREATE TABLE IF NOT EXISTS news_judge_batches (
 );
 CREATE INDEX IF NOT EXISTS idx_news_judge_batches_open ON news_judge_batches(submitted_at) WHERE collected_at IS NULL;
 
+-- 실적이 실제로 알려진 날 — DART 잠정실적·손익구조변경·정기보고서 접수일(020). earnings 와 (code, period) 조인.
+CREATE TABLE IF NOT EXISTS earnings_disclosures (
+    code       TEXT NOT NULL,
+    period     TEXT NOT NULL,   -- earnings.period 와 같은 'YYYYQn'
+    kind       TEXT NOT NULL CHECK (kind IN ('prelim', 'pl_change', 'periodic')),
+    rcept_dt   DATE NOT NULL,   -- DART 접수일(시각 없음)
+    rcept_no   TEXT NOT NULL,
+    report_nm  TEXT NOT NULL,
+    PRIMARY KEY (code, period, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_earnings_disclosures_rcept_dt ON earnings_disclosures(rcept_dt);
+
+-- 종목의 WICS 섹터·산업군 이력 — wiseindex 주간 스냅샷(020).
+CREATE TABLE IF NOT EXISTS wics_membership (
+    date         DATE NOT NULL,
+    code         TEXT NOT NULL,
+    sector_cd    TEXT NOT NULL,
+    sector_nm    TEXT,
+    industry_cd  TEXT,
+    industry_nm  TEXT,
+    wi26_cd      TEXT,            -- WI100..WI800 (WI26 26개 업종). NULL = 그날 WI26 어디에도 없었다
+    wi26_nm      TEXT,
+    source       TEXT NOT NULL DEFAULT 'wiseindex',
+    PRIMARY KEY (date, code)
+);
+CREATE INDEX IF NOT EXISTS idx_wics_membership_code ON wics_membership(code, date);
+
 CREATE TABLE IF NOT EXISTS consensus (
     code         TEXT NOT NULL,
     date         DATE NOT NULL,

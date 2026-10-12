@@ -316,6 +316,27 @@ CREATE TABLE IF NOT EXISTS news_judge_batches (
     items           TEXT NOT NULL,      -- JSON [[source_type, source_id, ticker], ...] — custom_id r0, r1, … 순서
     collected_at    TEXT                -- NULL = 아직 수거 안 함
 );
+CREATE TABLE IF NOT EXISTS earnings_disclosures (
+    code       TEXT NOT NULL,
+    period     TEXT NOT NULL,      -- earnings.period 와 같은 'YYYYQn'
+    kind       TEXT NOT NULL,      -- prelim | pl_change | periodic (020)
+    rcept_dt   TEXT NOT NULL,
+    rcept_no   TEXT NOT NULL,
+    report_nm  TEXT NOT NULL,
+    PRIMARY KEY (code, period, kind)
+);
+CREATE TABLE IF NOT EXISTS wics_membership (
+    date         TEXT NOT NULL,
+    code         TEXT NOT NULL,
+    sector_cd    TEXT NOT NULL,
+    sector_nm    TEXT,
+    industry_cd  TEXT,
+    industry_nm  TEXT,
+    wi26_cd      TEXT,
+    wi26_nm      TEXT,
+    source       TEXT NOT NULL DEFAULT 'wiseindex',
+    PRIMARY KEY (date, code)
+);
 """
 
 
@@ -413,6 +434,7 @@ CHECKED_NAVER_BARS = "naver_bars"
 CHECKED_NAVER_FLOW = "naver_flow"
 CHECKED_DART_SHARES = "dart_shares_delisted"
 CHECKED_DART_SHARES_LISTED = "dart_shares_listed"
+CHECKED_DART_FILING_DATES = "dart_filing_dates"   # 2019~ 접수일을 다 훑었다(earnings_disclosures)
 
 
 def mark_checked(con: Any, source: str, codes: list[str], today: str) -> None:
@@ -896,3 +918,26 @@ def upsert_news_judgments(con: Any, records: list[tuple]) -> int:
                    pk_cols=("source_type", "source_id", "ticker", "prompt_version"),
                    on_conflict="nothing")
 
+
+
+_EARNINGS_DISCLOSURES_COLS = ["code", "period", "kind", "rcept_dt", "rcept_no", "report_nm"]
+
+
+def insert_earnings_disclosures(con: Any, records: list[tuple]) -> int:
+    """earnings_disclosures 행(_EARNINGS_DISCLOSURES_COLS 순서)을 넣는다 — 이미 있으면 그대로.
+
+    ``on_conflict="nothing"`` — 행은 그 (code, period, kind) 의 **가장 이른** 원본 공시다.
+    짧은 창으로 다시 훑으면 같은 분기의 두 번째 잠정(삼성전자의 말일 확정치)만 보일 수 있는데,
+    그걸로 덮으면 "알려진 날" 이 늦어진다.
+    """
+    return _upsert(con, "earnings_disclosures", _EARNINGS_DISCLOSURES_COLS, records,
+                   pk_cols=("code", "period", "kind"), on_conflict="nothing")
+
+
+_WICS_MEMBERSHIP_COLS = ["date", "code", "sector_cd", "sector_nm", "industry_cd", "industry_nm",
+                         "wi26_cd", "wi26_nm", "source"]
+
+
+def upsert_wics_membership(con: Any, records: list[tuple]) -> int:
+    """wics_membership 행(_WICS_MEMBERSHIP_COLS 순서) upsert — (date, code) 스냅샷이라 재실행 멱등."""
+    return _upsert(con, "wics_membership", _WICS_MEMBERSHIP_COLS, records, pk_cols=("date", "code"))
