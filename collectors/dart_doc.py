@@ -18,7 +18,7 @@
 **순이익 세 가지 기준**(``NetIncome``): 연결 지배기업 소유주 귀속(``ctrl``), 연결 당기순이익
 전체(``cfs``, 비지배 포함), 별도/개별(``ofs``). ``earnings.netinc`` 는 ``cfs`` 가 있으면 그것,
 없으면 ``ofs`` 다(``krx_fundamentals_client._parse_financial_rows`` — 연결 우선, 계정명
-'당기순이익' = 비지배 포함 합계). 그래서 :func:`pick_netinc` 는 두 정의를 따로 낸다:
+'당기순이익' = 비지배 포함 합계). 그래서 :func:`basis_order` 는 두 정의를 따로 낸다:
 ``earnings`` 와 같은 ``cfs→ofs`` 와, 지배지분 우선 ``ctrl→cfs→ofs``. 어느 쪽을 썼는지 ``basis``.
 
 **K-GAAP 시절(~2010) 함정**: 분기보고서의 ``5. 연결재무제표`` 는 **직전 사업연도** 연결표다
@@ -278,10 +278,17 @@ def select_filings(items: list[dict]) -> dict[str, dict]:
     접수일로 새 버전을 쌓는다(``earnings`` PK 의 ``knowledge_date`` 규약, migration 001).
     원본이 목록에 없고 정정만 있으면 가장 이른 정정을 쓰고 ``original_missing`` 을 단다.
     """
+    # 사업보고서 기준월이 12가 아닌 해(그 해·전해 분기)는 뺀다 — 6월 결산사의 '분기보고서 (2015.09)' 는
+    # 회계 1분기라 보고서명만 보면 달력 3분기로 오인된다(001080, 2026-10-13 실측).
+    non_dec_years: set[int] = set()
+    for it in items:
+        m = _REPORT_NM_RE.match(it.get("report_nm", "").strip())
+        if m and m.group(1) == "사업보고서" and m.group(3) != "12":
+            non_dec_years |= {int(m.group(2)), int(m.group(2)) - 1}
     by: dict[str, list[dict]] = {}
     for it in items:
         per = period_from_report_nm(it.get("report_nm", ""))
-        if per:
+        if per and per[0] not in non_dec_years:
             by.setdefault(f"{per[0]}Q{per[1]}", []).append(it)
     out = {}
     for period, lst in by.items():
@@ -298,6 +305,10 @@ def select_filings(items: list[dict]) -> dict[str, dict]:
 
 def period_end(year: int, q: int) -> date:
     return date(year, *QUARTER_END[q])
+
+
+def _cover_text(blocks: list[Block]) -> str:
+    return " ".join(b.text if b.kind != "table" else " ".join(c.text for r in b.table.rows for c in r) for b in blocks[:12])
 
 
 def cover_kisu(blocks: list[Block]) -> int | None:
@@ -385,7 +396,7 @@ class NICandidate:
     total_cum: float | None = None
     ctrl_3m: float | None = None
     ctrl_cum: float | None = None
-    unit: int = 1
+    unit: float = 1
     file: str = ""
     flags: list[str] = field(default_factory=list)
 
@@ -417,13 +428,16 @@ _HEADING_RE = re.compile(
     r"(?P<is>손\s*익\s*계\s*산\s*서)"
     r"|(?P<cf>현\s*금\s*흐\s*름\s*표)"
     r"|(?P<sm>요\s*약\s*[^\s]{0,4}\s*재\s*무\s*정\s*보)"
-    r"|(?P<other>자\s*본\s*변\s*동\s*표|재\s*무\s*상\s*태\s*표|대\s*차\s*대\s*조\s*표|이익잉여금처분|결손금처리|주\s*석|부문|주당|배당|영업실적)"
+    r"|(?P<dv>배\s*당)"
+    r"|(?P<other>자\s*본\s*변\s*동\s*표|재\s*무\s*상\s*태\s*표|대\s*차\s*대\s*조\s*표|이익잉여금처분|결손금처리|주\s*석|부문|주당|영업실적)"
 )
 _QUAL_RE = re.compile(r"연\s*결|별\s*도|개\s*별")
 
 
 def _heading(context: str) -> tuple[str | None, str | None]:
-    """``(kind, fs)`` — kind ∈ ``is``·``cf``·``summary``·``None``, fs ∈ ``cfs``·``ofs``·``None``(모름).
+    """``(kind, fs)`` — kind ∈ ``is``·``cf``·``summary``·``div``·``None``, fs ∈ ``cfs``·``ofs``·``None``(모름).
+
+    ``div`` = '배당에 관한 사항' 표의 '(연결)당기순이익(백만원)' 행 — 값으로는 쓰지 않고 단위 대조에만 쓴다.
 
     '연결 및 개별재무제표는 ...' 같은 본문 언급이 아니라 표 바로 앞 제목을 보려고 가장 가까운
     (마지막) 일치를 쓴다. 연결/별도 수식어는 그 제목 앞 8자·뒤 8자('요약재무정보(연결)')에서 찾는다.
@@ -432,7 +446,7 @@ def _heading(context: str) -> tuple[str | None, str | None]:
     if not ms:
         return None, None
     m = ms[-1]
-    kind = {"is": "is", "cf": "cf", "sm": "summary", "other": None}[m.lastgroup]
+    kind = {"is": "is", "cf": "cf", "sm": "summary", "dv": "div", "other": None}[m.lastgroup]
     if kind is None:
         return None, None
     around = context[max(0, m.start() - 8):m.start()] + m.group(0) + context[m.end():m.end() + 8]
@@ -446,8 +460,11 @@ def _heading(context: str) -> tuple[str | None, str | None]:
 
 def _current_columns(
     g: list[list[Cell | None]], hdr: int, context: str, pend: date, q: int, kisu: int | None,
-) -> tuple[int | None, int | None, list[str]]:
-    """현재 기간의 ``(3개월 열, 누적 열)``. 기수·기간이 보고서와 안 맞으면 ``(None, None)``.
+) -> tuple[list[int], list[int], list[str]]:
+    """현재 기간의 ``(3개월 열들, 누적 열들)`` — 값은 그중 첫 숫자 칸. 기간이 안 맞으면 둘 다 빈 목록.
+
+    열이 목록인 이유: '과목 | 3개월(빈 칸) | 3개월(값) | 누적(빈 칸) | 누적(값)' 처럼 머리 하나가
+    두 칸에 걸치고 값은 둘째 칸에 있는 표가 있다(203690 2015 반기).
 
     머리 행의 첫 값 열 묶음(같은 윗머리)이 당기다(DART 표는 당기가 맨 앞). 묶음 머리의
     '제 N 기' 가 표지 기수와 다르거나, 표 앞 첫 '부터~까지' 기간의 끝이 보고서 기간말과
@@ -464,9 +481,10 @@ def _current_columns(
                 parts.append(cell.text)
         heads.append(parts)
     # 값 열: 주석·비고 열 제외
-    cols = [c for c in range(1, ncol) if not any(re.search(r"주\s*석|비\s*고|^주$", p) for p in heads[c - 1])]
+    cols = [c for c in range(1, ncol)
+            if not any(re.search(r"주\s*석|비\s*고|^주$|주식의\s*종류|^구\s*분$|^과\s*목$", p) for p in heads[c - 1])]
     if not cols:
-        return None, None, ["no_value_cols"]
+        return [], [], ["no_value_cols"]
     top = {c: (heads[c - 1][0] if heads[c - 1] else "") for c in cols}
     # 당기 묶음 고르기 — 머리에 '전기'·'전분기' 류로 시작하면 그 묶음은 건너뛴다
     first = cols[0]
@@ -492,56 +510,85 @@ def _current_columns(
     ym = _YM_RE.search(hdr_text)
     if rng:
         if rng[0][1] != pend:
-            return None, None, ["stale_range"]
+            return [], [], ["stale_range"]
         flags.append("verified_range")
     elif ym:
         if (int(ym.group(1)), int(ym.group(2))) != (pend.year, pend.month):
-            return None, None, ["stale_ym"]
+            return [], [], ["stale_ym"]
         flags.append("verified_ym")
     elif m and kisu is not None:
         if int(m.group(1)) != kisu:
-            return None, None, ["stale_kisu"]
+            return [], [], ["stale_kisu"]
         flags.append("verified_kisu")
     elif not re.search(r"당(기|분기|반기)", label):
         asof = _ASOF_RE.findall(context)
         if asof:
             d = _mkdate(*asof[0])
             if d and d != pend:
-                return None, None, ["stale_asof"]
+                return [], [], ["stale_asof"]
+        years = {int(y) for y in re.findall(r"(?<!\d)((?:19|20)\d{2})(?!\d)", hdr_text)}
+        if years and pend.year not in years:
+            return [], [], ["stale_year"]
         flags.append("unverified_period")
-    if len(group) == 1:
-        c = group[0]
-        sub = " ".join(heads[c - 1][1:])
-        if q in (1, 4):
-            return c, c, flags
-        if "3개월" in sub.replace(" ", ""):
-            return c, None, flags
-        r0 = date_ranges(" ".join(heads[c - 1])) or rng
-        if r0 and r0[0][0].month == pend.month - 2:
-            return c, None, flags
-        return None, c, flags + (["single_col_assumed_cum"] if not r0 and "누적" not in sub else [])
-    c3 = next((c for c in group if "3개월" in " ".join(heads[c - 1][1:]).replace(" ", "")), None)
-    cc = next((c for c in group if "누적" in " ".join(heads[c - 1][1:]).replace(" ", "")), None)
-    if c3 is None and cc is None:
-        c3, cc = group[0], group[1]
-        flags.append("subcols_assumed")
-    if q in (1, 4):
-        v = cc if cc is not None else c3
-        return v, v, flags
-    return c3, cc, flags
+    if q in (1, 4):  # 1분기·사업연도: 3개월 = 누적
+        return group, group, flags
+
+    def sub(c: int) -> str:
+        return " ".join(heads[c - 1][1:]).replace(" ", "")
+
+    c3 = [c for c in group if "3개월" in sub(c)]
+    cc = [c for c in group if "누적" in sub(c)]
+    if c3 or cc:
+        return c3, cc, flags
+    if len(group) >= 2:
+        return [group[0]], [group[1]], flags + ["subcols_assumed"]
+    # 열 하나 — 머리의 기간이 3개월이면 3개월, 아니면 누적(요약재무정보·현금흐름표는 누적)
+    r0 = date_ranges(" ".join(heads[group[0] - 1])) or rng
+    if r0 and r0[0][0].month == pend.month - 2:
+        return group, [], flags
+    return [], group, flags + ([] if r0 else ["single_col_assumed_cum"])
 
 
-def _cell_num(g: list[list[Cell | None]], r: int, c: int | None) -> float | None:
-    if c is None or r >= len(g) or c >= len(g[r]) or g[r][c] is None:
-        return None
-    if c > 0 and g[r][c] is g[r][c - 1]:  # colspan 으로 펼쳐진 자리(라벨이 번진 것)
-        return None
-    return parse_number(g[r][c].text)
+def _cell_num(g: list[list[Cell | None]], r: int, cols: list[int]) -> float | None:
+    """``cols`` 중 첫 숫자 칸. colspan 으로 라벨이 번진 자리는 건너뛴다."""
+    for c in cols:
+        if r >= len(g) or c >= len(g[r]) or g[r][c] is None:
+            continue
+        if c > 0 and g[r][c] is g[r][c - 1] and g[r][c] is g[r][0]:
+            continue
+        v = parse_number(g[r][c].text)
+        if v is not None:
+            return v
+    return None
 
 
-def _iter_ni_tables(blocks: list[Block]):
-    """순이익 행이 있는 표마다 ``(i, g, labels, hdr, ctx_list, own, kind, fs)``."""
+_FIN_START_RE = re.compile(r"재\s*무\s*에\s*관\s*한\s*사\s*항")
+_FIN_END_RE = re.compile(r"^\s*(?:IV|Ⅳ)\s*\.|감\s*사\s*인\s*의\s*감\s*사\s*의\s*견|이\s*사\s*의\s*경\s*영\s*진\s*단")
+
+
+def financial_section(blocks: list[Block]) -> tuple[int, int]:
+    """본문의 'III. 재무에 관한 사항' 블록 구간 ``[start, end)``. 없으면 문서 전체.
+
+    목차에도 같은 제목이 나오므로 표가 가장 많은 구간을 고른다. 이 구간 밖의 표(최대주주의
+    요약연결재무정보 — 001550 2015Q1 은 다른 회사 순이익 176억을 자기 것으로 읽을 뻔했다)는 보지 않는다.
+    """
+    marks = [(i, "s" if _FIN_START_RE.search(b.text) else "e") for i, b in enumerate(blocks)
+             if b.kind != "table" and len(b.text) < 60 and (_FIN_START_RE.search(b.text) or _FIN_END_RE.search(b.text))]
+    best, span = 0, (0, len(blocks))
+    for k, (i, kind) in enumerate(marks):
+        if kind != "s":
+            continue
+        end = next((j for j, kd in marks[k + 1:] if kd == "e"), len(blocks))
+        n = sum(1 for b in blocks[i:end] if b.kind == "table")
+        if n > best:
+            best, span = n, (i, end)
+    return span
+
+
+def _iter_ni_tables(blocks: list[Block], span: tuple[int, int] | None = None):
+    """순이익 행이 있는 표마다 ``(i, g, labels, hdr, ctx_list, own, kind, fs, r_ni, r_ctrl)``."""
     section = ""
+    lo, hi = span or (0, len(blocks))
     for i, b in enumerate(blocks):
         if b.kind == "title":
             section = b.text
@@ -563,8 +610,9 @@ def _iter_ni_tables(blocks: list[Block]):
             continue
         ctx_list = _context_text(blocks, i)
         own = " ".join(c.text for line in g[:hdr] for c in line if c is not None)
-        kind, fs = _heading(" ".join(ctx_list) + " " + own)
-        if kind is None:
+        # 표 이름은 짧은 블록(제목·소제목·작은 표)에서만 — 긴 주석 문단 속 '손익계산서' 언급은 제목이 아니다
+        kind, fs = _heading(" ".join(t for t in ctx_list if len(t) < 300) + " " + own)
+        if kind is None or (kind == "summary" and not lo <= i < hi):
             continue
         r_ni = ni_rows[0]
         if norm_label(labels[r_ni]).startswith("연결"):
@@ -589,7 +637,7 @@ def _doc_kisu(blocks: list[Block], pend: date) -> int | None:
 
 
 def extract_ni_candidates(
-    blocks: list[Block], pend: date, q: int, *, kisu: int | None = None, file: str = "",
+    blocks: list[Block], pend: date, q: int, *, kisu: int | None = None, file: str = "", main: bool = True,
 ) -> list[NICandidate]:
     """문서의 손익계산서·현금흐름표·요약재무정보 표에서 현재 기간 순이익 후보. 순서 = 문서 순서.
 
@@ -598,21 +646,29 @@ def extract_ni_candidates(
     """
     out: list[NICandidate] = []
     kisu = _doc_kisu(blocks, pend) or kisu
-    for _i, g, labels, hdr, ctx_list, own, kind, fs, r_ni, r_ctrl in _iter_ni_tables(blocks):
+    span = financial_section(blocks) if main else None
+    for _i, g, labels, hdr, ctx_list, own, kind, fs, r_ni, r_ctrl in _iter_ni_tables(blocks, span):
         ctx = " ".join(ctx_list)
-        unit = unit_multiplier(own) or unit_multiplier(" ".join(ctx_list[-3:])) or unit_multiplier(ctx)
+        if kind == "div":
+            mu = re.search(r"\(\s*(백\s*만\s*원|천\s*원|억\s*원|원)\s*\)", labels[r_ni])
+            unit = _UNIT_MULT.get(mu.group(1).replace(" ", "")) if mu else None
+        else:
+            unit = unit_multiplier(own) or unit_multiplier(" ".join(ctx_list[-3:])) or unit_multiplier(ctx)
         if unit is None:
             continue
         c3, cc, flags = _current_columns(g, hdr, ctx, pend, q, kisu)
-        if kind == "cf":  # 현금흐름표는 늘 누적
-            cc = cc if cc is not None else c3
-            c3 = cc if q in (1, 4) else None
-        if c3 is None and cc is None:
+        if "unverified_period" in flags:  # 기간을 확인 못 한 표는 쓰지 않는다(틀린 값보다 없는 값)
+            continue
+        if kind in ("cf", "div"):  # 현금흐름표·배당표는 누적이고 귀속 행이 없다
+            cc = cc or c3
+            c3 = cc if q in (1, 4) else []
+            r_ctrl = None
+        if not c3 and not cc:
             continue
         sign = -1 if _loss_only(labels[r_ni]) else 1
         csign = -1 if r_ctrl is not None and _loss_only(labels[r_ctrl]) else 1
 
-        def val(r: int | None, c: int | None, s: int) -> float | None:
+        def val(r: int | None, c: list[int], s: int) -> float | None:
             if r is None:
                 return None
             v = _cell_num(g, r, c)
@@ -650,6 +706,51 @@ class NetIncome:
 
 
 _KIND_RANK = {"is": 0, "cf": 1, "summary": 2}
+_SCALES = (1e3, 1e6, 1e-3, 1e-6)
+
+
+def _reconcile_units(cands: list[NICandidate]) -> None:
+    """본표(손익·현금흐름)의 단위 표기가 틀린 경우를 같은 보고서의 요약재무정보·배당표와 대조해 바로잡는다.
+
+    048410 2012Q1: 손익계산서 머리는 '(단위 : 백만원)' 인데 숫자는 원(-1,323,705,715) — 그대로 곱하면 -1,323조.
+    같은 보고서 배당표는 '-1,324 백만원'. 본표 누적값 ÷ 대조값이 정확히 10^±3·10^±6(±2%)이고 ×1 로 맞는
+    대조값이 하나도 없을 때만 고친다(``unit_rescaled`` 플래그). 대조값이 없으면 손대지 않는다.
+    요약표와만 어긋나면 ``unit_conflict`` — :func:`choose_net_income` 이 그 기준을 버린다.
+    """
+    divs = [c.total_cum for c in cands if c.kind == "div" and c.total_cum]
+    # 요약재무정보의 열 하나가 3개월인지 누적인지 모를 때(Q2·Q3): 배당표 누적과 맞으면 누적, 어긋나면 버린다.
+    # 069080 2010Q3 요약표 '제11기 3분기 317' 은 3개월 값(누적 4,287 — 배당표·손익계산서).
+    for c in cands:
+        if c.kind == "summary" and "single_col_assumed_cum" in c.flags and c.total_cum and divs:
+            if not any(abs(c.total_cum / d - 1) < 0.01 for d in divs):
+                c.total_cum = c.ctrl_cum = None
+                c.flags.append("summary_ambiguous_dropped")
+    sums = [c.total_cum for c in cands if c.kind == "summary" and c.total_cum and abs(c.total_cum) <= MAX_ABS_NI]
+    divs = [d for d in divs if abs(d) <= MAX_ABS_NI]
+    if not sums and not divs:
+        return
+    for c in cands:
+        if c.kind not in ("is", "cf") or not c.total_cum:
+            continue
+        if any(abs(c.total_cum / r - 1) < 0.02 for r in sums + divs):
+            continue
+
+        def scale(refs: list[float], v: float = c.total_cum) -> float | None:
+            return next((k for k in _SCALES for r in refs if abs(v / r / k - 1) < 0.02), None)
+
+        # 배당표(단위가 계정명에 박힌 독립 표)와 맞거나, 본표 값이 상한을 넘을 때만 고친다.
+        # 요약표 하나만 어긋나면 어느 쪽이 틀렸는지 모른다(093370 2012Q1 은 요약표가 틀렸다) — 그 기준을 통째로 버린다.
+        k = scale(divs) or (scale(sums) if abs(c.total_cum) > MAX_ABS_NI else None)
+        if k is None:
+            if scale(sums):
+                c.flags.append("unit_conflict")
+            continue
+        for attr in ("total_3m", "total_cum", "ctrl_3m", "ctrl_cum"):
+            v = getattr(c, attr)
+            if v is not None:
+                setattr(c, attr, v / k)
+        c.unit = c.unit / k
+        c.flags.append("unit_rescaled")
 
 
 def choose_net_income(cands: list[NICandidate]) -> NetIncome:
@@ -658,8 +759,14 @@ def choose_net_income(cands: list[NICandidate]) -> NetIncome:
     원 단위로 1e14 를 넘는 후보는 단위 오류로 버린다(``*_scale_reject``).
     """
     ni = NetIncome()
+    _reconcile_units(cands)
+    if any("unit_rescaled" in c.flags for c in cands):
+        ni.flags.append("unit_rescaled")
     for fs in ("cfs", "ofs"):
-        pool = [c for c in cands if c.fs == fs]
+        pool = [c for c in cands if c.fs == fs and c.kind != "div"]
+        if any("unit_conflict" in c.flags for c in pool):
+            ni.flags.append(f"{fs}_unit_conflict")
+            continue
         ok = [c for c in pool if all(v is None or abs(v) <= MAX_ABS_NI for v in (c.total_3m, c.total_cum, c.ctrl_3m, c.ctrl_cum))]
         if len(ok) < len(pool):
             ni.flags.append(f"{fs}_scale_reject")
@@ -772,6 +879,35 @@ def extract_shares(blocks: list[Block], pend: date | None = None) -> Shares | No
         if m:
             asof = _mkdate(*m.group(1, 2, 3))
         return Shares(common, pref, total, asof or pend, method)
+    return _shares_from_voting_table(blocks, pend)
+
+
+def _shares_from_voting_table(blocks: list[Block], pend: date | None) -> Shares | None:
+    """대체 경로: '5. 의결권 현황' 표의 '발행주식총수(A) | 보통주 | N' 행.
+
+    2010 무렵 분기보고서는 '가. 주식의 총수' 를 문장으로만 쓰고 표를 두지 않았다(002230 2010Q1 등
+    개발 표본 2010 분기의 1/4). 의결권 현황 표는 같은 기준일의 발행주식총수를 종류별로 준다.
+    """
+    for i, b in enumerate(blocks):
+        if b.kind != "table":
+            continue
+        g = grid(b.table)
+        vals: dict[str, int] = {}
+        for line in g:
+            if not line or line[0] is None or "발행주식총수" not in norm_label(line[0].text):
+                continue
+            kind = next((c.text.replace(" ", "") for c in line[1:] if c is not None and c.text.replace(" ", "") in ("보통주", "우선주", "종류주식")), None)
+            num = next((parse_number(c.text) for c in line[1:] if c is not None and parse_number(c.text) is not None), None)
+            if kind and kind not in vals:
+                vals[kind] = int(num or 0)
+        if "보통주" not in vals:
+            continue
+        common = vals["보통주"]
+        pref = sum(v for k, v in vals.items() if k != "보통주")
+        ctx = " ".join(_context_text(blocks, i, 3)) + " " + " ".join(c.text for r in b.table.rows[:1] for c in r)
+        m = _ASOF_RE.search(ctx) or re.search(_DATE, ctx)
+        asof = _mkdate(*m.group(1, 2, 3)) if m else None
+        return Shares(common, pref, common + pref, asof or pend, "voting")
     return None
 
 
@@ -809,50 +945,58 @@ def parse_report(files: list[tuple[str, str]], rcept_no: str, year: int, q: int)
         main_has = {c.fs for c in cands if c.kind == "is"}
         if k > 0 and {"cfs", "ofs"} <= main_has:
             break
-        got = extract_ni_candidates(blocks, pend, q, kisu=kisu if k == 0 else None, file=name.rsplit("/", 1)[-1])
+        got = extract_ni_candidates(blocks, pend, q, kisu=kisu if k == 0 else None,
+                                    file=name.rsplit("/", 1)[-1], main=k == 0)
         if k > 0:  # 첨부(감사·검토보고서)는 본문에 손익계산서가 없는 기준만 채운다
             got = [c for c in got if c.kind in ("is", "cf") and c.fs not in main_has]
         cands += got
     return ReportResult(rcept_no, year, q, choose_net_income(cands), shares, kisu)
 
 
-def pick_netinc(ni: NetIncome, which: str, *, controlling_first: bool) -> tuple[float | None, str | None]:
-    """``which`` = ``'3m'``|``'cum'``. ``controlling_first=False`` 가 ``earnings`` 정의(연결 합계→별도)."""
-    order = ("ctrl", "cfs", "ofs") if controlling_first else ("cfs", "ofs")
-    for basis in order:
-        v = getattr(ni, f"{basis}_{which}")
-        if v is not None:
-            return v, basis
-    return None, None
+def basis_order(ni: NetIncome, *, controlling_first: bool) -> tuple[str, ...]:
+    """순이익 기준 우선순위.
+
+    ``controlling_first=False`` 는 ``earnings`` 와 같은 정의다: 연결 합계 → 별도. 다만 연결이 **요약표에만**
+    있고 별도는 손익계산서 본표가 있으면 별도를 먼저 쓴다 — ``earnings`` 의 원천(XBRL 주요계정)은 그
+    보고서에 실린 본표를 따르므로, 본표 없는 연결은 API 에도 없다(001550·008730 2015, 2026-10-13 대조).
+    """
+    if controlling_first:
+        return ("ctrl", "cfs", "ofs")
+
+    def stmt(fs: str) -> bool:
+        return ni.src.get(fs, "").split(":")[0] in ("is", "cf")
+
+    return tuple([b for b in ("cfs", "ofs") if stmt(b)] + [b for b in ("cfs", "ofs") if not stmt(b)])
 
 
 def assemble_quarters(reports: dict[str, ReportResult], *, controlling_first: bool) -> dict[str, tuple[float | None, str | None, list[str]]]:
     """``{'2009Q1': ReportResult, ...}`` → ``{period: (netinc, basis, flags)}`` — ``earnings`` 기간 의미.
 
-    Q1·Q4 = 누적(Q4 = 연간). Q2·Q3 = 3개월 열, 없으면 같은 기준의 누적 − 직전 분기 누적(``derived``).
-    직전 분기와 기준이 다르면 만들지 않는다(연결 반기 누적 − 별도 1분기 같은 혼합 금지).
+    Q1·Q4 = 누적(Q4 = 연간). Q2·Q3 = 기준 우선순위(:func:`basis_order`)마다 3개월 열, 없으면 **같은 기준의**
+    누적 − 직전 분기 누적(``derived``) — 상위 기준을 차분으로라도 만들 수 있으면 하위 기준으로 내려가지
+    않는다. 연결 반기 누적 − 별도 1분기 같은 혼합은 하지 않는다.
     """
     out: dict[str, tuple[float | None, str | None, list[str]]] = {}
     for period, rr in reports.items():
         y, q = rr.year, rr.q
-        if q in (1, 4):
-            v, basis = pick_netinc(rr.ni, "cum", controlling_first=controlling_first)
-            if v is None and q == 1:
-                v, basis = pick_netinc(rr.ni, "3m", controlling_first=controlling_first)
-            out[period] = (v, basis, [])
-            continue
-        v, basis = pick_netinc(rr.ni, "3m", controlling_first=controlling_first)
-        if v is not None:
-            out[period] = (v, basis, [])
-            continue
-        cum, basis = pick_netinc(rr.ni, "cum", controlling_first=controlling_first)
+        res: tuple[float | None, str | None, list[str]] = (None, None, ["no_value"] + rr.ni.flags[:1])
         prev = reports.get(f"{y}Q{q - 1}")
-        if cum is not None and prev is not None:
-            pv = getattr(prev.ni, f"{basis}_cum")
-            if pv is not None:
-                out[period] = (cum - pv, basis, ["derived"])
+        for b in basis_order(rr.ni, controlling_first=controlling_first):
+            v3, vc = getattr(rr.ni, f"{b}_3m"), getattr(rr.ni, f"{b}_cum")
+            if q in (1, 4):
+                v = vc if vc is not None else (v3 if q == 1 else None)
+                if v is not None:
+                    res = (v, b, [])
+                    break
                 continue
-        out[period] = (None, None, ["no_3m"])
+            if v3 is not None:
+                res = (v3, b, [])
+                break
+            pv = getattr(prev.ni, f"{b}_cum") if prev is not None else None
+            if vc is not None and pv is not None:
+                res = (vc - pv, b, ["derived"])
+                break
+        out[period] = res
     return out
 
 
