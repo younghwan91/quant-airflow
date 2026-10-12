@@ -225,7 +225,7 @@ def read_jsonl(path: Path) -> list[dict]:
 def yield_report(rows: list[dict]) -> dict:
     """누적 jsonl 전체로 산출률을 잰다(이어 하기여도 지금까지 전부).
 
-    - 연도별: 그해 원본 보고서 중 netinc 를 낸 비율. 보고서가 0건인 연도도 실패다.
+    - 연도별: 그해 보고서가 있는 분기 중 netinc 를 낸(어느 판에서든) 비율. 보고서가 0건인 연도도 실패다.
     - 종목별: 매핑이 없거나 보고서가 없는 종목(no_filing·no_dec_fye_filing)까지 분모에 넣은, 값이 하나라도 있는 종목 비율.
     """
     st: Counter = Counter()
@@ -234,11 +234,11 @@ def yield_report(rows: list[dict]) -> dict:
         st["codes_with_value"] += any(x["netinc"] is not None for x in r.get("records", []))
         if r.get("error"):
             st[f"code_{r['error']}"] += 1
-        for period in r.get("filings", {}):
+        valued = {x["period"] for x in r.get("records", []) if x["netinc"] is not None}
+        for period, f in r.get("filings", {}).items():
             st[f"y{period[:4]}_filings"] += 1
-        for x in r.get("records", []):
-            if not x["is_correction"]:
-                st[f"y{x['period'][:4]}_with_value"] += x["netinc"] is not None
+            st[f"y{period[:4]}_with_value"] += period in valued  # 원본이 목록에 없어 첫 판이 정정본인 분기도 센다
+            st[f"y{period[:4]}_original_missing"] += bool(f.get("original_missing"))
     return dict(st)
 
 

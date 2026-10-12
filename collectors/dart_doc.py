@@ -886,7 +886,8 @@ def choose_net_income(cands: list[NICandidate]) -> NetIncome:
         ok = [c for c in pool if all(v is None or abs(v) <= MAX_ABS_NI for v in (c.total_3m, c.total_cum, c.ctrl_3m, c.ctrl_cum))]
         if len(ok) < len(pool):
             ni.flags.append(f"{fs}_scale_reject")
-        ok.sort(key=lambda c: (_KIND_RANK[c.kind], "unverified_period" in c.flags))
+        # 같은 종류면 날짜로 기간이 확인된 표, 그다음 작은 단위(원 > 천원 — 요약 절의 천원 단위 손익표보다 본표)
+        ok.sort(key=lambda c: (_KIND_RANK[c.kind], "verified_range" not in c.flags, c.unit))
         if not ok:
             continue
 
