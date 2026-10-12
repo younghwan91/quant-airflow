@@ -199,7 +199,7 @@ def grid(table: Table) -> list[list[Cell | None]]:
 
 # --------------------------------------------------------------------------- 숫자·단위·날짜
 
-_NUM_RE = re.compile(r"^(?P<neg>[\(△▲Δ∆\-−–]|\(\s*-)?\s*(?P<n>\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*\)?\s*(?:원|주)?$")
+_NUM_RE = re.compile(r"^(?P<neg>\(\s*[-−]\s*\)|[\(△▲Δ∆\-−–]|\(\s*-)?\s*(?P<n>\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*\)?\s*(?:원|주)?$")
 
 
 def parse_number(text: str) -> float | None:
@@ -324,7 +324,7 @@ def cover_kisu(blocks: list[Block]) -> int | None:
 # --------------------------------------------------------------------------- 순이익 표
 
 
-_ENUM_RE = re.compile(r"^(?:[\(\[]?(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ]+|[IVXL]+|\d{1,2}|[가-하])[\.\)\]]|[ㆍ·\-\*※])+")
+_ENUM_RE = re.compile(r"^(?:[\(\[]?(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫIVXL]+|\d{1,2}|[가-하])[\.\)\]]|[ㆍ·\-\*※])+")
 
 
 def norm_label(text: str) -> str:
@@ -429,6 +429,7 @@ _HEADING_RE = re.compile(
     r"|(?P<cf>현\s*금\s*흐\s*름\s*표)"
     r"|(?P<sm>요\s*약\s*[^\s]{0,4}\s*재\s*무\s*정\s*보)"
     r"|(?P<dv>배\s*당)"
+    r"|(?P<fsw>재\s*무\s*제\s*표)"
     r"|(?P<other>자\s*본\s*변\s*동\s*표|재\s*무\s*상\s*태\s*표|대\s*차\s*대\s*조\s*표|이익잉여금처분|결손금처리|주\s*석|부문|주당|영업실적)"
 )
 _QUAL_RE = re.compile(r"연\s*결|별\s*도|개\s*별")
@@ -442,15 +443,24 @@ def _heading(context: str) -> tuple[str | None, str | None]:
     '연결 및 개별재무제표는 ...' 같은 본문 언급이 아니라 표 바로 앞 제목을 보려고 가장 가까운
     (마지막) 일치를 쓴다. 연결/별도 수식어는 그 제목 앞 8자·뒤 8자('요약재무정보(연결)')에서 찾는다.
     """
-    ms = list(_HEADING_RE.finditer(context))
+    # 조사가 바로 붙은 일치('…손익계산서를 재작성하였습니다', '…요약포괄손익계산서는 다음과')는 제목이 아니라
+    # 문장 속 언급이다(042420·083310 2016, 2026-10-13).
+    ms = [m for m in _HEADING_RE.finditer(context) if m.lastgroup == "dv" or not _PARTICLE_RE.match(context, m.end())]
     if not ms:
         return None, None
     m = ms[-1]
-    kind = {"is": "is", "cf": "cf", "sm": "summary", "dv": "div", "other": None}[m.lastgroup]
+    kind = {"is": "is", "cf": "cf", "sm": "summary", "dv": "div", "fsw": "fsword", "other": None}[m.lastgroup]
     if kind is None:
         return None, None
+    if kind in ("is", "cf") and re.search(r"요\s*약[^가-힣]*(?:연\s*결|별\s*도|개\s*별)?\s*(?:포\s*괄\s*)?$", context[max(0, m.start() - 12):m.start()]):
+        kind = "summary"  # '[요약 연결손익계산서]' — 요약재무정보의 손익 부분(백만원 반올림, 누적)
     around = context[max(0, m.start() - 8):m.start()] + m.group(0) + context[m.end():m.end() + 8]
     quals = [q.replace(" ", "") for q in _QUAL_RE.findall(around)]
+    if kind == "fsword":
+        # 요약재무정보 아래 '가. 연결재무제표 / 나. 재무제표' 소제목 — 수식어 없는 '재무제표' 는 별도다
+        if "연결" in quals and not any(q in ("별도", "개별") for q in quals):
+            return kind, "cfs"
+        return kind, "ofs"
     if "연결" in quals and not any(q in ("별도", "개별") for q in quals):
         return kind, "cfs"
     if any(q in ("별도", "개별") for q in quals) and "연결" not in quals:
@@ -458,8 +468,16 @@ def _heading(context: str) -> tuple[str | None, str | None]:
     return kind, None
 
 
+_PARTICLE_RE = re.compile(r"\s*(?:는|은|를|을|에|의|과|와|로|으로|이|가|도|상)(?![가-힣])|\s*(?:에\s*관한|에\s*대한)")
+
+
+def _heading_text(blocks: list[str]) -> str:
+    """제목 찾기용 문맥 — 긴 문단은 앞 80자·끝 160자만(소제목은 문단 머리, '(단위 : 천원)' 앞 표 이름은 꼬리에 붙는다)."""
+    return " ".join(t if len(t) < 300 else t[:80] + " … " + t[-160:] for t in blocks)
+
+
 def _current_columns(
-    g: list[list[Cell | None]], hdr: int, context: str, pend: date, q: int, kisu: int | None,
+    g: list[list[Cell | None]], hdr: int, context: list[str], pend: date, q: int, kisu: int | None,
 ) -> tuple[list[int], list[int], list[str]]:
     """현재 기간의 ``(3개월 열들, 누적 열들)`` — 값은 그중 첫 숫자 칸. 기간이 안 맞으면 둘 다 빈 목록.
 
@@ -485,6 +503,12 @@ def _current_columns(
             if not any(re.search(r"주\s*석|비\s*고|^주$|주식의\s*종류|^구\s*분$|^과\s*목$", p) for p in heads[c - 1])]
     if not cols:
         return [], [], ["no_value_cols"]
+    # 모든 값 열에 같은 글이 걸친 머리 줄('[요약 연결손익계산서]' 표제)은 묶음 기준이 아니다 — 열마다 갈리는 첫 줄을 쓴다
+    lvl = 0
+    while len(cols) > 1 and len({tuple(heads[c - 1][lvl:lvl + 1]) for c in cols}) == 1 and any(len(heads[c - 1]) > lvl + 1 for c in cols):
+        lvl += 1
+    for c in cols:
+        heads[c - 1] = heads[c - 1][lvl:]
     top = {c: (heads[c - 1][0] if heads[c - 1] else "") for c in cols}
     # 당기 묶음 고르기 — 머리에 '전기'·'전분기' 류로 시작하면 그 묶음은 건너뛴다
     first = cols[0]
@@ -504,9 +528,11 @@ def _current_columns(
     group = run
     label = top[first].replace(" ", "")
     # 기간 검증 — 날짜(머리 → 표 앞 '부터~까지') > 머리의 '2016년 3월말' > 기수 > '당기' 류
-    m = _KISU_RE.search(top[first])
     hdr_text = " ".join(" ".join(heads[c - 1]) for c in group)
-    rng = date_ranges(hdr_text) or date_ranges(context)
+    m = _KISU_RE.search(hdr_text)  # '당기' 아래 줄에 '제39기' 가 오는 표도 있다(012160 배당표 — 당기=직전 사업연도)
+    # 표 앞 문맥에서는 **가장 가까운** 기간 표기 블록만 본다 — 앞 표의 기간을 빌려 오지 않게
+    near = next((r for r in (date_ranges(t) for t in reversed(context)) if r), [])
+    rng = date_ranges(hdr_text) or near
     ym = _YM_RE.search(hdr_text)
     if rng:
         if rng[0][1] != pend:
@@ -521,7 +547,7 @@ def _current_columns(
             return [], [], ["stale_kisu"]
         flags.append("verified_kisu")
     elif not re.search(r"당(기|분기|반기)", label):
-        asof = _ASOF_RE.findall(context)
+        asof = _ASOF_RE.findall(" ".join(context))
         if asof:
             d = _mkdate(*asof[0])
             if d and d != pend:
@@ -593,8 +619,8 @@ def _iter_ni_tables(blocks: list[Block], span: tuple[int, int] | None = None):
         if b.kind == "title":
             section = b.text
             continue
-        if b.kind == "text" and len(b.text) < 40 and re.search(r"^\s*\d\s*\.\s*(요약)?\s*(연결)?\s*재무", b.text):
-            section = b.text  # 2010~2013 보고서는 절 제목이 TITLE 이 아니라 본문 문단이다
+        if b.kind == "text" and re.search(r"^\s*\d\s*\.\s*(요약)?\s*(연결|별도|개별)?\s*재무", b.text):
+            section = b.text[:40]  # 2010~2013 보고서는 절 제목이 TITLE 이 아니라 본문 문단(머리)이다
             continue
         if b.kind != "table":
             continue
@@ -610,8 +636,9 @@ def _iter_ni_tables(blocks: list[Block], span: tuple[int, int] | None = None):
             continue
         ctx_list = _context_text(blocks, i)
         own = " ".join(c.text for line in g[:hdr] for c in line if c is not None)
-        # 표 이름은 짧은 블록(제목·소제목·작은 표)에서만 — 긴 주석 문단 속 '손익계산서' 언급은 제목이 아니다
-        kind, fs = _heading(" ".join(t for t in ctx_list if len(t) < 300) + " " + own)
+        kind, fs = _heading(_heading_text(ctx_list) + " " + own)
+        if kind == "fsword":  # 'N. 요약재무정보' 절 안의 소제목일 때만 요약표로 본다
+            kind = "summary" if "요약" in section.replace(" ", "") else None
         if kind is None or (kind == "summary" and not lo <= i < hi):
             continue
         r_ni = ni_rows[0]
@@ -629,7 +656,7 @@ def _doc_kisu(blocks: list[Block], pend: date) -> int | None:
     """기간이 날짜로 확인되는 표의 당기 머리 '제 N 기' — 표지 기수는 회사가 잘못 쓰기도 한다(034810 2016Q1 표지 53기, 표 63기)."""
     for i, g, _labels, hdr, ctx_list, _own, _kind, _fs, _r, _c in _iter_ni_tables(blocks):
         heads = " ".join(g[r][1].text for r in range(hdr) if len(g[r]) > 1 and g[r][1] is not None)
-        rng = date_ranges(heads) or date_ranges(" ".join(ctx_list))
+        rng = date_ranges(heads) or next((r for r in (date_ranges(t) for t in reversed(ctx_list)) if r), [])
         m = _KISU_RE.search(heads)
         if rng and rng[0][1] == pend and m:
             return int(m.group(1))
@@ -656,8 +683,11 @@ def extract_ni_candidates(
             unit = unit_multiplier(own) or unit_multiplier(" ".join(ctx_list[-3:])) or unit_multiplier(ctx)
         if unit is None:
             continue
-        c3, cc, flags = _current_columns(g, hdr, ctx, pend, q, kisu)
+        c3, cc, flags = _current_columns(g, hdr, ctx_list, pend, q, kisu)
         if "unverified_period" in flags:  # 기간을 확인 못 한 표는 쓰지 않는다(틀린 값보다 없는 값)
+            continue
+        if kind in ("is", "cf") and not any(f.startswith("verified") for f in flags):
+            # 본표는 날짜·기수로 확인돼야 한다. '당분기|전기' 머리만 있는 표는 주석(이익잉여금 변동 등)이다(193250 2016Q3).
             continue
         if kind in ("cf", "div"):  # 현금흐름표·배당표는 누적이고 귀속 행이 없다
             cc = cc or c3
@@ -713,9 +743,9 @@ def _reconcile_units(cands: list[NICandidate]) -> None:
     """본표(손익·현금흐름)의 단위 표기가 틀린 경우를 같은 보고서의 요약재무정보·배당표와 대조해 바로잡는다.
 
     048410 2012Q1: 손익계산서 머리는 '(단위 : 백만원)' 인데 숫자는 원(-1,323,705,715) — 그대로 곱하면 -1,323조.
-    같은 보고서 배당표는 '-1,324 백만원'. 본표 누적값 ÷ 대조값이 정확히 10^±3·10^±6(±2%)이고 ×1 로 맞는
-    대조값이 하나도 없을 때만 고친다(``unit_rescaled`` 플래그). 대조값이 없으면 손대지 않는다.
-    요약표와만 어긋나면 ``unit_conflict`` — :func:`choose_net_income` 이 그 기준을 버린다.
+    같은 보고서 배당표는 '-1,324 백만원'. 본표 값이 상한을 넘고, 누적값 ÷ 대조값이 정확히 10^±3·10^±6(±2%)이며
+    ×1 로 맞는 대조값이 하나도 없을 때만 고친다(``unit_rescaled``). 상한 안에서 10^k 로 어긋나면
+    ``unit_conflict`` — :func:`choose_net_income` 이 그 기준을 버린다(틀린 값보다 없는 값).
     """
     divs = [c.total_cum for c in cands if c.kind == "div" and c.total_cum]
     # 요약재무정보의 열 하나가 3개월인지 누적인지 모를 때(Q2·Q3): 배당표 누적과 맞으면 누적, 어긋나면 버린다.
@@ -738,12 +768,18 @@ def _reconcile_units(cands: list[NICandidate]) -> None:
         def scale(refs: list[float], v: float = c.total_cum) -> float | None:
             return next((k for k in _SCALES for r in refs if abs(v / r / k - 1) < 0.02), None)
 
-        # 배당표(단위가 계정명에 박힌 독립 표)와 맞거나, 본표 값이 상한을 넘을 때만 고친다.
-        # 요약표 하나만 어긋나면 어느 쪽이 틀렸는지 모른다(093370 2012Q1 은 요약표가 틀렸다) — 그 기준을 통째로 버린다.
-        k = scale(divs) or (scale(sums) if abs(c.total_cum) > MAX_ABS_NI else None)
-        if k is None:
+        # 본표 값이 상한(1e14 원)을 넘어 그 자체로 말이 안 될 때만 대조값 쪽 단위로 고친다. 상한 안이면
+        # 어느 쪽이 틀렸는지 모른다 — 배당표도 틀린다(123750 2015Q1: '(백만원)' 이라 쓰고 천원으로 적어
+        # 본표를 1,000배로 키울 뻔했다), 요약표도 틀린다(093370 2012Q1). 그러면 그 기준을 통째로 버린다.
+        if abs(c.total_cum) > MAX_ABS_NI:
+            k = scale(divs) or scale(sums)
+        else:
+            k = None
             if scale(sums):
                 c.flags.append("unit_conflict")
+            elif scale(divs):  # 손으로 치는 배당표보다 검토받은 본표를 믿는다 — 표시만
+                c.flags.append("div_unit_mismatch")
+        if k is None:
             continue
         for attr in ("total_3m", "total_cum", "ctrl_3m", "ctrl_cum"):
             v = getattr(c, attr)
@@ -1070,11 +1106,16 @@ class _Dart:  # pragma: no cover — 네트워크
         import time
 
         p = self.cache / f"doc_{rcept_no}.zip"
+        miss = self.cache / f"doc_{rcept_no}.missing"
+        if miss.exists():
+            return None
         if not p.exists():
             r = self._get("document.xml", rcept_no=rcept_no)
             if r.content[:2] != b"PK":
-                if b"020" in r.content[:500]:
+                status = re.search(rb"<status>(\d+)</status>", r.content[:500])
+                if status and status.group(1) == b"020":
                     raise RuntimeError("DART 일한도(020)")
+                miss.write_bytes(r.content[:500])  # 014 '파일이 존재하지 않습니다'(정정 일부 등) — 다시 묻지 않는다
                 return None
             p.write_bytes(r.content)
             time.sleep(0.15)
