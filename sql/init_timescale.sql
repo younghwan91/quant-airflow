@@ -118,6 +118,24 @@ CREATE TABLE IF NOT EXISTS naver_research_reports (
 );
 CREATE INDEX IF NOT EXISTS idx_naver_research_code_date ON naver_research_reports(code, write_date);
 
+-- 키움 ka90013 종목별 일별 프로그램 매매 합계(033, collectors/flow_history.py). 상장 생존 종목만.
+CREATE TABLE IF NOT EXISTS program_trading (
+    code         TEXT NOT NULL,
+    date         DATE NOT NULL,
+    close        BIGINT,
+    volume       BIGINT,
+    prm_sell_amt BIGINT,
+    prm_buy_amt  BIGINT,
+    prm_net_amt  BIGINT,
+    prm_sell_qty BIGINT,
+    prm_buy_qty  BIGINT,
+    prm_net_qty  BIGINT,
+    stex_tp      TEXT,
+    source       TEXT NOT NULL DEFAULT 'kiwoom_ka90013',
+    PRIMARY KEY (code, date)
+);
+SELECT create_hypertable('program_trading', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
+
 -- 원주가 × corporate_actions 누적계수 + 2026-09-14~ KRX 분봉 OHLC(029·030, collectors/adjusted_v2.py).
 CREATE TABLE IF NOT EXISTS daily_bars_adj_v2 (
     code        TEXT NOT NULL,

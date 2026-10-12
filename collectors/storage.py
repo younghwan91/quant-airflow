@@ -136,6 +136,21 @@ CREATE TABLE IF NOT EXISTS daily_bars_delisted_naver (
     source      TEXT NOT NULL DEFAULT 'naver_adj',       -- 폐지 종목 수정가격(028)
     PRIMARY KEY (code, date)
 );
+CREATE TABLE IF NOT EXISTS program_trading (
+    code         TEXT NOT NULL,
+    date         TEXT NOT NULL,
+    close        INTEGER,
+    volume       INTEGER,
+    prm_sell_amt INTEGER,     -- 백만원
+    prm_buy_amt  INTEGER,
+    prm_net_amt  INTEGER,
+    prm_sell_qty INTEGER,     -- 주
+    prm_buy_qty  INTEGER,
+    prm_net_qty  INTEGER,
+    stex_tp      TEXT,
+    source       TEXT NOT NULL DEFAULT 'kiwoom_ka90013',   -- 033
+    PRIMARY KEY (code, date)
+);
 CREATE TABLE IF NOT EXISTS naver_investor_trend (
     code               TEXT NOT NULL,
     date               TEXT NOT NULL,

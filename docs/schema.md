@@ -16,11 +16,12 @@
 | `kind_delistings` | KIND 상장폐지 현황 원문(028) — 코드·폐지일·사유, 1991~. 2006~2008 이 연 16~35건뿐이라 완전하지 않다 — 폐지 유니버스는 이것 ∪ `delisted_stocks` 로 |
 | `naver_investor_trend` | 네이버 m.stock 일별 **외국인 보유율(%)·외국인/기관/개인 순매수(주)**·원 종가·거래량(032, `naver_mstock trend`) — 2008-01~, 폐지 종목 포함(백필 전용, 매일 수집 아님). 순매수는 네이버 정의(합 0 맞춤)라 `supply_demand` 키움 값과 다르다. 옛 구간 개인은 NULL |
 | `naver_research_reports` | 네이버 증권사 리포트 1건 1행 — 날짜·증권사·제목·의견·목표가(032, `naver_mstock research`). `write_date` 는 날짜만(시각 없음 → as-of 는 다음 거래일). EPS 컨센서스 이력은 무료 원천이 없어 없다 |
+| `program_trading` | 키움 ka90013 종목별 일별 **프로그램 매매 합계**(033) — 매수·매도·순매수 금액(백만원)·수량(주). 차익·비차익 분리는 TR 에 없다. 2016-09~ 백필(`flow_history --what program`), **상장 생존 종목만**(폐지 코드는 키움이 빈 응답) |
 | `daily_bars_adj_v2` | **원주가 × 이벤트 누적계수** 수정 일봉(029·030, `collectors/adjusted_v2.py`) — `daily_bars_raw` × `corporate_actions`(`upd_rt`≠0 전부 + 키움이 빠뜨린 날은 `daily_bars`÷원주가 비율 계단으로 추정 83건), 2026-09-14~ OHLCV 는 분봉 09:00~15:32(KRX 정규장 — 일봉 종가는 KRX 애프터마켓 20:00 까지의 통합값), 폐지 종목은 `daily_bars_delisted_naver` 수정가격 그대로. `raw_close` = 그날 KRX 원 종가(시총용, 폐지는 NULL), `factor`, `close_src`(kiwoom_raw·minute_krx·halted(09-14~ 거래정지일, 일봉 그대로)·naver_adj·no_krx_source·minute_basis_mismatch — 뒤 둘은 OHLCV NULL). 합격 검사 4종(swing-it 87955ba) 결과는 030 머리말. 2016-09-05~, 아직 매일 갱신하지 않는다(재계산은 `python -m collectors.adjusted_v2`) |
 | `daily_bars_adjusted` | 액면분할 백조정 일봉. 평일 `daily_price_adjust` + 토요일 `weekly_price_adjust` 가 **전량 재계산**한다(back-adjust 는 종목별 전체 이력을 봐야 해서 증분이 불가능하다 — 실측 6분 23초 / 피크 RSS 5.2GB). `source` 는 `daily_bars` 에서 전파. `daily_bars` 를 그대로 조정하므로 **2026-09-14~ 고가·저가·종가·거래량은 KRX 애프터마켓 포함 통합값, 시가만 정규장**(아래 [애프터마켓](#2026-09-14-krx-애프터마켓--일봉수급은-정규장-값이-아니다)) |
 | `supply_demand` | 투자자별 순매매 **수량(주)** — 금액이 아니다(`amt_qty_tp="2"`). `flu_rt` 는 **키움이 준 등락률 × 100(bp)**: 175 = +1.75%. 기준가는 애프터마켓 뒤에도 **전일 정규장 종가**다 — `close/(1+flu_rt/1e4)` 를 틱 반올림하면 전일 정규장 종가(분봉 15:30)와 같다 — `regular_close` 뷰가 이것이다(09-14 이후 99.97%, 005930 10-07: close 269,000 · flu_rt −110 → 272,000 = 10-06 15:30 봉, 통합 종가는 273,000). 2026-09-15 무렵부터 `flu_rt` 가 종가 대비 수익률과 어긋나는 것은 `close` 가 애프터마켓 포함 통합값으로 바뀌었기 때문이다(전에 여기 적었던 "기준가가 바뀌었다"는 오진). 그래서 `flu_rt` 를 수익률로 쓰지 않는다 — 수익률은 `daily_bars_adjusted` 에서. `close`·`acc_trde_qty` 는 **2026-09-14~ 고가·저가·종가·거래량은 KRX 애프터마켓 포함 통합값, 시가만 정규장**(아래 [애프터마켓](#2026-09-14-krx-애프터마켓--일봉수급은-정규장-값이-아니다)). `natn`(국가)은 실측상 늘 0. `source`='kiwoom'(전체) / 'naver'(폐지 부분 백필 — 기관·외국인만, 개인·기관세부는 NULL → **지표마다 유니버스가 달라진다**) |
-| `short_selling` | 공매도 추이(수량·잔고·비율·평균가) |
-| `credit_balance` | 신용잔고(신규·상환·잔고·비율) |
+| `short_selling` | 공매도 추이(수량·잔고·비율·평균가). 매일 수집은 2024-05~, 그 앞 2016-09~ 는 `flow_history --what short` 백필 — **백필 구간은 상장 생존 종목만**(키움이 폐지 코드에 빈 응답, 2026-10 기준 상장 종목) |
+| `credit_balance` | 신용잔고(신규·상환·잔고·비율). 매일 수집은 2026-02~, 그 앞 2016-09~ 는 `flow_history --what credit` 백필(ka10013 `dt`=기준일) — **백필 구간은 상장 생존 종목만** |
 | `sector_index` | 업종지수 OHLCV |
 | `shares_outstanding_history` | 상장주식수 이력(point-in-time 시총 계산용). `source` 가 kiwoom(주간 스냅샷)/krx(중단)/dart(과거 백필)를 구분. 키움은 현재 스냅샷만 주므로 **2016~2025 구간은 DART `--listed` 백필로 채운다** |
 | `consensus` | 네이버 애널리스트 컨센서스(목표가·투자의견·EPS) |
@@ -173,6 +174,7 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 | `030_daily_bars_adj_v2_rename` | `daily_bars_adj_v2_build` → `daily_bars_adj_v2` — 합격 검사 4종 통과(카나리아·이음매 날 최대 30.0%·이벤트↔키움 비율 2,397/2,400) |
 | `031_regular_close` | `regular_close` 뷰 + `krx_tick_size`·`krx_tick_round`·`krx_base_close` 함수 — 2026-09-14~ 정규장 종가를 기준가 항등식으로 파생(사용자 승인 10-13 "항등식 파생부터"). 테이블·기존 행은 건드리지 않는다 |
 | `032_naver_mstock` | `naver_investor_trend`·`naver_research_reports` 신설 — 2008~ 수급·보유율·리포트 목표가(swing-it 요청). 키움 ka10008 은 50일, 옛 frgn.naver 는 개편으로 사라짐 |
+| `033_program_trading` | `program_trading` 신설 — 종목별 일별 프로그램 매매(swing-it 요청, 2016-09~) |
 
 > ⚠️ 001 은 코드가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이 `daily_earnings` 가
 > 초록불이었던 건 비수기라 `rows=0` 이어서 DB 를 건드리기 전에 빠져나갔기 때문이지,
