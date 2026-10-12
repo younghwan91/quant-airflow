@@ -37,6 +37,9 @@
 | `earnings` | DART 분기 실적(순이익·매출·영업이익, 당기/전년동기), lookahead-safe `avail_date` + 정정 이력을 보존하는 `knowledge_date`(PK: code, period, knowledge_date) |
 | `earnings_disclosures` | 실적이 **실제로 알려진 날** — DART 원본 공시 접수일, `(code, period, kind)` 마다 가장 이른 것. `kind` = `prelim`(영업(잠정)실적 공정공시)·`pl_change`(매출액또는손익구조 30%/15% 변경)·`periodic`(사업·반기·분기보고서). `earnings` 와 `(code, period)` 로 조인 — `avail_date` 는 법정 마감 근사라 늦다(005930 2020Q1: avail 05-15, prelim 04-07). 날짜만 있고 잠정은 장 마감 뒤 제출이 많아 **다음 거래일부터** 거래 가능으로 본다. 비12월 결산·정정·자회사 공시는 없다. `collectors/dart_filing_dates.py`, 2019~ |
 | `wics_membership` | 종목의 WICS 섹터(G10..G55)·산업군(중분류 G1010..G5510) **주간 스냅샷**(매주 첫 거래일), 2019~. wiseindex 가 그날 구성으로 답해 point-in-time 이다(NC 036570: 2019 G45 → 2026 G50). 분류 셋을 같이 둔다 — `sector_cd`(섹터 지수, 완전)·`industry_cd`(중분류, 2019 미디어 등 NULL)·`wi26_cd`(WI26 26업종, 2026 은 일부 NULL). 어느 쪽도 전 종목을 덮지 못한다(migration 020 실측). WICS 지수에 없는 종목(스팩·리츠 등)은 행이 없다. `collectors/wics.py` |
+| `index_changes` | KOSPI 200·KOSDAQ 150·KRX 300·KOSPI 100·50 **정기변경 편입·편출** — KOSDAQ 150 2015-12~, KOSPI 200 2016-06~(2019 까지 6월만), KRX 300 2018-06~, KOSPI 100·50 은 2019-06 까지만 같은 공지에 있다. `effective_date` = 정기변경일(동시만기일 다음 거래일 — 그날부터 새 구성, 패시브 매매는 **전 거래일 종가**), `announce_date` = 공지 게시일(시각 없음). KRX 지수운영공지 첨부 엑셀에서. 수시변경(특례편입·분할·합병·신규상장)은 없다 — `index_notices` 원문 |
+| `index_constituents` | 정기변경 후 **전체 명단**(그 `effective_date` 부터 다음 정기변경 전까지, 사이 수시변경 미반영). 명단 크기가 200/150/300/100/50 이 아니면 수집기가 예외 |
+| `index_notices` | KRX 지수운영공지(index.krx.co.kr, 로그인 불요) 원문 전부 — 제목·본문·첨부명, 2015-01~. 수시변경은 여기서 찾는다 |
 | `delisted_stocks` | 상장폐지 종목 마스터(생존편향 보정). 과거 시세는 `daily_bars` 에 `source='naver'` 로 들어간다 |
 | `backfill_markers` | `(code, source)` — "조회해봤는데 자료가 없더라"를 기록해 백필이 같은 코드를 매 회차 다시 훑지 않게 한다 |
 | `news_judgments` | LLM이 news_articles/disclosures를 읽고 낸 판단. PK `(source_type, source_id, ticker, prompt_version)` — prompt_version이 바뀌면 새 행, 기존 행은 절대 안 고침(재현성). `confidence`(LLM 자체 확신도 0~100)·`judged_at`(응답 시각, 레이턴시 측정용)은 013 이후 행에만 있다(NULL=013 이전). **`judged_at`은 TIMESTAMPTZ(UTC 저장)** — scalp-it이 `ticks.ts`(naive KST)와 조인하다 9시간 밀리는 걸 실측했다(2026-09-06). naive KST 컬럼과 조인하는 쪽은 항상 KST로 변환해야 한다. **2026-10-12 부터 Haiku 5.5·`prompt_version` v2 만** — v1(Haiku 4.5) 14,534행은 018 로 `legacy.news_judgments_haiku45` 에 보관 |
@@ -92,6 +95,7 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 | `018_archive_haiku45_judgments` | **데이터 보관** — Haiku 4.5 판정을 운영 테이블에서 `legacy` 스키마로 옮긴다: `news_judgments` v1 14,534 → `legacy.news_judgments_haiku45`, `article_judgments`·`judges` 의 `v2-haiku45` 157,834·1 → `legacy.article_judgments_haiku45`·`legacy.judges_haiku45`. 이후 판정은 Haiku 5.5 만(`news_judge.py` v2). `legacy.*` 는 코드가 읽지 않는 보관용이라 `init_timescale.sql` 에 없다. 롤백은 파일 하단 |
 | `019_news_judge_batches` | `news_judge_batches` 신설 — `news_judge.py` v2 가 동기 루프에서 Message Batches 로(기사 LLM 분석 = Haiku 5.5 + 캐싱 + 배치 의무, 2026-10-12). 배치는 최대 24시간이라 못 기다린 배치를 다음 실행이 수거하고, retries=1 재시도가 같은 기사를 다시 내지 않게 한다 |
 | `020_earnings_disclosures_wics` | `earnings_disclosures`·`wics_membership` 신설 — swing-it 결합 전략 연구(설계 구간 2020~2023)가 실제 실적 공시일과 섹터 이력을 요청. `earnings` 행은 건드리지 않는다 |
+| `021_index_changes` | `index_notices`·`index_changes`·`index_constituents` 신설 — 지수 편입·편출 수급 검증용(swing-it 요청). data.krx 는 로그인이 필요하지만 KRX 지수 사이트 공지 게시판은 아니다 |
 
 > ⚠️ 001 은 코드가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이 `daily_earnings` 가
 > 초록불이었던 건 비수기라 `rows=0` 이어서 DB 를 건드리기 전에 빠져나갔기 때문이지,

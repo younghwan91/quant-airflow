@@ -337,6 +337,35 @@ CREATE TABLE IF NOT EXISTS wics_membership (
     source       TEXT NOT NULL DEFAULT 'wiseindex',
     PRIMARY KEY (date, code)
 );
+CREATE TABLE IF NOT EXISTS index_notices (
+    bbs_seq      INTEGER PRIMARY KEY,
+    posted_date  TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    body         TEXT,
+    attachments  TEXT,
+    fetched_at   TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS index_changes (
+    index_name      TEXT NOT NULL,
+    effective_date  TEXT NOT NULL,
+    action          TEXT NOT NULL,      -- add | drop (021)
+    code            TEXT NOT NULL,
+    isin            TEXT,
+    name            TEXT,
+    announce_date   TEXT NOT NULL,
+    bbs_seq         INTEGER NOT NULL,
+    PRIMARY KEY (index_name, effective_date, action, code)
+);
+CREATE TABLE IF NOT EXISTS index_constituents (
+    index_name      TEXT NOT NULL,
+    effective_date  TEXT NOT NULL,
+    code            TEXT NOT NULL,
+    isin            TEXT,
+    name            TEXT,
+    announce_date   TEXT NOT NULL,
+    bbs_seq         INTEGER NOT NULL,
+    PRIMARY KEY (index_name, effective_date, code)
+);
 """
 
 
@@ -941,3 +970,19 @@ _WICS_MEMBERSHIP_COLS = ["date", "code", "sector_cd", "sector_nm", "industry_cd"
 def upsert_wics_membership(con: Any, records: list[tuple]) -> int:
     """wics_membership 행(_WICS_MEMBERSHIP_COLS 순서) upsert — (date, code) 스냅샷이라 재실행 멱등."""
     return _upsert(con, "wics_membership", _WICS_MEMBERSHIP_COLS, records, pk_cols=("date", "code"))
+
+
+_INDEX_CHANGES_COLS = ["index_name", "effective_date", "action", "code", "isin", "name", "announce_date", "bbs_seq"]
+_INDEX_CONSTITUENTS_COLS = ["index_name", "effective_date", "code", "isin", "name", "announce_date", "bbs_seq"]
+
+
+def insert_index_changes(con: Any, records: list[tuple]) -> int:
+    """index_changes 행(_INDEX_CHANGES_COLS 순서) — 공지가 근거라 이미 있으면 그대로 둔다."""
+    return _upsert(con, "index_changes", _INDEX_CHANGES_COLS, records,
+                   pk_cols=("index_name", "effective_date", "action", "code"), on_conflict="nothing")
+
+
+def insert_index_constituents(con: Any, records: list[tuple]) -> int:
+    """index_constituents 행(_INDEX_CONSTITUENTS_COLS 순서) — 이미 있으면 그대로 둔다."""
+    return _upsert(con, "index_constituents", _INDEX_CONSTITUENTS_COLS, records,
+                   pk_cols=("index_name", "effective_date", "code"), on_conflict="nothing")

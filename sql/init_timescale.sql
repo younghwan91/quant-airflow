@@ -205,6 +205,42 @@ CREATE TABLE IF NOT EXISTS wics_membership (
 );
 CREATE INDEX IF NOT EXISTS idx_wics_membership_code ON wics_membership(code, date);
 
+-- KRX 지수운영공지 원문과 대표지수 정기변경 편입·편출·명단(021).
+CREATE TABLE IF NOT EXISTS index_notices (
+    bbs_seq      INTEGER PRIMARY KEY,   -- 게시판 글 번호
+    posted_date  DATE NOT NULL,
+    title        TEXT NOT NULL,
+    body         TEXT,
+    attachments  TEXT,                  -- 첨부 파일명(줄바꿈 구분)
+    fetched_at   TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_index_notices_posted ON index_notices(posted_date);
+
+CREATE TABLE IF NOT EXISTS index_changes (
+    index_name      TEXT NOT NULL,      -- KOSPI200 · KOSDAQ150 · KRX300 · KOSPI100 · KOSPI50
+    effective_date  DATE NOT NULL,
+    action          TEXT NOT NULL CHECK (action IN ('add', 'drop')),
+    code            TEXT NOT NULL,      -- 단축코드
+    isin            TEXT,               -- NULL = 그 공지 엑셀이 단축코드만 줬다(2021-06)
+    name            TEXT,
+    announce_date   DATE NOT NULL,
+    bbs_seq         INTEGER NOT NULL,   -- index_notices 의 근거 공지
+    PRIMARY KEY (index_name, effective_date, action, code)
+);
+CREATE INDEX IF NOT EXISTS idx_index_changes_code ON index_changes(code, effective_date);
+
+CREATE TABLE IF NOT EXISTS index_constituents (
+    index_name      TEXT NOT NULL,
+    effective_date  DATE NOT NULL,
+    code            TEXT NOT NULL,
+    isin            TEXT,
+    name            TEXT,
+    announce_date   DATE NOT NULL,
+    bbs_seq         INTEGER NOT NULL,
+    PRIMARY KEY (index_name, effective_date, code)
+);
+CREATE INDEX IF NOT EXISTS idx_index_constituents_code ON index_constituents(code, effective_date);
+
 CREATE TABLE IF NOT EXISTS consensus (
     code         TEXT NOT NULL,
     date         DATE NOT NULL,
