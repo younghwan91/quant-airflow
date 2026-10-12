@@ -1,8 +1,8 @@
 """daily_bars_adj_v2 — 원주가 × 수정 이벤트 누적계수, 2026-09-14~ 는 KRX 분봉 OHLC (migration 029).
 
 **왜.** ``daily_bars_adjusted`` 는 수정주가로 받은 ``daily_bars`` 를 ±30% 점프 탐지로 다시 이어 붙인다 — 수집 시점
-이음매가 남고(가짜 이음매 423개, swing-it 실측), 2026-09-14 부터는 키움 일봉 종가가 KRX 종가가 아니라 NXT 애프터마켓
-20:00 마지막가다(종목-일 86%, 평균 0.7% — 메모리 nxt-contamination). 여기서는 두 원천을 바로 쓴다:
+이음매가 남고(가짜 이음매 423개, swing-it 실측), 2026-09-14 부터는 키움 일봉 종가가 KRX 정규장 종가가 아니라
+KRX 애프터마켓(16:00~20:00, 2026-09-14~) 20:00 마지막가다(종목-일 86%, 평균 0.7% — NXT 가 아니다, docs/schema.md 애프터마켓 절). 여기서는 두 원천을 바로 쓴다:
 
 - **가격 = daily_bars_raw(무수정) × 계수.** 계수 = 그날 **뒤에** 찍힌 corporate_actions 의 ``1 + upd_rt/100`` 곱.
   ``date`` 는 새 기준 첫 거래일이므로 그날 자신은 곱하지 않는다. 거래량은 계수로 나눈다(주식수 기준을 맞춘다).
@@ -36,7 +36,7 @@ from typing import Any
 from .storage import _is_pg, _upsert, connect, default_db_path, fetchall, fetchone
 
 TABLE = "daily_bars_adj_v2"
-KRX_ONLY_FROM = date(2026, 9, 14)   # 이날부터 키움 일봉 종가 = NXT 20:00 가
+KRX_ONLY_FROM = date(2026, 9, 14)   # 이날부터 키움 일봉 종가 = KRX 애프터마켓 20:00 가
 OPEN_TOL = 0.005                    # 분봉 시가 ↔ 원주가 시가 허용 오차(같은 기준인지)
 
 COLUMNS = [
