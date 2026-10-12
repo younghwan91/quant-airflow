@@ -213,7 +213,12 @@ _NUM_RE = re.compile(r"^(?P<neg>\(\s*[-−]\s*\)|[\(△▲Δ∆\-−–]|\(\s*-)
 def parse_number(text: str) -> float | None:
     """``'1,234'``·``'(1,234)'``·``'△1,234'``·``'-1,234'`` → 수. ``'-'``·빈칸·날짜·문장 → ``None``."""
     # K-GAAP 감사보고서 표기: '￦ 33,295,643,940', 합계 밑줄 '33,295,643,940 ==========' / '-----'
-    s = re.sub(r"[=＝]{2,}|-{3,}|[￦₩]", "", _ws(text)).replace(" ", "")
+    t = _ws(text)
+    # 은행 양식 '85,702,748,535 (72,106,748,535)' — 앞 숫자가 그 칸의 값, 괄호는 대손준비금 반영후 조정이익(139130 2011 반기)
+    m2 = re.fullmatch(r"([\(△\-]?\s*[\d,]+\s*\)?)\s+\(\s*[\d,]+\s*\)", t)
+    if m2 and not t.startswith("("):
+        t = m2.group(1)
+    s = re.sub(r"[=＝]{2,}|-{3,}|[￦₩]", "", t).replace(" ", "")
     if not s or s in ("-", "–", "−", "0"):
         return 0.0 if s == "0" else None
     m = _NUM_RE.match(s)
@@ -322,6 +327,12 @@ def _cover_text(blocks: list[Block]) -> str:
     return " ".join(b.text if b.kind != "table" else " ".join(c.text for r in b.table.rows for c in r) for b in blocks[:12])
 
 
+def cover_period_start(blocks: list[Block], pend: date) -> date | None:
+    """표지 '사업연도 2011년 05월 17일 부터 2011년 09월 30일 까지' 의 시작일(끝이 기간말과 같을 때만)."""
+    rng = [r for r in date_ranges(_cover_text(blocks)) if r[1] == pend]
+    return rng[0][0] if rng else None
+
+
 def cover_kisu(blocks: list[Block]) -> int | None:
     """표지의 ``(제 40 기 1 분기)`` → 40. 표지는 문서 앞 몇 블록이다."""
     for b in blocks[:12]:
@@ -335,7 +346,8 @@ def cover_kisu(blocks: list[Block]) -> int | None:
 # --------------------------------------------------------------------------- 순이익 표
 
 
-_ENUM_RE = re.compile(r"^(?:[\(\[]?(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫIVXL]+|\d{1,2}|[가-하])[\.\)\]]|[ㆍ·\-\*※])+")
+#: 번호 — 로마숫자는 ASCII·유니코드 혼용('XⅢ')·소문자 l 오타('Xl.반기순손익', 139130 2013 반기)까지
+_ENUM_RE = re.compile(r"^(?:[\(\[]?(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫIVXLivxl]+|\d{1,2}|[가-하])[\.\)\]]|[ㆍ·\-\*※])+")
 
 
 def norm_label(text: str) -> str:
@@ -508,6 +520,9 @@ def _heading_text(blocks: list[str]) -> str:
     return " ".join(t if len(t) < 300 else t[:80] + " … " + t[-160:] for t in blocks)
 
 
+_PERIODISH_RE = re.compile(r"제\s*\d+|당\s*기|전\s*기|분\s*기|반\s*기|\d{4}|3\s*개\s*월|누\s*적")
+
+
 def _current_columns(
     g: list[list[Cell | None]], hdr: int, context: list[str], pend: date, q: int, kisu: int | None,
 ) -> tuple[list[int], list[int], list[str]]:
@@ -537,7 +552,10 @@ def _current_columns(
         return [], [], ["no_value_cols"]
     # 모든 값 열에 같은 글이 걸친 머리 줄('[요약 연결손익계산서]' 표제)은 묶음 기준이 아니다 — 열마다 갈리는 첫 줄을 쓴다
     lvl = 0
-    while len(cols) > 1 and len({tuple(heads[c - 1][lvl:lvl + 1]) for c in cols}) == 1 and any(len(heads[c - 1]) > lvl + 1 for c in cols):
+    while (len(cols) > 1 and len({tuple(heads[c - 1][lvl:lvl + 1]) for c in cols}) == 1
+           and any(len(heads[c - 1]) > lvl + 1 for c in cols)
+           and not _PERIODISH_RE.search(heads[cols[0] - 1][lvl])):
+        # 기간 표기('제 1(당) 기 3분기')는 당기 열만 있는 표에서도 모든 열에 걸친다 — 그건 표제가 아니다(139130 2011Q3)
         lvl += 1
     for c in cols:
         heads[c - 1] = heads[c - 1][lvl:]
@@ -567,7 +585,9 @@ def _current_columns(
     rng = date_ranges(hdr_text) or near
     ym = _YM_RE.search(hdr_text)
     if rng:
-        if rng[0][1] != pend:
+        if (rng[0][1].year, rng[0][1].month) != (pend.year, pend.month):
+            # 일(day)은 보지 않는다 — '2009년 03월 03일 까지' 같은 회사 오타(085310 2009Q1)로 본표를 버리지 않게.
+            # 직전 연도·직전 분기 표는 연·월이 달라 그대로 걸러진다
             return [], [], ["stale_range"]
         flags.append("verified_range")
     elif ym:
@@ -650,6 +670,9 @@ _SUBSIDIARY_RE = re.compile(r"종\s*속\s*(회\s*사|기\s*업)|연\s*결\s*실\
 _COMPANY_RE = re.compile(r"주\s*식\s*회\s*사|㈜|\(\s*주\s*\)")
 
 
+_CONT_NI_RE = re.compile(r"^계속(?:사업|영업)(?:당기|분기|반기)?(?:순)?(?:이익|손익|손실)$")
+
+
 def _iter_ni_tables(blocks: list[Block], span: tuple[int, int] | None = None):
     """순이익 행이 있는 표마다 ``(i, g, labels, hdr, ctx_list, own, kind, fs, r_ni, (r_ctrl, r_nci))``."""
     section = ""
@@ -673,6 +696,12 @@ def _iter_ni_tables(blocks: list[Block], span: tuple[int, int] | None = None):
         labels = [(line[0].text if line and line[0] is not None else "") for line in g]
         ni_rows = [r for r, lab in enumerate(labels) if is_total_ni(lab)]
         if not ni_rows:
+            # '당기순이익' 행 없이 '계속사업이익(손실)' 로 끝나는 K-GAAP 손익계산서(088390 2009Q3) — 중단사업 행이
+            # 없으면 그게 순이익이다
+            normed_all = [_core(norm_label(x)) for x in labels]
+            if not any("중단" in x for x in normed_all):
+                ni_rows = [r for r, x in enumerate(normed_all) if _CONT_NI_RE.match(x)][-1:]
+        if not ni_rows:
             continue
         hdr = _header_rows(g)
         if hdr >= len(g):
@@ -681,27 +710,30 @@ def _iter_ni_tables(blocks: list[Block], span: tuple[int, int] | None = None):
         # 머리의 '주석'·'비고' 열 이름은 표 이름이 아니다(012320 2012 별도 감사보고서 — '주석' 열 때문에 표를 버렸다)
         own = " ".join(c.text for line in g[:hdr] for c in line
                        if c is not None and not re.fullmatch(r"\s*(주\s*석|비\s*고)\s*", c.text))
-        kind, fs = _heading(_heading_text(ctx_list) + " " + own)
+        # 머리 칸의 괄호 주('(검토를 받지않은 반기재무제표)')는 표 이름이 아니다(001310 2013 반기)
+        kind, fs = _heading(_heading_text(ctx_list) + " " + re.sub(r"\([^()]*\)", " ", own))
         if kind == "fsword":  # 'N. 요약재무정보' 절 안의 소제목일 때만 요약표로 본다
             kind = "summary" if "요약" in section.replace(" ", "") else None
         if kind is None or (kind == "summary" and not lo <= i < hi):
             continue
         r_ni = ni_rows[0]
-        if norm_label(labels[r_ni]).startswith("연결"):
-            fs = "cfs"
+        label_cfs = norm_label(labels[r_ni]).startswith("연결")
         r_ctrl, r_nci = _attribution_rows(labels, r_ni)
         if fs is None:
             # 수식어 없는 '손 익 계 산 서' — 표 머리의 회사 표기가 먼저다: '주식회사 유니크 및 종속회사' 면 연결,
             # '주식회사 유니크' 만이면 별도(011320 2012: 별도 손익을 연결로 읽어 +16% 틀린 값).
             # 같은 문서에서 '연결 …손익계산서' 를 이미 봤으면 수식어 없는 손익계산서는 별도다(012320 2012).
-            # 그다음 귀속 행, 마지막으로 절 제목.
+            # 본표의 계정명 '연결반(당)기순이익' 은 회사가 연결표를 베껴 쓴 오기일 수 있어(006220 2015 반기 별도)
+            # 회사 표기보다 뒤에 본다(요약표는 계정명이 먼저). 그다음 귀속 행, 마지막으로 절 제목.
             head = " ".join(ctx_list[-2:])
-            if _SUBSIDIARY_RE.search(head):
+            if _SUBSIDIARY_RE.search(head) or (label_cfs and kind == "summary"):
                 fs = "cfs"
             elif _COMPANY_RE.search(head) or (kind == "is" and seen_cfs_is):
                 fs = "ofs"
+            elif label_cfs or r_ctrl is not None or r_nci is not None:
+                fs = "cfs"
             else:
-                fs = "cfs" if (r_ctrl is not None or r_nci is not None or "연결" in section.replace(" ", "")) else "ofs"
+                fs = "cfs" if "연결" in section.replace(" ", "") else "ofs"
         elif kind == "is" and fs == "cfs":
             seen_cfs_is = True
         if fs == "ofs":
@@ -715,7 +747,7 @@ def _doc_kisu(blocks: list[Block], pend: date) -> int | None:
         heads = " ".join(g[r][1].text for r in range(hdr) if len(g[r]) > 1 and g[r][1] is not None)
         rng = date_ranges(heads) or next((r for r in (date_ranges(t) for t in reversed(ctx_list)) if r), [])
         m = _KISU_RE.search(heads)
-        if rng and rng[0][1] == pend and m:
+        if rng and (rng[0][1].year, rng[0][1].month) == (pend.year, pend.month) and m:
             return int(m.group(1))
     return None
 
@@ -1050,6 +1082,8 @@ class ReportResult:
     shares: Shares | None
     kisu: int | None
     is_correction: bool = False
+    #: 누적 시작일 — 표지 '사업연도 2011년 05월 17일 부터 …'. 보통 1월 1일, 설립 첫해는 설립일(139130 DGB 2011)
+    ytd_start: date | None = None
 
     @property
     def knowledge_date(self) -> str:
@@ -1086,11 +1120,17 @@ def parse_report(files: list[tuple[str, str]], rcept_no: str, year: int, q: int)
     cands: list[NICandidate] = []
     shares = None
     kisu = None
+    ytd_start = None
     for k, (name, xml) in enumerate(files):
         blocks = parse_blocks(xml)
         if k == 0:
             blocks = blocks[report_body_start(blocks):]
             kisu = cover_kisu(blocks)
+            ytd_start = cover_period_start(blocks, pend)
+            if ytd_start is None or ytd_start.year != year or (ytd_start == date(year, 3 * q - 2, 1) and kisu != 1):
+                # 표지가 그 분기 3개월만 적은 보고서(K-GAAP 3분기 일부)는 1월 1일 누적과 같다.
+                # 제1기(설립 첫해)는 분기 첫날 설립도 있다(175330 JB금융지주 2013-07-01) — 그대로 둔다
+                ytd_start = date(year, 1, 1)
             shares = extract_shares(blocks, pend)
         main_has = {c.fs for c in cands if c.kind == "is"}
         if k > 0 and {"cfs", "ofs"} <= main_has:
@@ -1100,7 +1140,7 @@ def parse_report(files: list[tuple[str, str]], rcept_no: str, year: int, q: int)
         if k > 0:  # 첨부(감사·검토보고서)는 본문에 손익계산서가 없는 기준만 채운다
             got = [c for c in got if c.kind in ("is", "cf") and c.fs not in main_has]
         cands += got
-    return ReportResult(rcept_no, year, q, choose_net_income(cands), shares, kisu)
+    return ReportResult(rcept_no, year, q, choose_net_income(cands), shares, kisu, ytd_start=ytd_start)
 
 
 def basis_order(ni: NetIncome, *, controlling_first: bool) -> tuple[str, ...]:
@@ -1252,13 +1292,16 @@ def _basis_values(rr: ReportResult, prev: ReportResult | None, b: str) -> dict:
     Q4 의 ``q`` 는 사업보고서에 3개월 열이 없으므로 연간 − 3분기 누적(같은 기준)이다.
     """
     v3, vc = getattr(rr.ni, f"{b}_3m"), getattr(rr.ni, f"{b}_cum")
-    if rr.q == 1:
+    qstart = date(rr.year, 3 * rr.q - 2, 1)
+    if rr.q == 1 or (rr.ytd_start is not None and rr.ytd_start >= qstart):
+        # 1분기, 또는 이 분기 안에 설립돼 누적 = 이 분기 전부(139130 DGB 2011 반기: 05-17~06-30)
         v = vc if vc is not None else v3
-        return {"q": v, "q_derived": False, "ytd": v}
+        return {"q": v3 if v3 is not None else v, "q_derived": False, "ytd": v}
     if rr.q in (2, 3) and v3 is not None:
         return {"q": v3, "q_derived": False, "ytd": vc}
     pv = getattr(prev.ni, f"{b}_cum") if prev is not None else None
-    if vc is not None and pv is not None:
+    # 차분은 직전 분기 누적과 누적 시작일이 같을 때만(설립 첫해·결산기 변경으로 시작일이 다르면 만들지 않는다)
+    if vc is not None and pv is not None and prev.ytd_start == rr.ytd_start:
         return {"q": vc - pv, "q_derived": True, "ytd": vc}
     return {"q": None, "q_derived": False, "ytd": vc}
 
@@ -1284,7 +1327,9 @@ def build_records(code: str, reports: dict[str, list[ReportResult]]) -> list[dic
             prev = next((p for p in reversed(prev_versions) if p.rcept_no <= rr.rcept_no), None)
             vals = {b: _basis_values(rr, prev, b) for b in BASES}
             rec: dict = {"code": code, "period": period, "knowledge_date": rr.knowledge_date,
-                         "rcept_no": rr.rcept_no, "is_correction": rr.is_correction}
+                         "rcept_no": rr.rcept_no, "is_correction": rr.is_correction,
+                         # 누적 시작일이 1월 1일이 아니면 기록(설립 첫해 등) — *_ytd 는 그날부터의 누적이다
+                         "ytd_start": (rr.ytd_start.isoformat() if rr.ytd_start and rr.ytd_start != date(y, 1, 1) else None)}
             for b in BASES:
                 rec[f"{b}_q"], rec[f"{b}_ytd"], rec[f"{b}_q_derived"] = vals[b]["q"], vals[b]["ytd"], vals[b]["q_derived"]
             for tag, ctrl_first in (("", False), ("_ctrl", True)):

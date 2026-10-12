@@ -674,3 +674,84 @@ def test_empty_correction_on_later_day_is_not_emitted():
     reports = {"2016Q1": [_rv("20160516000001", 2016, 1, ofs_3m=100.0, ofs_cum=100.0, src={"ofs": "is:x"}),
                           _rv("20160601000001", 2016, 1, True)]}
     assert [r["knowledge_date"] for r in dd.build_records("x", reports)] == ["2016-05-16"]
+
+
+# ---------------------------------------------------------------- era2 홀드아웃 손 검증(2026-10-13) 회귀
+
+
+def _q_is(rng: str, unit: str, rows: list[tuple[str, ...]], *, title: str = "연결포괄손익계산서",
+          head0: tuple[str, ...] = ("과 목", "제 1(당) 기 3분기", "제 1(당) 기 3분기"),
+          head1: tuple[str, ...] | None = ("과 목", "3개월", "누적")) -> str:
+    heads = [_row(*head0, tag="TH")] + ([_row(*head1, tag="TH")] if head1 else [])
+    body = [_row("Ⅰ. 순이자이익", "1", "2"), _row("Ⅱ. 영업이익", "1", "2"), _row("법인세비용", "1", "2")]
+    return (f"<P>{title}</P>" + _table(_row(rng + " " + unit)) + _table(*heads, *body, *[_row(*r) for r in rows]))
+
+
+def test_current_only_quarter_table_keeps_3m_and_cumulative_columns():
+    """139130 2011Q3: 당기 열만 있는 표 — 모든 열에 걸친 '제 1(당) 기 3분기' 를 표제로 버려 3개월을 누적으로 읽던 것."""
+    xml = _doc("<TITLE>III. 재무에 관한 사항</TITLE>",
+               _q_is("제 1(당) 기 3분기 2011년 5월 17일부터 2011년 9월 30일까지 주식회사 DGB금융지주 및 종속기업", "(단위 : 원)",
+                     [("XV. 연결분기순이익", "72,942,872,015", "158,645,620,550")],
+                     head0=("과 목", "제 1(당) 기 3분기", "제 1(당) 기 3분기")),
+               cover="(제 1 기 3 분기)")
+    ni = _report(xml, 2011, 3).ni
+    assert (ni.cfs_3m, ni.cfs_cum) == (72_942_872_015.0, 158_645_620_550.0)
+
+
+def test_bank_cell_with_adjusted_income_in_parentheses():
+    """139130 2011 반기: '85,702,748,535 (72,106,748,535)' — 앞 숫자가 값(괄호는 대손준비금 반영후 조정이익)."""
+    assert dd.parse_number("85,702,748,535 (72,106,748,535)") == 85_702_748_535.0
+    assert dd.parse_number("(1,234) (5,678)") is None
+
+
+def test_first_year_company_quarter_is_whole_cumulative_and_no_cross_start_difference():
+    """설립 첫해(누적 시작 05-17): 그 분기 안에 설립된 반기는 누적 = 그 분기, 차분은 시작일이 같을 때만."""
+    start = date(2011, 5, 17)
+    q2 = dd.ReportResult("20110829000066", 2011, 2, dd.NetIncome(cfs_cum=85.0, src={"cfs": "is:x"}), None, 1, ytd_start=start)
+    q3 = dd.ReportResult("20111129000148", 2011, 3, dd.NetIncome(cfs_cum=158.0, src={"cfs": "is:x"}), None, 1, ytd_start=start)
+    q4 = dd.ReportResult("20120330000343", 2011, 4, dd.NetIncome(cfs_cum=205.0, src={"cfs": "is:x"}), None, 1,
+                         ytd_start=date(2011, 1, 1))  # 시작일이 다르면 차분하지 않는다
+    recs = {r["period"]: r for r in dd.build_records("139130", {"2011Q2": [q2], "2011Q3": [q3], "2011Q4": [q4]})}
+    assert (recs["2011Q2"]["cfs_q"], recs["2011Q2"]["cfs_q_derived"], recs["2011Q2"]["ytd_start"]) == (85.0, False, "2011-05-17")
+    assert (recs["2011Q3"]["cfs_q"], recs["2011Q3"]["cfs_q_derived"]) == (73.0, True)
+    assert recs["2011Q4"]["cfs_q"] is None and recs["2011Q4"]["netinc"] == 205.0
+
+
+def test_period_end_day_typo_still_verifies():
+    """085310 2009Q1: '2009년 03월 03일 까지'(회사 오타) — 연·월이 맞으면 본표로 받는다."""
+    xml = _doc(_q_is("제26기 1분기 2009년 01월 01일 부터 2009년 03월 03일 까지", "(단위 : 원)",
+                     [("Ⅹ.당기순이익(손실)", "3,163,260,914", "3,163,260,914")], title="손익계산서",
+                     head0=("과 목", "제26기 1분기", "제26기 1분기")), cover="(제 26 기 1 분기)")
+    assert _report(xml, 2009, 1).ni.ofs_cum == 3_163_260_914.0
+
+
+def test_lowercase_l_roman_and_continuing_ops_only_statements():
+    """139130 2013 반기 'Xl.반기순손익', 088390 2009Q3 '계속사업이익(손실)' 로 끝나는 손익계산서."""
+    assert dd.is_total_ni("Xl.반기순손익")
+    xml = _doc(_q_is("제9기 3분기 2009년 01월 01일 부터 2009년 09월 30일 까지", "(단위 : 원)",
+                     [("법인세비용차감전계속사업이익(손실)", "1", "2"), ("계속사업이익(손실)", "2,539,890,644", "4,238,401,566")],
+                     title="손익계산서", head0=("과 목", "제9기 3분기", "제9기 3분기")), cover="(제 9 기 3 분기)")
+    ni = _report(xml, 2009, 3).ni
+    assert (ni.ofs_3m, ni.ofs_cum) == (2_539_890_644.0, 4_238_401_566.0)
+
+
+def test_parenthetical_review_note_in_header_is_not_a_heading():
+    """001310 2013 반기: 머리 '(검토를 받지않은 반기재무제표)' 가 표 이름 '재무제표' 로 잡혀 손익계산서를 버리던 것."""
+    xml = _doc("<P>나. 손 익 계 산 서</P>",
+               _q_is("제60기 반기 (2013년 01월 01일부터 2013년 06월 30일까지) 회사명 : 풍림산업주식회사", "(단위 : 원)",
+                     [("Ⅹ.반기순이익(손실)", "(30,189,113,441)", "(34,006,441,048)")], title="",
+                     head0=("과 목", "제60기 반기 (검토를 받지않은 반기재무제표)", "제60기 반기 (검토를 받지않은 반기재무제표)")),
+               cover="(제 60 기 반기)")
+    ni = _report(xml, 2013, 2).ni
+    assert (ni.ofs_3m, ni.ofs_cum) == (-30_189_113_441.0, -34_006_441_048.0)
+
+
+def test_separate_statement_with_copied_consolidated_label_stays_separate():
+    """006220 2015 반기: 별도 표 계정명이 '연결반(당)기순이익'(연결표 베낀 오기) — 회사명만인 머리가 먼저다."""
+    xml = _doc("<TITLE>4. 재무제표</TITLE>",
+               _q_is("제56기 반기 2015년 1월 1일부터 2015년 6월 30일까지 주식회사 제주은행", "(단위 : 백만원)",
+                     [("Ⅴ. 연결반(당)기순이익 (대손준비금 반영후 조정이익 제56기 반기 : 2,265백만원", "", "10,544")],
+                     title="다. 포괄손익계산서 (은행)", head0=("과목", "제56기 반기", "제56기 반기"), head1=None),
+               cover="(제 56 기 반기)")
+    ni = _report(xml, 2015, 2).ni
+    assert ni.ofs_cum == 10_544e6 and ni.cfs_cum is None
