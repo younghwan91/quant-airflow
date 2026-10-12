@@ -84,6 +84,40 @@ CREATE TABLE IF NOT EXISTS corporate_actions (
 );
 CREATE INDEX IF NOT EXISTS idx_corporate_actions_date ON corporate_actions(date);
 
+-- 네이버 m.stock 2008~ 외국인 보유율·투자자 순매수, 증권사 리포트 목표가(032, collectors/naver_mstock.py).
+CREATE TABLE IF NOT EXISTS naver_investor_trend (
+    code               TEXT NOT NULL,
+    date               DATE NOT NULL,
+    close              BIGINT,
+    volume             BIGINT,
+    foreign_hold_ratio NUMERIC,
+    foreign_net        BIGINT,
+    institution_net    BIGINT,
+    individual_net     BIGINT,
+    source             TEXT NOT NULL DEFAULT 'naver_mstock',
+    fetched_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (code, date)
+);
+SELECT create_hypertable('naver_investor_trend', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
+
+CREATE TABLE IF NOT EXISTS naver_research_reports (
+    research_id     BIGINT PRIMARY KEY,
+    code            TEXT,
+    item_name       TEXT,
+    broker          TEXT,
+    write_date      DATE,
+    title           TEXT,
+    category        TEXT,
+    opinion         TEXT,
+    goal_price      BIGINT,
+    prev_goal_price BIGINT,
+    price_at_write  BIGINT,
+    attach_url      TEXT,
+    source          TEXT NOT NULL DEFAULT 'naver_research',
+    fetched_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_naver_research_code_date ON naver_research_reports(code, write_date);
+
 -- 원주가 × corporate_actions 누적계수 + 2026-09-14~ KRX 분봉 OHLC(029·030, collectors/adjusted_v2.py).
 CREATE TABLE IF NOT EXISTS daily_bars_adj_v2 (
     code        TEXT NOT NULL,

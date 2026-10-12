@@ -136,6 +136,33 @@ CREATE TABLE IF NOT EXISTS daily_bars_delisted_naver (
     source      TEXT NOT NULL DEFAULT 'naver_adj',       -- 폐지 종목 수정가격(028)
     PRIMARY KEY (code, date)
 );
+CREATE TABLE IF NOT EXISTS naver_investor_trend (
+    code               TEXT NOT NULL,
+    date               TEXT NOT NULL,
+    close              INTEGER,
+    volume             INTEGER,
+    foreign_hold_ratio REAL,
+    foreign_net        INTEGER,
+    institution_net    INTEGER,
+    individual_net     INTEGER,
+    source             TEXT NOT NULL DEFAULT 'naver_mstock',     -- 032
+    PRIMARY KEY (code, date)
+);
+CREATE TABLE IF NOT EXISTS naver_research_reports (
+    research_id     INTEGER PRIMARY KEY,
+    code            TEXT,
+    item_name       TEXT,
+    broker          TEXT,
+    write_date      TEXT,
+    title           TEXT,
+    category        TEXT,
+    opinion         TEXT,
+    goal_price      INTEGER,
+    prev_goal_price INTEGER,
+    price_at_write  INTEGER,
+    attach_url      TEXT,
+    source          TEXT NOT NULL DEFAULT 'naver_research'    -- 032
+);
 CREATE TABLE IF NOT EXISTS kind_delistings (
     code        TEXT NOT NULL,
     delist_date TEXT NOT NULL,
