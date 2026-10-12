@@ -366,3 +366,195 @@ def test_statement_name_inside_a_sentence_is_not_a_heading():
     assert dd._heading("연결대상 종속기업의 요약포괄손익계산서는 다음과 같습니다. (단위: 천원)") == (None, None)
     assert dd._heading("연결 포괄손익계산서 제 15 기 2016.01.01 부터 2016.12.31 까지") == ("is", "cfs")
     assert dd._heading("나. 최근 3사업연도 배당에 관한 사항") == ("div", None)
+
+
+# ---------------------------------------------------------------- 지배지분(리뷰 2026-10-13 회귀)
+
+
+def _cfs_is(ni_rows: list[tuple[str, tuple[str, ...]]], *, unit: str = "(단위 : 원)", q: str = "3분기",
+            end: str = "2015.09.30") -> str:
+    rows = [
+        _row("", f'<TH COLSPAN="2">제 10 기 {q}</TH>', f'<TH COLSPAN="2">제 9 기 {q}</TH>', tag="TH"),
+        _row("", "3개월", "누적", "3개월", "누적", tag="TH"),
+        _row("매출액", "1,000", "2,000", "900", "1,800"),
+        _row("영업이익", "100", "200", "90", "180"),
+        _row("법인세비용", "10", "20", "9", "18"),
+    ] + [_row(lab, *vals) for lab, vals in ni_rows]
+    return ("<TITLE>III. 재무에 관한 사항</TITLE><TITLE>2. 연결재무제표</TITLE><P>연결 포괄손익계산서</P>"
+            + _table(_row(f"제 10 기 {q} 2015.01.01 부터 {end} 까지"), _row(unit)) + _table(*rows))
+
+
+def _ni(xml: str, q: int = 3) -> dd.NetIncome:
+    return _report(_doc(xml, cover=f"(제 10 기 {q} 분기)"), 2015, q).ni
+
+
+def test_ctrl_is_never_taken_from_summary_table():
+    """099830 2015Q3: 요약표의 '지배기업의소유주지분' 칸이 실제로는 기타포괄손익 — 본표에 귀속·비지배 행이 없으면 ctrl = 합계."""
+    summary = _table(
+        _row("구 분", "제 10 기 3분기", "제 9 기", tag="TH"),
+        _row("자산총계", "1", "1"),
+        _row("당기순이익", "(8,032)", "100"),
+        _row("지배기업의소유주지분", "3,964", "100"),
+    )
+    xml = ("<TITLE>III. 재무에 관한 사항</TITLE><TITLE>1. 요약재무정보</TITLE><P>가. 요약연결재무정보 (단위 : 백만원)</P>"
+           + summary + _cfs_is([("당기순이익(손실)", ("(3,945,792,869)", "(8,032,482,293)", "1", "1"))]))
+    ni = _ni(xml)
+    assert (ni.ctrl_3m, ni.ctrl_cum) == (-3_945_792_869.0, -8_032_482_293.0)
+    assert "cfs_ctrl_eq_total" in ni.flags
+
+
+def test_ctrl_requires_ctrl_plus_nci_equal_total():
+    """011700 2015Q2·Q3: 지배+비지배가 합계와 어긋나면 ctrl 을 비운다."""
+    xml = _cfs_is([
+        ("당기순이익", ("1,721,391,194", "3,481,555,040", "1", "1")),
+        ("지배기업 소유주지분", ("1,810,785,642", "3,591,115,154", "1", "1")),
+        ("비지배지분", ("(10,000)", "(20,000)", "0", "0")),
+    ])
+    ni = _ni(xml)
+    assert ni.cfs_3m == 1_721_391_194.0
+    assert ni.ctrl_3m is None and ni.ctrl_cum is None
+    assert "cfs_ctrl_inconsistent" in ni.flags
+
+
+def test_ctrl_label_with_jibun_and_quarter_consolidated_total():
+    """034730 2015Q3: 합계 '분기연결순이익', 지배 '지배기업소유주지분순이익(손실)'."""
+    xml = _cfs_is([
+        ("분기연결순이익", ("5,020,527", "5,374,785", "113,276", "380,842")),
+        ("지배기업소유주지분순이익(손실)", ("4,909,676", "5,261,846", "111,692", "378,276")),
+        ("비지배지분순이익", ("110,851", "112,939", "1,584", "2,566")),
+        ("총포괄이익의 귀속", ("", "", "", "")),
+        ("지배기업소유주지분", ("4,981,293", "5,357,381", "1", "1")),
+    ], unit="(단위 : 백만원)")
+    ni = _ni(xml)
+    assert (ni.cfs_3m, ni.ctrl_3m, ni.ctrl_cum) == (5_020_527e6, 4_909_676e6, 5_261_846e6)
+
+
+def test_negative_ctrl_with_positive_total_is_kept_when_consistent():
+    """000300 2015Q1 처럼 비지배가 크면 합계 +, 지배 − 가 맞다 — 합이 맞으면 그대로."""
+    xml = _cfs_is([
+        ("당기순이익(손실)", ("805,544,490", "805,544,490", "1", "1")),
+        ("지배기업소유주지분순이익(손실)", ("(803,750,957)", "(803,750,957)", "1", "1")),
+        ("비지배지분순이익", ("1,609,295,447", "1,609,295,447", "1", "1")),
+    ], q="1분기", end="2015.03.31")
+    assert _ni(xml, 1).ctrl_cum == -803_750_957.0
+
+
+def test_ctrl_equals_total_when_nci_is_dash():
+    xml = _cfs_is([
+        ("당기순이익", ("100", "300", "1", "1")),
+        ("당기순이익의 귀속", ("", "", "", "")),
+        ("지배기업의 소유주에게 귀속되는 당기순이익", ("-", "-", "-", "-")),
+        ("비지배지분에 귀속되는 당기순이익", ("-", "-", "-", "-")),
+    ])
+    ni = _ni(xml)
+    assert ni.ctrl_3m is None  # 지배 행이 있는데 값이 '-' — 모른다
+    xml2 = _cfs_is([("당기순이익", ("100", "300", "1", "1")), ("비지배지분순이익", ("-", "-", "-", "-"))])
+    assert (_ni(xml2).ctrl_3m, _ni(xml2).ctrl_cum) == (100.0, 300.0)
+
+
+def test_q3_ctrl_not_derived_from_another_table():
+    """115960 2016Q3: 요약표 ctrl 누적(−30,022천원)과 이전 분기 누적을 빼 원문에 없는 값(−13.19B)을 만들던 경로."""
+    q2 = _rr(2016, 2, cfs_3m=8_168_388_010.0, cfs_cum=13_162_101_090.0, ctrl_3m=8_168_388_010.0,
+             ctrl_cum=13_162_101_090.0, src={"cfs": "is:x"})
+    q3 = _rr(2016, 3, cfs_3m=2_971_570_672.0, cfs_cum=16_133_671_762.0, src={"cfs": "is:x"})  # 본표 ctrl 없음
+    recs = dd.build_records("115960", {"2016Q2": [q2], "2016Q3": [q3]})
+    r3 = next(r for r in recs if r["period"] == "2016Q3")
+    assert r3["ctrl_q"] is None and r3["ctrl_ytd"] is None
+    assert (r3["netinc_ctrl"], r3["basis_ctrl"]) == (2_971_570_672.0, "cfs")
+
+
+# ---------------------------------------------------------------- 레코드(정정·기준 혼합)
+
+
+def _rv(rcept: str, year: int, q: int, corr: bool = False, **kw) -> dd.ReportResult:
+    src = kw.pop("src", None) or {}
+    return dd.ReportResult(rcept, year, q, dd.NetIncome(src=src, **kw), None, None, is_correction=corr)
+
+
+def test_correction_is_a_separate_record_with_its_own_knowledge_date():
+    reports = {
+        "2016Q1": [_rv("20160516003860", 2016, 1, ofs_3m=100.0, ofs_cum=100.0, src={"ofs": "is:x"}),
+                   _rv("20160517000128", 2016, 1, True, cfs_3m=120.0, cfs_cum=120.0, ofs_3m=100.0, ofs_cum=100.0,
+                       src={"cfs": "is:x", "ofs": "is:x"})],
+    }
+    recs = dd.build_records("033540", reports)
+    assert [(r["knowledge_date"], r["is_correction"], r["netinc"], r["basis"]) for r in recs] == [
+        ("2016-05-16", False, 100.0, "ofs"), ("2016-05-17", True, 120.0, "cfs")]
+
+
+def test_derived_quarter_uses_prior_version_known_at_that_date_and_same_basis():
+    reports = {
+        "2009Q1": [_rv("20090515000001", 2009, 1, ofs_3m=10.0, ofs_cum=10.0, src={"ofs": "is:x"}),
+                   _rv("20091120000001", 2009, 1, True, ofs_3m=12.0, ofs_cum=12.0, src={"ofs": "is:x"})],
+        "2009Q2": [_rv("20090814000001", 2009, 2, ofs_cum=30.0, cfs_cum=50.0, src={"ofs": "summary:x", "cfs": "summary:x"})],
+    }
+    r2 = next(r for r in dd.build_records("x", reports) if r["period"] == "2009Q2")
+    # 08-14 에 알려진 1분기는 원본(10) — 11-20 정정(12)을 쓰면 미래 정보
+    assert (r2["ofs_q"], r2["ofs_q_derived"]) == (20.0, True)
+    # 연결은 1분기 연결 누적이 없으니 만들지 않는다(별도 1분기를 빼지 않는다)
+    assert r2["cfs_q"] is None and r2["cfs_ytd"] == 50.0
+    assert (r2["netinc"], r2["basis"], r2["derived"]) == (20.0, "ofs", True)
+
+
+def test_q4_record_has_annual_for_every_basis_including_separate():
+    reports = {"2008Q4": [_rv("20090331000001", 2008, 4, cfs_3m=900.0, cfs_cum=900.0, ofs_3m=700.0, ofs_cum=700.0,
+                              src={"cfs": "is:x", "ofs": "is:x"})],
+               "2008Q3": [_rv("20081114000001", 2008, 3, ofs_3m=150.0, ofs_cum=500.0, src={"ofs": "is:x"})]}
+    r4 = next(r for r in dd.build_records("x", reports) if r["period"] == "2008Q4")
+    assert (r4["netinc"], r4["basis"], r4["cfs_ytd"], r4["ofs_ytd"]) == (900.0, "cfs", 900.0, 700.0)
+    assert (r4["ofs_q"], r4["ofs_q_derived"]) == (200.0, True)  # 연간 − 3분기 누적, 같은 기준
+    assert r4["cfs_q"] is None  # 3분기 연결 누적이 없다 — 별도 3분기를 빼지 않는다
+
+
+def test_shares_without_reference_date_are_flagged_not_filled():
+    t = _table(
+        _row("구 분", "보통주", "우선주", "합계", tag="TH"),
+        _row("Ⅳ. 발행주식의 총수", "1,000", "-", "1,000"),
+    )
+    sh = dd.extract_shares(dd.parse_blocks(_doc(t)), date(2015, 12, 31))
+    assert sh.asof is None and sh.asof_inferred is True
+
+
+# ---------------------------------------------------------------- 폐지 종목 매핑
+
+
+def test_normalize_corp_name():
+    assert dd.normalize_corp_name("(주)삼성테크윈") == dd.normalize_corp_name("삼성테크윈 주식회사") == "삼성테크윈"
+    assert dd.normalize_corp_name("ＡＰ우주통신㈜") == "AP우주통신"
+
+
+def test_name_candidates_skip_corps_listed_under_another_code():
+    rows = [{"corp_code": "1", "corp_name": "동아건설", "stock_code": ""},
+            {"corp_code": "2", "corp_name": "동아건설(주)", "stock_code": "999990"},
+            {"corp_code": "3", "corp_name": "삼보판지", "stock_code": "023600"}]
+    idx = dd.corp_name_index(rows)
+    assert dd.name_candidates("000280", ["동아건설"], idx) == ["1"]
+
+
+def test_resolve_delisted_requires_exactly_one_confirmed_candidate():
+    items = {"a": [{"report_nm": "사업보고서 (2009.12)"}], "b": [{"report_nm": "사업보고서 (2010.12)"}], "c": []}
+    assert dd.resolve_delisted("x", ["a"], items, {2010}) == ("a", "confirmed")
+    assert dd.resolve_delisted("x", ["a", "c"], items, {2010}) == ("a", "confirmed_among_2")
+    assert dd.resolve_delisted("x", ["a", "b"], items, {2010}) == (None, "ambiguous")  # 동명이인
+    assert dd.resolve_delisted("x", ["c"], items, {2010}) == (None, "unconfirmed")
+    assert dd.resolve_delisted("x", [], items, {2010}) == (None, "no_name_match")
+
+
+def test_class_shares_follow_common_code():
+    assert dd.parent_common_code("012655", "쌍용건설우") == "012650"
+    assert dd.parent_common_code("023601", "삼보판지1신") == "023600"
+    assert dd.parent_common_code("005897", "동원증권(2우B)") == "005890"
+    assert dd.parent_common_code("012650", "쌍용건설") is None
+
+
+def test_correction_errata_before_body_is_skipped():
+    """122690 2015 정정본: 앞머리 정오표의 '정정 전' 손익계산서가 아니라 본문 값을 읽는다."""
+    before = _is_table("연결 포괄손익계산서", "제 10 기 반기 2016.01.01 부터 2016.06.30 까지", "(단위 : 원)",
+                       ("1", "6,022", "1", "1"))
+    after = _is_table("연결 포괄손익계산서", "제 10 기 반기 2016.01.01 부터 2016.06.30 까지", "(단위 : 원)",
+                      ("1", "5,971", "1", "1"))
+    xml = ("<DOCUMENT><BODY><TITLE>정 정 신 고 (보고)</TITLE><P>4. 정정사항</P>" + before + after
+           + "<P>반 기 보 고 서</P><P>(제 10 기)</P><TITLE>III. 재무에 관한 사항</TITLE>" + after + "</BODY></DOCUMENT>")
+    blocks = dd.parse_blocks(xml)
+    assert dd.report_body_start(blocks) > 0
+    assert _report(xml, 2016, 2).ni.cfs_cum == 5_971.0

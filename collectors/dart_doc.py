@@ -38,16 +38,14 @@
 3개월은 손익계산서에서만, 누적은 손익 > 현금흐름 > 요약표(반올림) 순. 본문에 본표가 없으면 첨부
 (감사·검토보고서)까지 본다. 배당표는 단위 대조에만 쓴다(:func:`_reconcile_units`).
 
-네트워크·DB 를 쓰는 부분은 맨 아래 검증 CLI 뿐이다(그 위는 전부 순수 함수)::
-
-    python -m collectors.dart_doc --codes @codes.txt --years 2015,2016 --cache /tmp/dartdoc \\
-        --key-env DART_API_KEY_3 --out res.json --latest --compare   # DB 는 읽기만
+이 파일은 전부 순수 함수다. 받아오기·전체 실행·검증·폐지 종목 매핑은 :mod:`collectors.dart_doc_run`.
 """
 
 from __future__ import annotations
 
 import io
 import re
+import unicodedata
 import zipfile
 from dataclasses import dataclass, field
 from datetime import date
@@ -240,6 +238,8 @@ def unit_multiplier(text: str) -> int | None:
 _DATE = r"(\d{4})\s*[.년\-/]\s*(\d{1,2})\s*[.월\-/]\s*(\d{1,2})\s*일?"
 _RANGE_RE = re.compile(_DATE + r"\s*(?:부터|~|-|∼|～)\s*" + _DATE)
 _ASOF_RE = re.compile(_DATE + r"\s*\.?\s*현재")
+#: '(기준일 : 2015년 12월 31일 )' — K-IFRS 시절 '주식의 총수 현황' 표 머리
+_BASEDATE_RE = re.compile(r"기\s*준\s*일\s*[:：]?\s*" + _DATE)
 _KISU_RE = re.compile(r"제\s*(\d{1,3})\s*(?:\(\s*당\s*\)\s*)?기")
 _YM_RE = re.compile(r"(\d{4})\s*[.년]\s*(\d{1,2})\s*월?\s*(?:말|\.\s*\d{1,2}|$|\s)")
 
@@ -349,7 +349,7 @@ def norm_label(text: str) -> str:
     return s
 
 
-_TOTAL_NI_RE = re.compile(r"^(?:연결)?(?:총)?(?:당기|당분기|당반기|분기|반기|기간|당)?순(?:이익|손실|손익)$")
+_TOTAL_NI_RE = re.compile(r"^(?:연결)?(?:총)?(?:당기|당분기|당반기|분기|반기|기간|당)?(?:연결)?(?:총)?순(?:이익|손실|손익)$")
 _EXCLUDE = ("주당", "포괄", "계속", "중단", "차감전", "법인세", "귀속", "지배", "소수", "누계")
 
 
@@ -369,31 +369,43 @@ def _loss_only(label: str) -> bool:
     return "손실" in n and "이익" not in n and "손익" not in n
 
 
-def _ctrl_row(labels: list[str], i_ni: int) -> int | None:
-    """총 순이익 행 다음에서 지배기업 소유주 귀속 순이익 행. 총포괄손익 귀속은 건너뛴다."""
-    in_ni_attr = False
-    in_ci_attr = False
-    seen_ci = False
+def _attribution_rows(labels: list[str], i_ni: int) -> tuple[int | None, int | None]:
+    """총 순이익 행 다음의 ``(지배기업 소유주 귀속 행, 비지배지분 귀속 행)``. 총포괄손익 귀속은 건너뛴다.
+
+    K-GAAP 표기 '지배회사지분순이익'·'소수주주지분순이익', IFRS '지배기업소유주지분순이익(손실)'·
+    '비지배지분순이익', '당기순이익의 귀속' 아래 '지배기업의 소유주' 를 모두 잡는다.
+    """
+    in_ni_attr = in_ci_attr = seen_ci = False
+    r_ctrl = r_nci = None
     for j in range(i_ni + 1, min(len(labels), i_ni + 45)):
         lab = norm_label(labels[j])
         if not lab:
             continue
         if "주당" in lab:
             break
-        is_ctrl = "지배" in lab and "비지배" not in lab and "소수" not in lab
-        if "귀속" in lab and not is_ctrl and "비지배" not in lab:
+        is_nci = "비지배" in lab or "소수주주" in lab
+        is_ctrl = "지배" in lab and not is_nci and "소수" not in lab
+        if "귀속" in lab and not is_ctrl and not is_nci:
             in_ci_attr = "포괄" in lab
             in_ni_attr = not in_ci_attr
             continue
-        if "포괄" in lab and not is_ctrl:
+        if "포괄" in lab and not is_ctrl and not is_nci:
             seen_ci = True
             continue
-        if is_ctrl:
-            if "포괄" in lab or in_ci_attr:
-                continue
-            if in_ni_attr or re.search(r"순(이익|손익|손실)", lab) or (not seen_ci and j - i_ni <= 3):
-                return j
-    return None
+        if "포괄" in lab or in_ci_attr:
+            continue
+        near = in_ni_attr or bool(re.search(r"순(이익|손익|손실)", lab)) or (not seen_ci and j - i_ni <= 3)
+        if is_ctrl and r_ctrl is None and near:
+            r_ctrl = j
+        elif is_nci and r_nci is None and near:
+            r_nci = j
+        if r_ctrl is not None and r_nci is not None:
+            break
+    return r_ctrl, r_nci
+
+
+def _ctrl_row(labels: list[str], i_ni: int) -> int | None:
+    return _attribution_rows(labels, i_ni)[0]
 
 
 @dataclass
@@ -622,7 +634,7 @@ def financial_section(blocks: list[Block]) -> tuple[int, int]:
 
 
 def _iter_ni_tables(blocks: list[Block], span: tuple[int, int] | None = None):
-    """순이익 행이 있는 표마다 ``(i, g, labels, hdr, ctx_list, own, kind, fs, r_ni, r_ctrl)``."""
+    """순이익 행이 있는 표마다 ``(i, g, labels, hdr, ctx_list, own, kind, fs, r_ni, (r_ctrl, r_nci))``."""
     section = ""
     lo, hi = span or (0, len(blocks))
     for i, b in enumerate(blocks):
@@ -654,12 +666,12 @@ def _iter_ni_tables(blocks: list[Block], span: tuple[int, int] | None = None):
         r_ni = ni_rows[0]
         if norm_label(labels[r_ni]).startswith("연결"):
             fs = "cfs"
-        r_ctrl = _ctrl_row(labels, r_ni)
+        r_ctrl, r_nci = _attribution_rows(labels, r_ni)
         if fs is None:
             fs = "cfs" if (r_ctrl is not None or "연결" in section.replace(" ", "")) else "ofs"
         if fs == "ofs":
-            r_ctrl = None
-        yield i, g, labels, hdr, ctx_list, own, kind, fs, r_ni, r_ctrl
+            r_ctrl = r_nci = None
+        yield i, g, labels, hdr, ctx_list, own, kind, fs, r_ni, (r_ctrl, r_nci)
 
 
 def _doc_kisu(blocks: list[Block], pend: date) -> int | None:
@@ -684,7 +696,7 @@ def extract_ni_candidates(
     out: list[NICandidate] = []
     kisu = _doc_kisu(blocks, pend) or kisu
     span = financial_section(blocks) if main else None
-    for _i, g, labels, hdr, ctx_list, own, kind, fs, r_ni, r_ctrl in _iter_ni_tables(blocks, span):
+    for _i, g, labels, hdr, ctx_list, own, kind, fs, r_ni, (r_ctrl, r_nci) in _iter_ni_tables(blocks, span):
         ctx = " ".join(ctx_list)
         if kind == "div":
             mu = re.search(r"\(\s*(백\s*만\s*원|천\s*원|억\s*원|원)\s*\)", labels[r_ni])
@@ -702,24 +714,43 @@ def extract_ni_candidates(
         if kind in ("cf", "div"):  # 현금흐름표·배당표는 누적이고 귀속 행이 없다
             cc = cc or c3
             c3 = cc if q in (1, 4) else []
-            r_ctrl = None
         if not c3 and not cc:
             continue
         sign = -1 if _loss_only(labels[r_ni]) else 1
-        csign = -1 if r_ctrl is not None and _loss_only(labels[r_ctrl]) else 1
 
-        def val(r: int | None, c: list[int], s: int) -> float | None:
+        def val(r: int | None, c: list[int], s: int = 1) -> float | None:
             if r is None:
                 return None
             v = _cell_num(g, r, c)
             if v is None:
                 return None
-            return (-abs(v) if s < 0 else v) * unit
+            return (-abs(v) if s < 0 or (r != r_ni and _loss_only(labels[r])) else v) * unit
+
+        def ctrl(cols: list[int]) -> float | None:
+            """지배지분은 총 순이익과 **같은 표**의 귀속 행에서만, ctrl + 비지배 ≈ 총 순이익일 때만."""
+            tot = val(r_ni, cols, sign)
+            if kind != "is" or fs != "cfs" or tot is None:
+                return None
+            nci = val(r_nci, cols)  # '-'·빈칸 = 0
+            if r_ctrl is None:
+                if not nci:  # 귀속·비지배 행이 둘 다 없거나 비지배가 '-' — 전부 지배지분
+                    flags.append("ctrl_eq_total")
+                    return tot
+                flags.append("ctrl_missing")
+                return None
+            c = val(r_ctrl, cols)
+            if c is None:
+                flags.append("ctrl_missing")
+                return None
+            if abs(c + (nci or 0) - tot) > max(0.005 * abs(tot), 2 * unit):
+                flags.append("ctrl_inconsistent")  # 011700 2015Q2·Q3 — 지배+비지배가 합계와 안 맞는다
+                return None
+            return c
 
         cand = NICandidate(
             fs=fs, kind=kind, unit=unit, file=file, flags=flags,
             total_3m=val(r_ni, c3, sign), total_cum=val(r_ni, cc, sign),
-            ctrl_3m=val(r_ctrl, c3, csign), ctrl_cum=val(r_ctrl, cc, csign),
+            ctrl_3m=ctrl(c3) if c3 else None, ctrl_cum=ctrl(cc) if cc else None,
         )
         if cand.total_3m is None and cand.total_cum is None:
             continue
@@ -823,15 +854,23 @@ def choose_net_income(cands: list[NICandidate]) -> NetIncome:
         def first(attr: str, kinds: tuple[str, ...] = ("is", "cf", "summary"), pool: list[NICandidate] = ok) -> float | None:
             return next((getattr(c, attr) for c in pool if c.kind in kinds and getattr(c, attr) is not None), None)
 
-        t3, tc = first("total_3m", ("is",)), first("total_cum")
+        # 지배지분은 합계를 고른 **그 표**의 값만 쓴다 — 다른 표(요약재무정보)에서 빌려오지 않는다(099830·115960)
+        c3 = next((c for c in ok if c.kind == "is" and c.total_3m is not None), None)
+        cc = next((c for c in ok if c.total_cum is not None), None)
+        t3, tc = (c3.total_3m if c3 else None), (cc.total_cum if cc else None)
         if fs == "cfs":
             ni.cfs_3m, ni.cfs_cum = t3, tc
-            ni.ctrl_3m, ni.ctrl_cum = first("ctrl_3m", ("is",)), first("ctrl_cum")
+            ni.ctrl_3m = c3.ctrl_3m if c3 else None
+            ni.ctrl_cum = cc.ctrl_cum if cc and cc.kind == "is" else None
+            for c in (c3, cc):
+                ni.flags += [f"cfs_{f}" for f in (c.flags if c else []) if f.startswith("ctrl_") and f"cfs_{f}" not in ni.flags]
         else:
             ni.ofs_3m, ni.ofs_cum = t3, tc
         best = ok[0]
         ni.src[fs] = f"{best.kind}:{best.file}"
-        ni.flags += [f"{fs}_{f}" for f in best.flags if not f.startswith("verified")]
+        if cc:
+            ni.src[f"{fs}_cum"] = cc.kind
+        ni.flags += [f"{fs}_{f}" for f in dict.fromkeys(best.flags) if not f.startswith(("verified", "ctrl_"))]
     return ni
 
 
@@ -845,6 +884,8 @@ class Shares:
     total: int | None
     asof: date | None
     method: str
+    #: 표·표 앞에서 '…현재' 기준일을 못 찾았다 — 분기말로 채우지 않는다(읽는 쪽이 정한다)
+    asof_inferred: bool = False
 
 
 def _share_cols(g: list[list[Cell | None]], upto: int) -> dict[int, str]:
@@ -921,10 +962,10 @@ def extract_shares(blocks: list[Block], pend: date | None = None) -> Shares | No
             continue
         ctx = " ".join(_context_text(blocks, i, 4)) + " " + " ".join(c.text for r in b.table.rows[:2] for c in r)
         asof = None
-        m = _ASOF_RE.search(ctx)
+        m = _ASOF_RE.search(ctx) or _BASEDATE_RE.search(ctx)
         if m:
             asof = _mkdate(*m.group(1, 2, 3))
-        return Shares(common, pref, total, asof or pend, method)
+        return Shares(common, pref, total, asof, method, asof_inferred=asof is None)
     return _shares_from_voting_table(blocks, pend)
 
 
@@ -951,9 +992,9 @@ def _shares_from_voting_table(blocks: list[Block], pend: date | None) -> Shares 
         common = vals["보통주"]
         pref = sum(v for k, v in vals.items() if k != "보통주")
         ctx = " ".join(_context_text(blocks, i, 3)) + " " + " ".join(c.text for r in b.table.rows[:1] for c in r)
-        m = _ASOF_RE.search(ctx) or re.search(_DATE, ctx)
+        m = _ASOF_RE.search(ctx) or _BASEDATE_RE.search(ctx) or re.search(_DATE, ctx)
         asof = _mkdate(*m.group(1, 2, 3)) if m else None
-        return Shares(common, pref, common + pref, asof or pend, "voting")
+        return Shares(common, pref, common + pref, asof, "voting", asof_inferred=asof is None)
     return None
 
 
@@ -968,6 +1009,28 @@ class ReportResult:
     ni: NetIncome
     shares: Shares | None
     kisu: int | None
+    is_correction: bool = False
+
+    @property
+    def knowledge_date(self) -> str:
+        """접수일 = 접수번호 앞 8자리 → 'YYYY-MM-DD'(``earnings.knowledge_date`` 와 같은 뜻)."""
+        r = self.rcept_no
+        return f"{r[:4]}-{r[4:6]}-{r[6:8]}"
+
+
+_ERRATA_RE = re.compile(r"정\s*정\s*신\s*고")
+_COVER_RE = re.compile(r"^\s*(?:사\s*업|반\s*기|분\s*기)\s*보\s*고\s*서\s*$")
+
+
+def report_body_start(blocks: list[Block]) -> int:
+    """정정 공시 앞머리의 정오표('정정신고(보고)' — 정정 전·후 표가 나란히)를 건너뛴 본문 시작 블록.
+
+    122690 2015 사업보고서 정정본: 정오표의 '정정 전' 연결 손익계산서(순이익 6,022,683,114)가 본문보다 앞에
+    있어, 첫 표를 쓰면 정정본 레코드에 **정정 전 값**이 들어갔다. 정오표 뒤 표지('사 업 보 고 서')부터 읽는다.
+    """
+    if not any(b.kind == "title" and _ERRATA_RE.search(b.text) for b in blocks[:6]):
+        return 0
+    return next((i for i, b in enumerate(blocks) if i > 1 and b.kind == "text" and _COVER_RE.match(b.text)), 0)
 
 
 def doc_files(zip_bytes: bytes) -> list[tuple[str, str]]:
@@ -986,6 +1049,7 @@ def parse_report(files: list[tuple[str, str]], rcept_no: str, year: int, q: int)
     for k, (name, xml) in enumerate(files):
         blocks = parse_blocks(xml)
         if k == 0:
+            blocks = blocks[report_body_start(blocks):]
             kisu = cover_kisu(blocks)
             shares = extract_shares(blocks, pend)
         main_has = {c.fs for c in cands if c.kind == "is"}
@@ -1049,6 +1113,86 @@ def assemble_quarters(reports: dict[str, ReportResult], *, controlling_first: bo
 # --------------------------------------------------------------------------- 검증 CLI (네트워크·DB)
 
 
+# --------------------------------------------------------------------------- 상장폐지 종목 → DART 고유번호
+# corpCode.xml 의 stock_code 는 지금 상장된 회사에만 채워져 있다 — 폐지 종목(delisted_stocks)은 그 열로 21%만
+# 이어진다(2026-10-13 리뷰 실측 781/3,717). 나머지는 stock_code 가 빈 법인 중 이름이 같은 곳을 찾고, 그 법인의
+# list.json 에 거래하던 해의 정기보고서가 있는지로 확인한다. 이름이 같은 법인이 둘 이상이면 버린다(동명이인).
+
+_CORP_NOISE_RE = re.compile(r"\(주\)|\(유\)|\(株\)|㈜|주식회사|유한회사|[\s·.,&\-]")
+
+
+def normalize_corp_name(name: str) -> str:
+    """'(주)삼성테크윈'·'삼성테크윈 주식회사'·'삼성테크윈㈜' → '삼성테크윈'. 전각·대소문자도 맞춘다."""
+    return _CORP_NOISE_RE.sub("", unicodedata.normalize("NFKC", name or "")).upper()
+
+
+def corp_name_index(corp_rows: list[dict]) -> dict[str, list[dict]]:
+    idx: dict[str, list[dict]] = {}
+    for r in corp_rows:
+        idx.setdefault(normalize_corp_name(r.get("corp_name", "")), []).append(r)
+    return idx
+
+
+def name_candidates(code: str, names: list[str], index: dict[str, list[dict]]) -> list[str]:
+    """이름이 같고 stock_code 가 비었거나 같은 코드인 법인의 고유번호들(다른 상장 코드가 붙은 법인은 남이다)."""
+    out: list[str] = []
+    for n in names:
+        for r in index.get(normalize_corp_name(n), []):
+            if r.get("stock_code", "") in ("", code) and r["corp_code"] not in out:
+                out.append(r["corp_code"])
+    return out
+
+
+_ANY_REPORT_RE = re.compile(r"^(?:\[[^\]]*\]\s*)?(?:분기보고서|반기보고서|사업보고서)\s*\((\d{4})\.(\d{2})\)")
+
+
+def periodic_years(items: list[dict], *, dec_only: bool) -> set[int]:
+    """list.json 항목 → 정기보고서가 있는 사업연도. ``dec_only`` 면 이 파서가 다루는 12월 결산 분기만."""
+    if dec_only:
+        return {int(p[:4]) for p in select_filings(items)}
+    return {int(m.group(1)) for it in items if (m := _ANY_REPORT_RE.match(it.get("report_nm", "").strip()))}
+
+
+def _confirms(code: str, items: list[dict], traded_years: set[int]) -> bool:
+    if any((it.get("stock_code") or "").strip() == code for it in items):
+        return True
+    yrs = periodic_years(items, dec_only=False)
+    return bool(yrs) and (not traded_years or bool(yrs & (traded_years | {y - 1 for y in traded_years})))
+
+
+def resolve_delisted(
+    code: str, candidates: list[str], items_by_corp: dict[str, list[dict]], traded_years: set[int],
+) -> tuple[str | None, str]:
+    """후보 고유번호 → ``(corp_code 또는 None, 상태)``.
+
+    후보마다 list.json 에 거래하던 해(또는 그 전해 사업연도)의 정기보고서가 있는지 본다. 확인되는 후보가
+    정확히 하나여야 매핑한다 — 후보가 하나면 ``confirmed``, 여럿 중 하나만 확인되면 ``confirmed_among_n``.
+    확인 후보가 둘 이상이면 ``ambiguous``(동명이인, 버린다), 하나도 없으면 ``unconfirmed``.
+    거래 연도를 모르면(``traded_years`` 비어 있음) 정기보고서가 하나라도 있으면 확인으로 본다.
+    """
+    if not candidates:
+        return None, "no_name_match"
+    ok = [c for c in candidates if _confirms(code, items_by_corp.get(c, []), traded_years)]
+    if len(ok) > 1:
+        return None, "ambiguous"
+    if not ok:
+        return None, "unconfirmed"
+    return ok[0], ("confirmed" if len(candidates) == 1 else f"confirmed_among_{len(candidates)}")
+
+
+_CLASS_SHARE_RE = re.compile(r"(\d*우[A-Z]?|\(\d*우[A-Z]?\)|\d*신|\(\d*신\)|전환)$")
+
+
+def parent_common_code(code: str, name: str) -> str | None:
+    """우선주·신주 코드('012655 쌍용건설우', '023601 삼보판지1신') → 보통주 코드('012650'). 아니면 ``None``.
+
+    우선주·신주는 따로 실적을 내는 회사가 아니다 — 보통주 회사의 고유번호를 쓴다.
+    """
+    if len(code) == 6 and code.isdigit() and code[-1] != "0" and _CLASS_SHARE_RE.search((name or "").replace(" ", "")):
+        return code[:5] + "0"
+    return None
+
+
 def agrees(value: float | None, ref: float | None, tol: float = 0.005) -> bool:
     """검증 합격 정의(사용자 승인): 둘 다 있고, 같거나 상대오차 0.5% 이내."""
     if value is None or ref is None:
@@ -1056,195 +1200,67 @@ def agrees(value: float | None, ref: float | None, tol: float = 0.005) -> bool:
     return value == ref or abs(value - ref) <= tol * abs(ref)
 
 
-class _Dart:  # pragma: no cover — 네트워크
-    """document.xml·list.json 디스크 캐시 + 호출 수 계수. 키 값은 어디에도 찍지 않는다."""
+# --------------------------------------------------------------------------- 레코드(적재 단위)
 
-    BASE = "https://opendart.fss.or.kr/api"
-
-    def __init__(self, key: str, cache: "Path") -> None:  # noqa: F821
-        self.key, self.cache, self.calls = key, cache, 0
-        cache.mkdir(parents=True, exist_ok=True)
-
-    def _get(self, path: str, **params: str):
-        import requests
-
-        self.calls += 1
-        r = requests.get(f"{self.BASE}/{path}", params={"crtfc_key": self.key, **params}, timeout=60)
-        r.raise_for_status()
-        return r
-
-    def corp_codes(self) -> dict[str, list[str]]:
-        import json
-        import xml.etree.ElementTree as ET
-
-        p = self.cache / "corpCode.json"
-        if not p.exists():
-            z = zipfile.ZipFile(io.BytesIO(self._get("corpCode.xml").content))
-            root = ET.fromstring(z.read(z.namelist()[0]))
-            lst = [{k: (el.findtext(k) or "").strip() for k in ("corp_code", "corp_name", "stock_code")} for el in root.iter("list")]
-            if not lst:
-                raise RuntimeError("corpCode 가 비었다 — 0건 성공으로 넘기지 않는다")
-            p.write_text(json.dumps(lst, ensure_ascii=False))
-        out: dict[str, list[str]] = {}
-        for r in json.loads(p.read_text()):
-            if r["stock_code"]:
-                out.setdefault(r["stock_code"], []).append(r["corp_code"])
-        return out
-
-    def filings(self, corp: str, bgn: str, end: str) -> list[dict]:
-        import json
-
-        p = self.cache / f"list_{corp}_{bgn}_{end}.json"
-        if p.exists():
-            return json.loads(p.read_text())
-        items, page = [], 1
-        while True:
-            d = self._get("list.json", corp_code=corp, bgn_de=bgn, end_de=end, pblntf_ty="A",
-                          page_no=str(page), page_count="100").json()
-            if d.get("status") == "013":
-                break
-            if d.get("status") != "000":
-                raise RuntimeError(f"list.json status={d.get('status')}")
-            items += d.get("list", [])
-            if page >= int(d.get("total_page", 1)):
-                break
-            page += 1
-        p.write_text(json.dumps(items, ensure_ascii=False))
-        return items
-
-    def document(self, rcept_no: str) -> bytes | None:
-        import time
-
-        p = self.cache / f"doc_{rcept_no}.zip"
-        miss = self.cache / f"doc_{rcept_no}.missing"
-        if miss.exists():
-            return None
-        if not p.exists():
-            r = self._get("document.xml", rcept_no=rcept_no)
-            if r.content[:2] != b"PK":
-                status = re.search(rb"<status>(\d+)</status>", r.content[:500])
-                if status and status.group(1) == b"020":
-                    raise RuntimeError("DART 일한도(020)")
-                miss.write_bytes(r.content[:500])  # 014 '파일이 존재하지 않습니다'(정정 일부 등) — 다시 묻지 않는다
-                return None
-            p.write_bytes(r.content)
-            time.sleep(0.15)
-        return p.read_bytes()
+BASES = ("ctrl", "cfs", "ofs")
 
 
-def _cli() -> None:  # pragma: no cover — 네트워크·DB
-    import argparse
-    import json
-    import os
-    from collections import Counter
-    from pathlib import Path
+def _basis_values(rr: ReportResult, prev: ReportResult | None, b: str) -> dict:
+    """한 기준의 ``{q, q_derived, ytd}``. 3개월이 없으면 **같은 기준**의 누적 − 직전 분기 누적.
 
-    ap = argparse.ArgumentParser(description="DART 원문 파서 검증 — earnings·shares_outstanding_history 와 대조(DB 읽기 전용)")
-    ap.add_argument("--codes", required=True, help="쉼표 구분 종목코드 또는 @파일(공백 구분)")
-    ap.add_argument("--years", default="2015,2016")
-    ap.add_argument("--cache", required=True, help="원문 zip·list.json 캐시 디렉터리(커밋 금지)")
-    ap.add_argument("--key-env", default="DART_API_KEY_3", help="키를 담은 환경변수 이름(값은 출력하지 않는다)")
-    ap.add_argument("--out", required=True, help="종목·분기별 결과 JSON")
-    ap.add_argument("--latest", action="store_true", help="정정이 있으면 마지막 정정본도 받아 따로 파싱")
-    ap.add_argument("--compare", action="store_true", help="KR_QUANT_DB 의 earnings/shares 와 대조(2015=2016 보고서의 netinc_prior)")
-    a = ap.parse_args()
-    years = [int(y) for y in a.years.split(",")]
-    codes = Path(a.codes[1:]).read_text().split() if a.codes.startswith("@") else a.codes.split(",")
-    dart = _Dart(os.environ[a.key_env], Path(a.cache))
-    corp = dart.corp_codes()
-    bgn, end = f"{min(years)}0101", f"{max(years) + 1}0630"
-
-    def parse(rno: str, period: str) -> ReportResult | None:
-        raw = dart.document(rno)
-        return None if raw is None else parse_report(doc_files(raw), rno, int(period[:4]), int(period[-1]))
-
-    result: dict[str, dict] = {}
-    for code in codes:
-        items = [it for cp in corp.get(code, []) for it in dart.filings(cp, bgn, end)]
-        filings = {p: f for p, f in select_filings(items).items() if int(p[:4]) in years}
-        if not filings:
-            kinds = Counter(re.sub(r"^\[[^\]]*\]", "", it["report_nm"]).strip()[-8:-1] for it in items)
-            result[code] = {"error": "no_dec_fye_filing" if items else "no_filing", "report_months": dict(kinds)}
-            continue
-        orig = {p: parse(f["rcept_no"], p) for p, f in sorted(filings.items())}
-        orig = {p: r for p, r in orig.items() if r is not None}
-        latest = dict(orig)
-        if a.latest:
-            for p, f in filings.items():
-                if f["corrections"]:
-                    r = parse(f["corrections"][-1], p)
-                    if r is not None:
-                        latest[p] = r
-        out: dict[str, dict] = {}
-        for tag, reps in (("orig", orig), ("latest", latest)):
-            e = assemble_quarters(reps, controlling_first=False)
-            c = assemble_quarters(reps, controlling_first=True)
-            for p in filings:
-                d = out.setdefault(p, {"rcept_no": filings[p]["rcept_no"], "rcept_dt": filings[p]["rcept_dt"],
-                                       "corrections": filings[p]["corrections"],
-                                       "original_missing": filings[p]["original_missing"]})
-                d[f"{tag}_netinc"], d[f"{tag}_basis"], d[f"{tag}_flags"] = e.get(p, (None, None, ["unparsed"]))
-                d[f"{tag}_netinc_ctrl_first"], d[f"{tag}_basis_ctrl_first"], _ = c.get(p, (None, None, []))
-                rr = reps.get(p)
-                d[f"{tag}_ni"] = None if rr is None else {k: v for k, v in rr.ni.__dict__.items() if v not in (None, [], {})}
-                if tag == "orig" and rr is not None and rr.shares is not None:
-                    d["shares"] = {**rr.shares.__dict__, "asof": str(rr.shares.asof)}
-        result[code] = {"periods": out}
-    Path(a.out).write_text(json.dumps(result, ensure_ascii=False, default=str, indent=1))
-    print(f"parsed codes={len(codes)} dart_calls={dart.calls}")
-    if a.compare:
-        _compare(result)
+    기준이 다른 값끼리는 빼지 않는다 — 직전 분기에 그 기준 누적이 없으면 ``q`` 는 None 이다.
+    Q4 의 ``q`` 는 사업보고서에 3개월 열이 없으므로 연간 − 3분기 누적(같은 기준)이다.
+    """
+    v3, vc = getattr(rr.ni, f"{b}_3m"), getattr(rr.ni, f"{b}_cum")
+    if rr.q == 1:
+        v = vc if vc is not None else v3
+        return {"q": v, "q_derived": False, "ytd": v}
+    if rr.q in (2, 3) and v3 is not None:
+        return {"q": v3, "q_derived": False, "ytd": vc}
+    pv = getattr(prev.ni, f"{b}_cum") if prev is not None else None
+    if vc is not None and pv is not None:
+        return {"q": vc - pv, "q_derived": True, "ytd": vc}
+    return {"q": None, "q_derived": False, "ytd": vc}
 
 
-def _compare(result: dict[str, dict]) -> None:  # pragma: no cover — DB
-    import os
-    from collections import Counter
+def build_records(code: str, reports: dict[str, list[ReportResult]]) -> list[dict]:
+    """``{period: [원본, 정정, ...]}`` → 적재 레코드(``earnings_dart_doc`` 한 행 = 한 레코드).
 
-    import psycopg2
-
-    codes = list(result)
-    con = psycopg2.connect(os.environ["KR_QUANT_DB"])
-    try:
-        cur = con.cursor()
-        cur.execute("SELECT code, period, netinc, netinc_prior FROM earnings WHERE period LIKE '2016Q_' AND code = ANY(%s)", (codes,))
-        ref: dict[tuple[str, str], float | None] = {}
-        for code, period, ni, nip in cur.fetchall():
-            ref[(code, period)] = ni
-            ref[(code, "2015" + period[4:])] = nip
-        cur.execute("SELECT code, date, shares_outstanding FROM shares_outstanding_history WHERE source='dart' "
-                    "AND date BETWEEN '2016-01-01' AND '2016-12-31' AND code = ANY(%s)", (codes,))
-        sref = {c: (str(d), v) for c, d, v in cur.fetchall()}
-    finally:
-        con.close()
-    for tag in ("orig", "latest"):
-        n = ok = 0
-        cats: Counter = Counter()
-        for (code, period), r in ref.items():
-            if r is None:
-                continue
-            res = result.get(code, {})
-            if "error" in res:
-                n += 1
-                cats[res["error"]] += 1
-                continue
-            d = res["periods"].get(period)
-            n += 1
-            if d is None:
-                cats["no_filing_for_period"] += 1
-                continue
-            v = d[f"{tag}_netinc"]
-            if agrees(v, r):
-                ok += 1
-            else:
-                cats["parser_none" if v is None else "value_diff"] += 1
-        print(f"[{tag}] netinc 일치 {ok}/{n} = {ok / max(n, 1):.2%}  불일치 {dict(cats)}")
-    sn = sok = 0
-    for code, (d, v) in sref.items():
-        p = result.get(code, {}).get("periods", {}).get("2016Q4")
-        sn += 1
-        sok += bool(p and p.get("shares") and p["shares"]["common"] == v)
-    print(f"shares(보통주 발행주식총수, 2016 사업보고서) 일치 {sok}/{sn} = {sok / max(sn, 1):.2%}")
-
-
-if __name__ == "__main__":  # pragma: no cover
-    _cli()
+    - 레코드 = 공시 한 건. ``knowledge_date`` = 그 공시 접수일 — 정정은 정정본 접수일로 **따로** 낸다
+      (한 레코드에 원본 날짜와 정정 값이 같이 있지 않다).
+    - Q2·Q3(·Q4 의 ``*_q``)를 차분으로 만들 때 직전 분기는 **그 공시 접수일까지 알려진** 마지막 판을 쓴다(PIT).
+    - 기준마다(``ctrl``·``cfs``·``ofs``) 3개월(``*_q``)·누적(``*_ytd``)·``*_q_derived`` 를 다 낸다. Q4 의
+      ``*_ytd`` 가 사업연도 전체(별도 연간 ``ofs_ytd`` 포함).
+    - ``netinc``/``basis`` 는 ``earnings`` 정의(연결 합계 → 별도, :func:`basis_order`), ``netinc_ctrl``/
+      ``basis_ctrl`` 는 지배지분 우선. 둘 다 그 분기 값(Q1~Q3 3개월, Q4 연간)이다.
+    - PK (code, period, knowledge_date) — 같은 날 두 판이면 늦은 접수번호만 남긴다.
+    """
+    out: dict[tuple[str, str], dict] = {}
+    for period, versions in reports.items():
+        y, q = int(period[:4]), int(period[-1])
+        prev_versions = sorted(reports.get(f"{y}Q{q - 1}", []), key=lambda r: r.rcept_no) if q > 1 else []
+        for rr in sorted(versions, key=lambda r: r.rcept_no):
+            prev = next((p for p in reversed(prev_versions) if p.rcept_no <= rr.rcept_no), None)
+            vals = {b: _basis_values(rr, prev, b) for b in BASES}
+            rec: dict = {"code": code, "period": period, "knowledge_date": rr.knowledge_date,
+                         "rcept_no": rr.rcept_no, "is_correction": rr.is_correction}
+            for b in BASES:
+                rec[f"{b}_q"], rec[f"{b}_ytd"], rec[f"{b}_q_derived"] = vals[b]["q"], vals[b]["ytd"], vals[b]["q_derived"]
+            for tag, ctrl_first in (("", False), ("_ctrl", True)):
+                pick = None
+                for b in basis_order(rr.ni, controlling_first=ctrl_first):
+                    v = vals[b]["ytd"] if q == 4 else vals[b]["q"]
+                    if v is not None:
+                        pick = (v, b, q != 4 and vals[b]["q_derived"])
+                        break
+                rec[f"netinc{tag}"], rec[f"basis{tag}"], rec[f"derived{tag}"] = pick or (None, None, False)
+            rec["src"] = rr.ni.src
+            rec["flags"] = rr.ni.flags
+            sh = rr.shares
+            rec["shares"] = None if sh is None else {
+                "common": sh.common, "preferred": sh.preferred, "total": sh.total,
+                "asof": sh.asof.isoformat() if sh.asof else None, "asof_inferred": sh.asof_inferred, "method": sh.method}
+            key = (period, rec["knowledge_date"])
+            if key not in out or out[key]["rcept_no"] < rec["rcept_no"]:
+                out[key] = rec
+    return sorted(out.values(), key=lambda r: (r["period"], r["knowledge_date"]))
