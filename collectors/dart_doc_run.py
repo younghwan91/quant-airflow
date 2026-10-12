@@ -10,6 +10,7 @@
     python -m collectors.dart_doc_run targets --map map.json                 # 2007~2015 대상 → codes_1..3.txt
     python -m collectors.dart_doc_run load --jsonl out*.jsonl [--dry-run]    # → earnings_dart_doc(034)
     python -m collectors.dart_doc_run coverage --map map.json                # 적재 뒤 연도별 커버리지(호출 없음)
+    python -m collectors.dart_doc_run reparse-prior --jsonl run_*.jsonl --update  # 전년 동기 열(캐시만, 호출 0)
 
 키 3개 병렬 실행: 키마다 프로세스 하나, ``--key-env`` 와 ``--codes`` 만 다르게. 같은 캐시를 같이 써도 된다 —
 캐시 파일은 임시 파일 → rename 으로만 쓴다. ``--max-calls``(기본 18,000)는 키별 하루 상한이라 운영 DAG 몫(키 일한도
@@ -236,8 +237,11 @@ def _corp_map(dart: Dart, map_path: str | None) -> dict[str, list[str]]:  # prag
     return corp_map(dart.corp_rows(), json.loads(Path(map_path).read_text()) if map_path else None)
 
 
-def read_jsonl(path: Path) -> list[dict]:
-    """종목 단위 jsonl — 마지막 줄이 쓰다 잘렸으면(중단) 그 줄을 버리고 파일도 거기까지로 줄인다."""
+def read_jsonl(path: Path, *, repair: bool = True) -> list[dict]:
+    """종목 단위 jsonl — 마지막 줄이 쓰다 잘렸으면(중단) 그 줄을 버리고, ``repair`` 면 파일도 거기까지로 줄인다.
+
+    다른 프로세스가 쓰고 있는 파일(운영 run_*.jsonl)을 읽을 때는 ``repair=False`` — 읽기만 한다.
+    """
     if not path.exists():
         return []
     lines = path.read_text().splitlines()
@@ -251,7 +255,8 @@ def read_jsonl(path: Path) -> list[dict]:
             if i != len(lines) - 1:
                 raise
             log.warning("잘린 마지막 줄을 버린다: %s…", line[:60])
-            path.write_text("".join(x + "\n" for x in lines[:i]))
+            if repair:
+                path.write_text("".join(x + "\n" for x in lines[:i]))
     return out
 
 
@@ -591,6 +596,96 @@ def load(a: argparse.Namespace) -> int:  # pragma: no cover — DB (테스트는
     return 0
 
 
+# --------------------------------------------------------------------------- reparse-prior: 전년 동기 열 채우기
+
+PRIOR_FIELDS = ("netinc_prior", "netinc_ctrl_prior", "ctrl_prior_q", "cfs_prior_q", "ofs_prior_q", "prior_basis_note")
+
+
+def reparse_prior_rows(rows: list[dict], cache: Path) -> tuple[list[dict], Counter]:
+    """jsonl 레코드의 접수번호 원문을 **캐시에서만** 다시 읽어 전년 동기 열을 만든다(DART 호출 0).
+
+    종목마다 레코드에 있는 판(원본·정정)을 모두 다시 파싱해 ``build_records`` 를 돌린다 — 전년 동기 값은 그 분기
+    값과 같은 기준·같은 표의 비교 열이라, 당기 값의 기준·차분 여부를 다시 계산해야 맞출 수 있다. 다시 만든 당기
+    netinc 가 jsonl 과 다르면 ``netinc_drift`` 로 센다(파서가 바뀐 경우 — 그 레코드도 그대로 낸다).
+    """
+    st: Counter = Counter()
+    out: list[dict] = []
+    for r in rows:
+        recs = r.get("records") or []
+        if not recs:
+            continue
+        reports: dict[str, list[dd.ReportResult]] = {}
+        for x in recs:
+            z = cache / f"doc_{x['rcept_no']}.zip"
+            if not z.exists():
+                st["doc_not_cached"] += 1
+                continue
+            try:
+                rr = dd.parse_report(dd.doc_files(z.read_bytes()), x["rcept_no"], int(x["period"][:4]), int(x["period"][-1]))
+            except Exception:  # noqa: BLE001 — 문서 하나의 예외는 격리
+                st["parse_error"] += 1
+                continue
+            rr.is_correction = bool(x["is_correction"])
+            reports.setdefault(x["period"], []).append(rr)
+        new = {(y["period"], y["knowledge_date"]): y for y in dd.build_records(r["code"], reports)}
+        lines = []
+        for x in recs:
+            y = new.get((x["period"], x["knowledge_date"]))
+            if y is None:
+                st["record_missing"] += 1
+                continue
+            st["records"] += 1
+            st["drift"] += not dd.agrees(y["netinc"], x["netinc"]) and not (y["netinc"] is None and x["netinc"] is None)
+            st["with_prior"] += y["netinc_prior"] is not None
+            lines.append({"period": x["period"], "knowledge_date": x["knowledge_date"], "rcept_no": x["rcept_no"],
+                          **{f: y[f] for f in PRIOR_FIELDS}})
+        out.append({"code": r["code"], "records": lines})
+    return out, st
+
+
+def reparse_prior(a: argparse.Namespace) -> int:  # pragma: no cover — 캐시·DB
+    cache = Path(a.cache).expanduser()
+    rows = [r for p in a.jsonl for r in read_jsonl(Path(p), repair=False)]  # 운영 run_*.jsonl 은 읽기만
+    out, st = reparse_prior_rows(rows, cache)
+    if not st["records"]:
+        raise RuntimeError("전년 동기 열을 만든 레코드 0건 — 빈 결과를 성공으로 넘기지 않는다(CLAUDE.md §5)")
+    if a.out:
+        with Path(a.out).open("w") as fo:
+            for line in out:
+                fo.write(json.dumps(line, ensure_ascii=False) + "\n")
+    print(json.dumps(dict(st), ensure_ascii=False))
+    if a.update:
+        from .storage import connect
+
+        con = connect(a.db)
+        try:
+            n = update_prior(con, out)
+            con.commit()
+        finally:
+            con.close()
+        print(f"earnings_dart_doc 전년 동기 열 UPDATE {n}행")
+    return 0
+
+
+def update_prior(con, out: list[dict]) -> int:
+    """``earnings_dart_doc`` 의 전년 동기 열만 PK 로 UPDATE(당기 열은 건드리지 않는다). 0행이면 예외."""
+    from .storage import _is_pg
+
+    ph = "%s" if _is_pg(con) else "?"
+    sql = (f"UPDATE earnings_dart_doc SET {', '.join(f'{f} = {ph}' for f in PRIOR_FIELDS)} "  # noqa: S608 — 고정 열 이름
+           f"WHERE code = {ph} AND period = {ph} AND knowledge_date = {ph}")
+    params = [(*(x[f] for f in PRIOR_FIELDS), r["code"], x["period"], x["knowledge_date"])
+              for r in out for x in r["records"]]
+    cur = con.cursor()
+    n = 0
+    for p in params:
+        cur.execute(sql, p)
+        n += cur.rowcount
+    if n == 0:
+        raise RuntimeError("UPDATE 0행 — 적재 전이거나 PK 가 안 맞는다(CLAUDE.md §5)")
+    return n
+
+
 # --------------------------------------------------------------------------- targets: 전체 실행 대상
 
 
@@ -796,6 +891,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover
     p.add_argument("--db", default=os.environ.get("KR_QUANT_DB"), help="DSN 또는 sqlite 경로(기본 KR_QUANT_DB)")
     p.add_argument("--dry-run", action="store_true", help="연도별 레코드 수만 찍는다")
     p.set_defaults(fn=load)
+    p = sub.add_parser("reparse-prior", help="캐시 원문만 다시 읽어 전년 동기 열 채우기(DART 호출 0)")
+    p.add_argument("--jsonl", nargs="+", required=True, help="run 결과(읽기만 한다)")
+    p.add_argument("--cache", default=str(DEFAULT_CACHE))
+    p.add_argument("--out", help="PK + 전년 동기 열 jsonl")
+    p.add_argument("--update", action="store_true", help="earnings_dart_doc 의 전년 동기 열을 UPDATE")
+    p.add_argument("--db", default=os.environ.get("KR_QUANT_DB"))
+    p.set_defaults(fn=reparse_prior)
     p = sub.add_parser("targets", help="2007~2015 상장 이력 보통주 → codes_N.txt")
     common(p)
     p.add_argument("--years", default="2007-2015")

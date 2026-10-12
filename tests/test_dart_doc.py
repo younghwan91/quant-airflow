@@ -755,3 +755,68 @@ def test_separate_statement_with_copied_consolidated_label_stays_separate():
                cover="(제 56 기 반기)")
     ni = _report(xml, 2015, 2).ni
     assert ni.ofs_cum == 10_544e6 and ni.cfs_cum is None
+
+
+# ---------------------------------------------------------------- 전년 동기 비교 열(B 단계)
+
+
+def test_prior_quarter_3m_from_same_table():
+    """반기: 전년 동기 = 같은 표 '제 9 기 반기' 의 3개월 열(earnings.netinc_prior 와 같은 뜻)."""
+    xml = _doc(
+        "<TITLE>III. 재무에 관한 사항</TITLE>",
+        _is_table("연결 포괄손익계산서", "제 10 기 반기 2016.01.01 부터 2016.06.30 까지", "(단위 : 백만원)",
+                  ("5,847", "11,100", "5,752", "10,378"), ctrl=("5,846", "11,098", "5,751", "10,376")),
+        _is_table("포괄손익계산서", "제 10 기 반기 2016.01.01 부터 2016.06.30 까지", "(단위 : 원)", ("1", "2", "3", "4")),
+    )
+    rr = _report(xml, 2016, 2)
+    assert (rr.ni.cfs_prior, rr.ni.ctrl_prior, rr.ni.ofs_prior) == (5_752e6, 5_751e6, 3.0)
+    rec = dd.build_records("005930", {"2016Q2": [rr]})[0]
+    assert (rec["netinc_prior"], rec["netinc_ctrl_prior"], rec["cfs_prior_q"]) == (5_752e6, 5_751e6, 5_752e6)
+    assert rec["prior_basis_note"] is None
+
+
+def test_prior_annual_for_q4_and_none_when_period_does_not_match():
+    xml = _doc(_annual_is("손 익 계 산 서", "주식회사 X", [("당기순이익", "9,813", "5,958")]), cover="(제 37 기)")
+    assert _report(xml, 2012, 4).ni.ofs_prior == 5_958.0
+    # 비교 열 기수가 당기 − 1 이 아니면(제 8 기 — 2년 전) 쓰지 않는다
+    xml2 = _doc(_is_table("포괄손익계산서", "제 10 기 반기 2016.01.01 부터 2016.06.30 까지", "(단위 : 원)",
+                          ("1", "2", "3", "4"), prev="제 8 기 반기"))
+    ni = _report(xml2, 2016, 2).ni
+    assert ni.ofs_prior is None and ni.prior_note["ofs"] == "prior_period_mismatch"
+
+
+def test_prior_null_when_only_cumulative_comparative_or_quarter_derived():
+    rows = [
+        _row("과 목", '<TH COLSPAN="2">제 10 기 3분기</TH>', "제 9 기 3분기", tag="TH"),
+        _row("과 목", "3개월", "누적", "누적", tag="TH"),
+        _row("매출액", "1", "2", "3"), _row("영업이익", "1", "2", "3"), _row("법인세비용", "1", "2", "3"),
+        _row("당기순이익", "100", "300", "250"),
+    ]
+    xml = _doc("<P>손익계산서</P>", _table(_row("제 10 기 3분기 2015.01.01 부터 2015.09.30 까지 (단위 : 원)")),
+               _table(*rows), cover="(제 10 기 3 분기)")
+    rr = _report(xml, 2015, 3)
+    assert rr.ni.ofs_3m == 100.0 and rr.ni.ofs_prior is None and rr.ni.prior_note["ofs"] == "prior_no_3m"
+    rec = dd.build_records("x", {"2015Q3": [rr]})[0]
+    assert rec["netinc_prior"] is None and rec["prior_basis_note"] == "basis=ofs:prior_no_3m;basis_ctrl=ofs:prior_no_3m"
+    # 3개월을 차분으로 만든 분기는 비교 열도 쓰지 않는다
+    q1 = _rr(2015, 1, ofs_3m=10.0, ofs_cum=10.0, src={"ofs": "is:x"})
+    q2 = _rr(2015, 2, ofs_cum=30.0, src={"ofs": "summary:x"})
+    r2 = next(r for r in dd.build_records("x", {"2015Q1": [q1], "2015Q2": [q2]}) if r["period"] == "2015Q2")
+    assert r2["derived"] and r2["netinc_prior"] is None and "derived" in r2["prior_basis_note"]
+
+
+def test_reparse_prior_rows_reads_cache_only(tmp_path):
+    import collectors.dart_doc_run as dr
+
+    xml = _doc(_annual_is("손 익 계 산 서", "주식회사 X", [("당기순이익", "9,813", "5,958")]), cover="(제 37 기)")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("20130401000001.xml", xml)
+    (tmp_path / "doc_20130401000001.zip").write_bytes(buf.getvalue())
+    rows = [{"code": "x", "records": [{"period": "2012Q4", "knowledge_date": "2013-04-01", "rcept_no": "20130401000001",
+                                        "is_correction": False, "netinc": 9_813.0},
+                                       {"period": "2011Q4", "knowledge_date": "2012-03-30", "rcept_no": "20120330000009",
+                                        "is_correction": False, "netinc": 1.0}]}]
+    out, st = dr.reparse_prior_rows(rows, tmp_path)
+    assert out[0]["records"][0]["netinc_prior"] == 5_958.0
+    assert (st["records"], st["doc_not_cached"], st["drift"]) == (1, 1, 0)

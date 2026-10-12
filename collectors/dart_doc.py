@@ -443,6 +443,10 @@ class NICandidate:
     unit: float = 1
     file: str = ""
     flags: list[str] = field(default_factory=list)
+    #: 같은 표의 전년 동기 비교 열(Q1~Q3 3개월·Q4 연간) — 손익계산서 본표에서만
+    total_prior: float | None = None
+    ctrl_prior: float | None = None
+    prior_note: str | None = None
 
 
 def _header_rows(g: list[list[Cell | None]]) -> int:
@@ -629,6 +633,78 @@ def _current_columns(
     return [], group, flags + ([] if r0 else ["single_col_assumed_cum"])
 
 
+def _prior_columns(
+    g: list[list[Cell | None]], hdr: int, context: list[str], pend: date, q: int, cur_last: int,
+) -> tuple[list[int], str | None]:
+    """당기 묶음 바로 뒤의 **전년 동기** 비교 열 — ``(열들, 사정)``. ``earnings.netinc_prior``(fnlttMultiAcnt
+    ``frmtrm_amount``)와 같은 뜻: Q1~Q3 = 전년 같은 분기 3개월, Q4 = 전년 연간. 같은 표라 기준(연결/별도)이 같고
+    재작성(K-IFRS 전환 등)도 그 보고서 기준으로 반영돼 있다.
+
+    확인: 그 묶음 머리 또는 표 앞 두 번째 '부터~까지' 의 끝이 (전년, 같은 달)이거나, 기수가 당기 − 1 이거나,
+    머리가 '전…' 으로 시작. Q2·Q3 에 3개월 비교 열이 없으면(누적만) 빈 목록 + ``prior_no_3m``.
+    """
+    ncol = max(len(line) for line in g) if g else 0
+    heads: list[list[str]] = []
+    for c in range(1, ncol):
+        parts: list[str] = []
+        for r in range(hdr):
+            cell = g[r][c] if c < len(g[r]) else None
+            if cell is not None and cell.text and cell.text not in parts:
+                parts.append(cell.text)
+        heads.append(parts)
+    cols = [c for c in range(cur_last + 1, ncol)
+            if not any(re.search(r"주\s*석|비\s*고|^주$", x) for x in heads[c - 1])]
+    if not cols:
+        return [], "prior_no_column"
+    lvl = 0
+    while (len(cols) > 1 and len({tuple(heads[c - 1][lvl:lvl + 1]) for c in cols}) == 1
+           and any(len(heads[c - 1]) > lvl + 1 for c in cols) and not _PERIODISH_RE.search(heads[cols[0] - 1][lvl])):
+        lvl += 1
+    top = {c: " ".join(heads[c - 1][lvl:lvl + 1]) for c in cols}
+    grp = [cols[0]]
+    for c in cols[1:]:
+        if top[c] == top[cols[0]] and c == grp[-1] + 1:
+            grp.append(c)
+        else:
+            break
+    label = top[cols[0]]
+    near = next((r for r in (date_ranges(t) for t in reversed(context)) if r), [])
+    rng = date_ranges(" ".join(" ".join(heads[c - 1]) for c in grp)) or near[1:2]
+    cur_heads = " ".join(" ".join(heads[c - 1]) for c in range(1, cur_last + 1) if c - 1 < len(heads))
+    km, kc = _KISU_RE.search(label), _KISU_RE.search(cur_heads)
+    ym = _YM_RE.search(" ".join(" ".join(heads[c - 1]) for c in grp))
+    near_asof = next((a for a in (_ASOF_RE.findall(t) for t in reversed(context)) if a), [])
+    if not rng and len(near_asof) >= 2:  # '제43기 1분기말 2015.03.31 현재'(033540 2016Q1 연결 손익 머리)
+        d = _mkdate(*near_asof[1])
+        rng = [(d, d)] if d else []
+    if rng:
+        if (rng[0][1].year, rng[0][1].month) != (pend.year - 1, pend.month):
+            return [], "prior_period_mismatch"
+    elif ym:
+        if (int(ym.group(1)), int(ym.group(2))) != (pend.year - 1, pend.month):
+            return [], "prior_period_mismatch"
+    elif km and kc:
+        if int(km.group(1)) != int(kc.group(1)) - 1:
+            return [], "prior_period_mismatch"
+    elif not re.match(r"^\s*(전|前)", label):
+        return [], "prior_unverified"
+    if q in (1, 4):
+        return grp, None
+
+    def sub(c: int) -> str:
+        return " ".join(heads[c - 1][lvl + 1:]).replace(" ", "")
+
+    p3 = [c for c in grp if "3개월" in sub(c)]
+    if p3:
+        return p3, None
+    if any("누적" in sub(c) for c in grp):
+        return [], "prior_no_3m"
+    # 머리에 3개월/누적이 없으면 그 묶음 기간으로 — 3개월이면 쓰고 누적이면 없음
+    if rng and rng[0][0].month == pend.month - 2:
+        return grp, None
+    return [], "prior_no_3m"
+
+
 def _cell_num(g: list[list[Cell | None]], r: int, cols: list[int]) -> float | None:
     """``cols`` 중 첫 숫자 칸. colspan 으로 라벨이 번진 자리는 건너뛴다."""
     for c in cols:
@@ -796,7 +872,7 @@ def extract_ni_candidates(
                 return None
             return (-abs(v) if s < 0 or (r != r_ni and _loss_only(labels[r])) else v) * unit
 
-        def ctrl(cols: list[int]) -> float | None:
+        def ctrl(cols: list[int], fl: list[str] = flags) -> float | None:
             """지배지분은 총 순이익과 **같은 표**의 귀속 행에서만, ctrl + 비지배 ≈ 총 순이익일 때만."""
             tot = val(r_ni, cols, sign)
             if kind != "is" or fs != "cfs" or tot is None:
@@ -805,16 +881,16 @@ def extract_ni_candidates(
             if r_ctrl is None:
                 if not nci:  # 귀속·비지배 행이 둘 다 없거나 비지배가 '-' — 전부 지배지분
                     # 옛 K-GAAP 연결 양식은 '소수주주지분순이익' 을 먼저 빼고 당기순이익을 낸다 — 합계가 곧 지배지분
-                    flags.append("ctrl_eq_total_nci_deducted" if nci_before else "ctrl_eq_total")
+                    fl.append("ctrl_eq_total_nci_deducted" if nci_before else "ctrl_eq_total")
                     return tot
-                flags.append("ctrl_missing")
+                fl.append("ctrl_missing")
                 return None
             c = val(r_ctrl, cols)
             if c is None:
-                flags.append("ctrl_missing")
+                fl.append("ctrl_missing")
                 return None
             if abs(c + (nci or 0) - tot) > max(0.005 * abs(tot), 2 * unit):
-                flags.append("ctrl_inconsistent")  # 011700 2015Q2·Q3 — 지배+비지배가 합계와 안 맞는다
+                fl.append("ctrl_inconsistent")  # 011700 2015Q2·Q3 — 지배+비지배가 합계와 안 맞는다
                 return None
             return c
 
@@ -823,6 +899,12 @@ def extract_ni_candidates(
             total_3m=val(r_ni, c3, sign), total_cum=val(r_ni, cc, sign),
             ctrl_3m=ctrl(c3) if c3 else None, ctrl_cum=ctrl(cc) if cc else None,
         )
+        if kind == "is" and (c3 or cc):
+            pcols, note = _prior_columns(g, hdr, ctx_list, pend, q, max(c3 + cc))
+            if pcols:
+                cand.total_prior = val(r_ni, pcols, sign)
+                cand.ctrl_prior = ctrl(pcols, [])  # 비교 열 사정은 당기 ctrl 표시에 섞지 않는다
+            cand.prior_note = note
         if cand.total_3m is None and cand.total_cum is None:
             continue
         out.append(cand)
@@ -845,6 +927,11 @@ class NetIncome:
     ofs_cum: float | None = None
     src: dict[str, str] = field(default_factory=dict)
     flags: list[str] = field(default_factory=list)
+    #: 전년 동기(Q1~Q3 3개월, Q4 전년 연간) — 그 분기 값을 낸 **같은 표**의 비교 열. 없으면 None, 사정은 prior_note
+    cfs_prior: float | None = None
+    ctrl_prior: float | None = None
+    ofs_prior: float | None = None
+    prior_note: dict[str, str] = field(default_factory=dict)
 
 
 _KIND_RANK = {"is": 0, "cf": 1, "summary": 2}
@@ -893,7 +980,7 @@ def _reconcile_units(cands: list[NICandidate]) -> None:
                 c.flags.append("div_unit_mismatch")
         if k is None:
             continue
-        for attr in ("total_3m", "total_cum", "ctrl_3m", "ctrl_cum"):
+        for attr in ("total_3m", "total_cum", "ctrl_3m", "ctrl_cum", "total_prior", "ctrl_prior"):
             v = getattr(c, attr)
             if v is not None:
                 setattr(c, attr, v / k)
@@ -901,7 +988,7 @@ def _reconcile_units(cands: list[NICandidate]) -> None:
         c.flags.append("unit_rescaled")
 
 
-def choose_net_income(cands: list[NICandidate]) -> NetIncome:
+def choose_net_income(cands: list[NICandidate], *, q_is_cum: bool = False) -> NetIncome:
     """후보 → 연결/별도 각각. 3개월은 손익계산서에서만, 누적은 손익 > 현금흐름 > 요약(백만원 반올림) 순.
 
     원 단위로 1e14 를 넘는 후보는 단위 오류로 버린다(``*_scale_reject``).
@@ -938,6 +1025,21 @@ def choose_net_income(cands: list[NICandidate]) -> NetIncome:
                 ni.flags += [f"cfs_{f}" for f in dict.fromkeys(c.flags if c else []) if f.startswith("ctrl_") and f"cfs_{f}" not in ni.flags]
         else:
             ni.ofs_3m, ni.ofs_cum = t3, tc
+        # 전년 동기: 그 분기 값(Q1~Q3 3개월 열, Q4 연간)을 낸 손익계산서의 비교 열
+        pc = c3 if c3 is not None else (cc if cc is not None and cc.kind == "is" and q_is_cum else None)
+        if pc is None:
+            ni.prior_note[fs] = "no_printed_quarter"  # 3개월 값을 차분으로 만든 분기 — 비교 열도 쓰지 않는다
+        else:
+            def sane(v: float | None) -> float | None:
+                return None if v is not None and abs(v) > MAX_ABS_NI else v
+
+            setattr(ni, f"{fs}_prior", sane(pc.total_prior))
+            if fs == "cfs":
+                ni.ctrl_prior = sane(pc.ctrl_prior)
+            if pc.prior_note:
+                ni.prior_note[fs] = pc.prior_note
+            elif pc.total_prior is not None and sane(pc.total_prior) is None:
+                ni.prior_note[fs] = "prior_scale_reject"
         best = ok[0]
         ni.src[fs] = f"{best.kind}:{best.file}"
         if cc:
@@ -1140,7 +1242,8 @@ def parse_report(files: list[tuple[str, str]], rcept_no: str, year: int, q: int)
         if k > 0:  # 첨부(감사·검토보고서)는 본문에 손익계산서가 없는 기준만 채운다
             got = [c for c in got if c.kind in ("is", "cf") and c.fs not in main_has]
         cands += got
-    return ReportResult(rcept_no, year, q, choose_net_income(cands), shares, kisu, ytd_start=ytd_start)
+    return ReportResult(rcept_no, year, q, choose_net_income(cands, q_is_cum=q in (1, 4)), shares, kisu,
+                        ytd_start=ytd_start)
 
 
 def basis_order(ni: NetIncome, *, controlling_first: bool) -> tuple[str, ...]:
@@ -1340,6 +1443,17 @@ def build_records(code: str, reports: dict[str, list[ReportResult]]) -> list[dic
                         pick = (v, b, q != 4 and vals[b]["q_derived"])
                         break
                 rec[f"netinc{tag}"], rec[f"basis{tag}"], rec[f"derived{tag}"] = pick or (None, None, False)
+            # 전년 동기 — netinc·netinc_ctrl 과 같은 기준의 비교 열. 그 분기 값이 차분이면 비교 열도 없다(NULL)
+            for b in BASES:
+                rec[f"{b}_prior_q"] = getattr(rr.ni, f"{b}_prior")
+            notes = []
+            for tag, bkey, dkey in (("", "basis", "derived"), ("_ctrl", "basis_ctrl", "derived_ctrl")):
+                b = rec[bkey]
+                rec[f"netinc{tag}_prior"] = None if b is None or rec[dkey] else getattr(rr.ni, f"{b}_prior")
+                if b is not None and rec[f"netinc{tag}_prior"] is None:
+                    why = "derived" if rec[dkey] else rr.ni.prior_note.get("cfs" if b == "ctrl" else b, "no_prior")
+                    notes.append(f"{bkey}={b}:{why}")
+            rec["prior_basis_note"] = ";".join(dict.fromkeys(notes)) or None
             rec["src"] = rr.ni.src
             rec["flags"] = rr.ni.flags
             sh = rr.shares
