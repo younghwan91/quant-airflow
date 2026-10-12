@@ -120,14 +120,25 @@ async def _load_corp_map_with_rotation(
     overnight backfill legitimately stopped for the day via 020 mid-run, and the
     very next retry died instantly on ``keys[0]`` alone despite a second key
     being available).
+
+    **빈 매핑은 실패다(2026-10-09 실측).** DART 가 corpCode.xml 대신 ZIP 이 아닌 응답
+    (``status=, message=unknown error``)을 주자 라이브러리는 빈 dict 를 돌려줬고, 그대로
+    ``corp_map 0`` → ``DONE rows=0`` → exit 0 으로 **성공** 처리됐다(CLAUDE.md §5 의 빈 응답
+    =성공 패턴). 다음 키로 넘기고, 전부 비면 예외 — 태스크가 실패해야 retries 가 돈다.
     """
     last: DartQuotaExceededError | None = None
     for key in keys:
         try:
-            return await scrapers[key].load_corp_codes()
+            got = await scrapers[key].load_corp_codes()
         except DartQuotaExceededError as e:
             last = e
-    raise last if last else DartQuotaExceededError("DART API 키가 하나도 없음")
+            continue
+        if got:
+            return got
+        print("⚠️ DART corp_codes 가 비었다 — 다음 키로", flush=True)
+    if last:
+        raise last
+    raise RuntimeError("DART corp_codes 가 모든 키에서 비었다(벤더 장애?) — 0행 성공으로 넘기지 않는다")
 
 
 async def _fetch_with_rotation(
@@ -363,17 +374,23 @@ def _write_row_db(con: Any, code: str, period: str, avail: str, known: str,
 
 
 def _recent_quarters(n: int, today: datetime | None = None) -> list[tuple[int, int]]:
-    """The N most recent (year, quarter) pairs counting back from the current quarter."""
+    """가용일(:func:`_available_date`)이 ``today`` 이전인 가장 최근 N개 분기.
+
+    **현재 분기부터 세던 예전 정의는 1년에 두 번 통째로 비었다(2026-10-12 실측).** 10/8 의
+    ``--recent-quarters 2`` 는 (2026Q4, 2026Q3) 였고 둘 다 가용일 전이라 건너뛰어 10/1~11/13
+    동안 ``DONE rows=0`` 만 찍었다 — 2026Q2 를 늦게 낸 회사(226340, 10/7 반기보고서)는 그 뒤로도
+    창 밖이라 영영 안 들어왔다. 7/1~8/13·1/1~3/30 도 같은 구멍이다. 가용일이 지난 분기만 센다.
+    """
     today = today or datetime.now()
-    year = today.year
-    q = (today.month - 1) // 3 + 1
+    year, q = today.year, (today.month - 1) // 3 + 1
     out: list[tuple[int, int]] = []
-    for _ in range(n):
-        out.append((year, q))
+    while len(out) < n:
+        end = f"{year}-{QUARTER_END[q][:2]}-{QUARTER_END[q][2:]}"
+        if _available_date(end, is_annual=(q == 4)) <= pd.Timestamp(today.date()):
+            out.append((year, q))
         q -= 1
         if q == 0:
-            q = 4
-            year -= 1
+            q, year = 4, year - 1
     return out
 
 

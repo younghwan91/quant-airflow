@@ -135,14 +135,18 @@ def test_write_row_db_passes_none_through_without_coercion(monkeypatch):
                        -50.0, None, None, None, None, None)]]
 
 
-def test_recent_quarters_within_year():
-    assert _recent_quarters(2, today=datetime(2026, 7, 11)) == [(2026, 3), (2026, 2)]
+def test_recent_quarters_counts_only_available_quarters():
+    # 7/11: 2026Q3·Q2 는 가용일(11/14·8/14) 전 — 예전엔 이 둘을 세서 7/1~8/13 내내 0행이었다
+    assert _recent_quarters(2, today=datetime(2026, 7, 11)) == [(2026, 1), (2025, 4)]
+    # 10/8: 예전 (2026Q4, Q3) → 둘 다 건너뛰어 226340 의 10/7 반기보고서를 못 받았다
+    assert _recent_quarters(2, today=datetime(2026, 10, 8)) == [(2026, 2), (2026, 1)]
+    # 가용일 당일은 포함
+    assert _recent_quarters(1, today=datetime(2026, 8, 14)) == [(2026, 2)]
 
 
 def test_recent_quarters_crosses_year_boundary():
-    assert _recent_quarters(5, today=datetime(2026, 7, 11)) == [
-        (2026, 3), (2026, 2), (2026, 1), (2025, 4), (2025, 3),
-    ]
+    # 2/1: 2026Q1·2025Q4(3/31) 는 아직 — 2025Q3 부터
+    assert _recent_quarters(3, today=datetime(2026, 2, 1)) == [(2025, 3), (2025, 2), (2025, 1)]
 
 
 def test_universe_query_all_codes_has_no_limit():
@@ -221,6 +225,26 @@ def test_load_corp_map_rotation_raises_after_all_keys_exhausted(monkeypatch):
     monkeypatch.setattr(DartScraper, "load_corp_codes", always_exhausted)
     scrapers = {"k1": DartScraper(api_key="k1"), "k2": DartScraper(api_key="k2")}
     with pytest.raises(DartQuotaExceededError):
+        _run(_load_corp_map_with_rotation(scrapers, ["k1", "k2"]))
+
+
+def test_load_corp_map_empty_payload_is_a_failure_not_zero_rows(monkeypatch):
+    # 2026-10-09 실측: corpCode 가 ZIP 이 아닌 응답 → 빈 dict → corp_map 0 → DONE rows=0 → 성공 처리.
+    calls = []
+
+    async def empty_then_ok(self):
+        calls.append(self.api_key)
+        return {} if self.api_key == "k1" else {"005930": "00126380"}
+
+    monkeypatch.setattr(DartScraper, "load_corp_codes", empty_then_ok)
+    scrapers = {"k1": DartScraper(api_key="k1"), "k2": DartScraper(api_key="k2")}
+    assert _run(_load_corp_map_with_rotation(scrapers, ["k1", "k2"])) == {"005930": "00126380"}
+
+    async def always_empty(self):
+        return {}
+
+    monkeypatch.setattr(DartScraper, "load_corp_codes", always_empty)
+    with pytest.raises(RuntimeError, match="비었다"):
         _run(_load_corp_map_with_rotation(scrapers, ["k1", "k2"]))
 
 
