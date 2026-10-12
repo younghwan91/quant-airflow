@@ -77,10 +77,19 @@ def test_read_jsonl_drops_truncated_last_line(tmp_path):
 def test_yield_counts_unmapped_codes_and_fails_empty_years():
     rows = [
         {"code": "a", "filings": {"2010Q1": {}}, "records": [{"period": "2010Q1", "netinc": 1.0, "is_correction": False}]},
-        {"code": "b", "filings": {}, "records": [], "error": "no_filing"},
+        {"code": "b", "filings": {}, "records": [], "error": "no_map"},
+        {"code": "c", "filings": {}, "records": [], "error": "no_dec_fye_filing"},
     ]
     st = dr.yield_report(rows)
+    assert (st["code_ok"], st["code_no_map"], st["code_non_dec"]) == (1, 1, 1)
     bad = dr.yield_failures(st, [2010, 2011], 0.9)
     assert "2011: 보고서 0건" in bad
-    assert any(b.startswith("종목: 1/2") for b in bad)
+    assert any(b.startswith("종목: 1/2") for b in bad)  # 12월 결산 아님은 분모에서 뺀다, 매핑 없음은 남긴다
     assert not any(b.startswith("2010") for b in bad)
+
+
+def test_code_status_categories():
+    assert dr.code_status({"error": "no_dec_fye_filing"}) == "non_dec"
+    assert dr.code_status({"error": "no_filing"}) == "no_filing"
+    assert dr.code_status({"error": None, "records": [{"netinc": None}]}) == "parse_fail"
+    assert dr.code_status({"error": None, "records": [{"netinc": 1.0}]}) == "ok"

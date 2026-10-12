@@ -222,18 +222,29 @@ def read_jsonl(path: Path) -> list[dict]:
 
 #: 실행 실패 하한(기본 90%) — 이걸 밑돌면 장애로 끝낸다(CLAUDE.md §5). 완료 조건 C 의 합격 바(95%, 사용자 승인)
 #: 와 다르다: 합격 바는 earnings 와의 **일치율**이고, 이 하한은 받은 보고서 중 값을 낸 **산출률**이다.
+def code_status(r: dict) -> str:
+    """종목 단위 결과: ``non_dec``(12월 결산 아님 — 알려진 비커버리지)·``no_map``(고유번호 없음)·
+    ``no_filing``(고유번호는 있는데 창 안 정기보고서 없음)·``ok``(값 하나 이상)·``parse_fail``(보고서는 있는데 값 없음)."""
+    err = r.get("error")
+    if err == "no_dec_fye_filing":
+        return "non_dec"
+    if err in ("no_map", "no_filing"):
+        return err
+    return "ok" if any(x["netinc"] is not None for x in r.get("records", [])) else "parse_fail"
+
+
 def yield_report(rows: list[dict]) -> dict:
     """누적 jsonl 전체로 산출률을 잰다(이어 하기여도 지금까지 전부).
 
     - 연도별: 그해 보고서가 있는 분기 중 netinc 를 낸(어느 판에서든) 비율. 보고서가 0건인 연도도 실패다.
-    - 종목별: 매핑이 없거나 보고서가 없는 종목(no_filing·no_dec_fye_filing)까지 분모에 넣은, 값이 하나라도 있는 종목 비율.
+    - 종목별(:func:`code_status`): 하한 분모 = ok + parse_fail + no_map + no_filing. 12월 결산이 아닌 종목(non_dec)은
+      파서가 일부러 다루지 않는 **알려진 비커버리지**라 분모에서 빼고 따로 센다. no_map·no_filing 은 진짜 구멍이라 남긴다.
     """
     st: Counter = Counter()
     for r in rows:
         st["codes"] += 1
-        st["codes_with_value"] += any(x["netinc"] is not None for x in r.get("records", []))
-        if r.get("error"):
-            st[f"code_{r['error']}"] += 1
+        st[f"code_{code_status(r)}"] += 1
+        st["parse_errors"] += r.get("parse_errors", 0)
         valued = {x["period"] for x in r.get("records", []) if x["netinc"] is not None}
         for period, f in r.get("filings", {}).items():
             st[f"y{period[:4]}_filings"] += 1
@@ -250,9 +261,10 @@ def yield_failures(st: dict, years: list[int], floor: float) -> list[str]:
             bad.append(f"{y}: 보고서 0건")
         elif v / n < floor:
             bad.append(f"{y}: {v}/{n} = {v / n:.1%}")
-    n, v = st.get("codes", 0), st.get("codes_with_value", 0)
-    if n and v / n < floor:
-        bad.append(f"종목: {v}/{n} = {v / n:.1%}(매핑 없음·보고서 없음 포함)")
+    ok = st.get("code_ok", 0)
+    n = ok + sum(st.get(f"code_{k}", 0) for k in ("parse_fail", "no_map", "no_filing"))
+    if n and ok / n < floor:
+        bad.append(f"종목: {ok}/{n} = {ok / n:.1%}(매핑 없음·보고서 없음 포함, 12월 결산 아님 {st.get('code_non_dec', 0)} 제외)")
     return bad
 
 
@@ -277,6 +289,7 @@ def run(a: argparse.Namespace) -> int:  # pragma: no cover — 네트워크
             filings = {p: f for p, f in dd.select_filings(items).items() if int(p[:4]) in years}
             reports: dict[str, list[dd.ReportResult]] = {}
             meta: dict[str, dict] = {}
+            n_parse_err = 0
             for period, f in sorted(filings.items()):
                 rnos = [f["rcept_no"]] + (f["corrections"] if a.corrections else [])
                 for k, rno in enumerate(rnos):
@@ -289,6 +302,7 @@ def run(a: argparse.Namespace) -> int:  # pragma: no cover — 네트워크
                         rr = dd.parse_report(dd.doc_files(raw), rno, int(period[:4]), int(period[-1]))
                     except Exception:  # noqa: BLE001 — 문서 하나의 예외는 격리하고 센다
                         stats["parse_error"] += 1
+                        n_parse_err += 1
                         fe.write(f"{code} {period} {rno}\n{traceback.format_exc()}\n")
                         continue
                     # 원본이 목록에 없으면 첫 판도 정정본이다
@@ -299,7 +313,9 @@ def run(a: argparse.Namespace) -> int:  # pragma: no cover — 네트워크
             recs = dd.build_records(code, reports)
             stats["records"] += len(recs)
             fo.write(json.dumps({"code": code, "filings": meta, "records": recs,
-                                 "error": None if filings else ("no_filing" if not items else "no_dec_fye_filing")},
+                                 "parse_errors": n_parse_err,
+                                 "error": None if filings else ("no_map" if not corp.get(code) else
+                                                                "no_filing" if not items else "no_dec_fye_filing")},
                                 ensure_ascii=False, default=str) + "\n")
             fo.flush()
     stats["dart_calls"] = dart.calls
