@@ -24,7 +24,8 @@ from _common import DAG_DEFAULT_ARGS, DEFAULT_TASK_KW, run_collector, timescale_
     default_args=DAG_DEFAULT_ARGS,
     # 평일 18:30 KST — 키움 무관(KRX 지수 사이트, 1회 ~30초). 발표 당일 안에 들어온다.
     schedule="30 18 * * 1-5",
-    start_date=pendulum.datetime(2026, 10, 12, tz="Asia/Seoul"),
+    # catchup=False 라도 첫 구간이 끝나야 첫 런이 뜬다(CLAUDE.md §4) — 10-12 로 두었다가 생성 당일 런이 빠졌다.
+    start_date=pendulum.datetime(2026, 10, 1, tz="Asia/Seoul"),
     catchup=False,
     max_active_runs=1,
     tags=["kr-quant", "index", "reference", "daily"],

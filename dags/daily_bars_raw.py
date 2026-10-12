@@ -29,8 +29,9 @@ ETF_CODES = "278530,069500,229200"
     dag_id="daily_bars_raw",
     default_args=DAG_DEFAULT_ARGS,
     schedule="0 19 * * 1-5",  # 평일 19:00 KST — 저녁 키움 사용자들이 끝난 뒤
-    # 10-13 부터 — 생성 당일(10-12) 밤엔 수동 전량 백필이 키움을 쓴다(겹치면 토큰 충돌).
-    start_date=pendulum.datetime(2026, 10, 13, tz="Asia/Seoul"),
+    # 첫 런 10-13 19:00 — 첫 구간 [10-12 19:00, 10-13 19:00) 이 끝날 때(CLAUDE.md §4). 10-13 으로 두면
+    # 10-14 에야 뜬다. 10-12 밤엔 수동 전량 백필이 키움을 쓰므로 그날 런은 없어야 한다(겹치면 토큰 충돌).
+    start_date=pendulum.datetime(2026, 10, 12, tz="Asia/Seoul"),
     catchup=False,
     max_active_runs=1,
     tags=["kr-quant", "daily", "kiwoom"],
