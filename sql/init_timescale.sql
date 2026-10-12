@@ -84,6 +84,24 @@ CREATE TABLE IF NOT EXISTS corporate_actions (
 );
 CREATE INDEX IF NOT EXISTS idx_corporate_actions_date ON corporate_actions(date);
 
+-- 원주가 × corporate_actions 누적계수 + 2026-09-14~ KRX 분봉 OHLC(029·030, collectors/adjusted_v2.py).
+CREATE TABLE IF NOT EXISTS daily_bars_adj_v2 (
+    code        TEXT NOT NULL,
+    date        DATE NOT NULL,
+    open        DOUBLE PRECISION,
+    high        DOUBLE PRECISION,
+    low         DOUBLE PRECISION,
+    close       DOUBLE PRECISION,
+    volume      BIGINT,
+    trade_value BIGINT,
+    raw_close   BIGINT,
+    factor      DOUBLE PRECISION,
+    close_src   TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    PRIMARY KEY (code, date)
+);
+SELECT create_hypertable('daily_bars_adj_v2', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
+
 CREATE TABLE IF NOT EXISTS supply_demand (
     code         TEXT NOT NULL,
     date         DATE NOT NULL,
