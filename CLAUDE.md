@@ -4,27 +4,14 @@ kr_quant(TimescaleDB) 수집·운영 레포. 다른 레포(swing-it·scalp-it·d
 레포의 `.env` 를 그대로 쓴다. **데이터 저장 방식과 DAG 가 목숨이다** — 코드는 다시 쓰면 되지만
 오염된 이력·놓친 수집 창은 되돌리기 비싸고, DB 사본은 하나다(두 번째는 구글 드라이브 백업뿐).
 
-## 문서 — 언제 읽나
+## 0. 문서 — 언제 읽나
 - `docs/schema.md` — 테이블·PK·단위·마이그레이션 목록. 테이블을 읽거나 바꾸기 전에.
 - `docs/operations.md` — 24/7 단일 호스트, 배포 경로, 알림, 백업, swing-it 마운트 결합. 운영·크론·백업을 만지기 전에.
 - `README.md` — 아키텍처·수집 목록. `docs/sharadar.md` — 미국(구독 해지로 꺼져 있다).
 - DAG·마이그레이션 주석의 실측 근거("실측 40런 중 4런")는 그 설정의 이유다. 바꾸기 전에 읽고 아직 유효한지 확인한다.
+- 섹션 번호 §0~§6 은 코드·마이그레이션·compose 주석이 `CLAUDE.md §N` 으로 참조한다 — 번호를 바꾸지 않는다(새 섹션은 뒤에).
 
-## 1. 운영 체크아웃이 곧 운영 코드다
-- `~/git/quant-airflow` 작업 트리를 Airflow 가 bind-mount 한다(`dags/`·`collectors/`·`scripts/`). 크론 줄도
-  이 절대경로를 부른다. **거기서 브랜치 전환·미커밋 편집을 하지 않는다** — 작업은 워크트리에서.
-- `../swing-it` 도 `/opt/swing-it:ro` 로 라이브 마운트된다(`*_price_adjust` 가 실행). swing-it 의
-  `price_adjust.py` 가 numpy·pandas 밖을 import 하면 여기서만 죽는다(2026-09-14 사고).
-- 반영 경로: main 푸시 → pre-push 가 `ci.yml` 을 로컬에서 그대로 돌림 → 이 호스트 `cron-install`.
-  운영 체크아웃은 **07:50 `pull-all --ci-gate`** 때 ff 된다 — 워크트리에서 푸시했으면 그때까지 옛 코드가 돈다.
-  당장 반영하려면 `git -C ~/git/quant-airflow pull --ff-only`(깨끗할 때만).
-- 자동 아님: compose env·`docker/requirements.txt`·`Dockerfile` → `docker compose -f docker-compose.airflow.yml
-  up -d --build`(§2 승인), `sql/migrations/` → 손으로 적용. DAG 파일은 재파싱까지 최대 30분.
-- 크론 정본은 `deploy/crontab.simnode` — `crontab -e` 로 고치면 다음 설치에 덮인다.
-- 다른 레포 크론이 `export $(grep ... ../quant-airflow/.env | xargs)` 로 읽는다 — `.env` 키 이름을 바꾸거나
-  지우지 않고, 값에 공백·따옴표를 넣지 않는다.
-
-## 2. 승인 받고 하는 것 / 묻지 않고 하는 것
+## 1. 승인 받고 하는 것 / 묻지 않고 하는 것
 먼저 **무엇이·왜·기존 데이터에 어떤 영향인지** 말하고 승인을 받는다("고쳐두는 게 낫겠다"는 안 통한다):
 - 테이블 `DROP`/`TRUNCATE`/대량 `DELETE`, PK·upsert 키 변경, 컬럼 삭제, 타입 축소
 - DAG `schedule` 변경·삭제, 수집 대상(종목·기간·컬럼) 축소, 압축 정책·청크 인터벌 변경
@@ -36,7 +23,7 @@ kr_quant(TimescaleDB) 수집·운영 레포. 다른 레포(swing-it·scalp-it·d
 묻지 않고 하고 결과만 보고: 문서·주석 정정, 거짓 경보 제거, CI 초록인 디펜다봇·자기 PR 머지, 드라이브 백업
 정리(휴지통행). 남은 질문 목록을 돌려주지 않는다 — 꼭 물을 것만 한 줄로 좁혀 묻는다.
 
-## 3. 스키마 정본은 둘 — 둘 다 고친다
+## 2. 스키마 정본은 둘 — 둘 다 고친다
 | 대상 | 정본 |
 |---|---|
 | Postgres/TimescaleDB(운영) | `sql/init_timescale.sql` + `sql/migrations/NNN_*.sql` |
@@ -53,7 +40,7 @@ kr_quant(TimescaleDB) 수집·운영 레포. 다른 레포(swing-it·scalp-it·d
 수량 컬럼은 `BIGINT`(삼성전자 발행주식수 58억주가 `INTEGER` 를 넘친다). `ticks`·`minute_bars`·`quotes`·`quote_events`·
 `vi_events`·`theme_*`(scalp-it), `kqc_runs`(krx-quant-core) 는 같은 DB 에 있지만 DDL 이 다른 레포에 있다 — 여기서 손대지 않는다.
 
-## 4. 데이터 규약
+## 3. 데이터 규약
 - 모든 수집기는 `(code, date)` 류 upsert 로 **멱등**. 행마다 `source`(kiwoom/naver/krx/dart — 정의·정확도가 다르다).
 - **NULL ≠ 0.** NULL = 모름, 0 = 없음(네이버 수급 `individual` 은 NULL 로 남긴다). **틀린 값보다 없는 값이 낫다** —
   원천이 틀린 값은 "고쳐" 넣지 말고 빼서 `legacy` 로(022).
@@ -70,7 +57,7 @@ kr_quant(TimescaleDB) 수집·운영 레포. 다른 레포(swing-it·scalp-it·d
 - 기사 LLM 은 전역 규칙을 따른다. 이 레포 구현은 `collectors/news_judge.py`(배치 원장 `news_judge_batches`,
   create 재시도 금지). Haiku 4.5 판정은 `legacy` 스키마 보관분 — 운영 테이블로 되돌리지 않는다.
 
-## 5. DAG 규약
+## 4. DAG 규약
 - `@dag(default_args=DAG_DEFAULT_ARGS)`(최종 실패 알림 콜백), 태스크는 `DEFAULT_TASK_KW`·`run_collector()`·`timescale_dsn()`·
   `*_env()`(`dags/_common.py`). `subprocess.run` 직접 호출 금지 — 로그가 통째로 유실되고 DSN 마스킹(`_masked`)을 우회한다.
 - `start_date` 는 `catchup=False` 에서 **첫 구간이 끝나야** 첫 런이 뜬다 — 넉넉히 과거로(`daily_finalize` 10-08→10-01, cbd4e56).
@@ -82,7 +69,7 @@ kr_quant(TimescaleDB) 수집·운영 레포. 다른 레포(swing-it·scalp-it·d
   `schedule=None`(`daily_krx_shares`·`daily_sharadar`). UI pause 는 다음 기동에 되살아나고, 반대로 paused 로 남은
   DAG 는 6일간 조용히 안 돌았다(2026-09-01).
 
-## 6. "초록불 = 성공" 이 아니다
+## 5. "초록불 = 성공" 이 아니다
 - **빈 응답을 성공으로 넘기는 수집기**가 반복 사고다: `daily_krx_shares` 22회 연속 rows=0 무실패, `daily_earnings`
   분기 창이 연 두 번 매일 `DONE rows=0`, DART corpCode 빈 응답 → rows=0 성공(be0bf6d). 새 수집기는 빈 응답에 예외를
   던지고, 매일 rows=0 은 장애로 본다.
@@ -92,7 +79,34 @@ kr_quant(TimescaleDB) 수집·운영 레포. 다른 레포(swing-it·scalp-it·d
   실패는 태스크 상태로만 잡힌다. 같은 응답이면 같은 곳에서 터지는 실패(`CardinalityViolation` 류, 4e2de05)는
   재시도로 안 낫는다 — 원인을 고친다.
 
-## 7. 상태 점검·DB 접속 (호스트에 psql 없음)
+## 6. 개발
+런타임 의존은 `docker/requirements.txt`, `pyproject.toml` 은 ruff·pytest 설정 전용. 워크트리엔 `.venv` 가 없으니 운영 체크아웃 것을 쓴다:
+```bash
+V=~/git/quant-airflow/.venv/bin
+$V/ruff check collectors/ dags/ tests/ scripts/   # ruff 0.14.0 핀 — CI 와 한 쌍
+$V/python -m pytest -q
+```
+- CI(푸시 때 pre-push 가 로컬에서도 돌림)는 추가로 DAG AST 파싱·시크릿 스캔·커밋 신원 가드를 돈다.
+- 공개 레포다 — 키 모양 문자열·수집 데이터를 커밋하지 않는다. 스캐너(32자 hex·`api_key=` 16자+·DSN 비번 6자+)에 걸리는 테스트 가짜 시크릿은 그 줄에 `allowlist-secret`.
+- 테스트는 sqlite·mock 경로라 **Postgres 전용 동작**(`ON CONFLICT` 한 문장 내 중복 키, `%s`/`?`, date 타입)을 못 잡는다
+  (4e2de05·0068e64) — `storage.py` 의 PG 분기를 고치면 운영 DB 에서 읽기 전용 쿼리나 트랜잭션 롤백으로 확인한다.
+- 수집기를 고치면 대응 `tests/test_*.py` 도. 커밋은 한국어 conventional(`fix(earnings): ...`), 개인 이메일 신원만.
+
+## 7. 운영 체크아웃이 곧 운영 코드다
+- `~/git/quant-airflow` 작업 트리를 Airflow 가 bind-mount 한다(`dags/`·`collectors/`·`scripts/`). 크론 줄도
+  이 절대경로를 부른다. **거기서 브랜치 전환·미커밋 편집을 하지 않는다** — 작업은 워크트리에서.
+- `../swing-it` 도 `/opt/swing-it:ro` 로 라이브 마운트된다(`*_price_adjust` 가 실행). swing-it 의
+  `price_adjust.py` 가 numpy·pandas 밖을 import 하면 여기서만 죽는다(2026-09-14 사고).
+- 반영 경로: main 푸시 → pre-push 가 `ci.yml` 을 로컬에서 그대로 돌림 → 이 호스트 `cron-install`.
+  운영 체크아웃은 **07:50 `pull-all --ci-gate`** 때 ff 된다 — 워크트리에서 푸시했으면 그때까지 옛 코드·옛 크론이 돈다(푸시 직후 `cron-install` 은 운영 체크아웃의 파일을 읽는다).
+  당장 반영하려면 `git -C ~/git/quant-airflow pull --ff-only`(깨끗할 때만).
+- 자동 아님: compose env·`docker/requirements.txt`·`Dockerfile` → `docker compose -f docker-compose.airflow.yml
+  up -d --build`(§1 승인), `sql/migrations/` → 손으로 적용. DAG 파일은 재파싱까지 최대 30분.
+- 크론 정본은 `deploy/crontab.simnode` — `crontab -e` 로 고치면 다음 설치에 덮인다.
+- 다른 레포 크론이 `export $(grep ... ../quant-airflow/.env | xargs)` 로 읽는다 — `.env` 키 이름을 바꾸거나
+  지우지 않고, 값에 공백·따옴표를 넣지 않는다.
+
+## 8. 상태 점검·DB 접속 (호스트에 psql 없음)
 ```bash
 set -a; . ~/git/quant-airflow/.env; set +a
 tail -40 ~/logs/quant-airflow/daily_health_check.log   # 11:35·18:10 헬스체크(⚠️ 줄)
@@ -103,16 +117,3 @@ docker exec quant-airflow-airflow-meta-db-1 psql -U "$AIRFLOW_META_USER" -d "$AI
 ~/git/quant-airflow/.venv/bin/python   # psycopg2 있음 — psycopg2.connect(os.environ["KR_QUANT_DB"])
 ```
 컨테이너 이름은 `...-replica-1` 이지만 **PRIMARY** 다(2026-09-11 `pg_promote`, 확인은 `select pg_is_in_recovery()` = f).
-
-## 8. 개발
-런타임 의존은 `docker/requirements.txt`, `pyproject.toml` 은 ruff·pytest 설정 전용. 워크트리엔 `.venv` 가 없으니 운영 체크아웃 것을 쓴다:
-```bash
-V=~/git/quant-airflow/.venv/bin
-$V/ruff check collectors/ dags/ tests/ scripts/   # ruff 0.14.0 핀 — CI 와 한 쌍
-$V/python -m pytest -q
-```
-- CI(푸시 때 pre-push 가 로컬에서도 돌림)는 추가로 DAG AST 파싱·시크릿 스캔·커밋 신원 가드를 돈다.
-- 공개 레포다 — 키 모양 문자열·수집 데이터를 커밋하지 않는다. 테스트 가짜 시크릿은 6자 미만이거나 줄에 `allowlist-secret`.
-- 테스트는 sqlite·mock 경로라 **Postgres 전용 동작**(`ON CONFLICT` 한 문장 내 중복 키, `%s`/`?`, date 타입)을 못 잡는다
-  (4e2de05·0068e64) — `storage.py` 의 PG 분기를 고치면 운영 DB 에서 읽기 전용 쿼리나 트랜잭션 롤백으로 확인한다.
-- 수집기를 고치면 대응 `tests/test_*.py` 도. 커밋은 한국어 conventional(`fix(earnings): ...`), 개인 이메일 신원만.
