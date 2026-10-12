@@ -124,6 +124,25 @@ CREATE TABLE IF NOT EXISTS daily_bars_raw (
     source      TEXT NOT NULL DEFAULT 'kiwoom_raw',   -- upd_stkpc_tp=0 무수정(026)
     PRIMARY KEY (code, date)
 );
+CREATE TABLE IF NOT EXISTS daily_bars_delisted_naver (
+    code        TEXT NOT NULL,
+    date        TEXT NOT NULL,
+    open        INTEGER,
+    high        INTEGER,
+    low         INTEGER,
+    close       INTEGER,
+    volume      INTEGER,
+    trade_value INTEGER,                                 -- 백만원, close×volume 근사
+    source      TEXT NOT NULL DEFAULT 'naver_adj',       -- 폐지 종목 수정가격(028)
+    PRIMARY KEY (code, date)
+);
+CREATE TABLE IF NOT EXISTS kind_delistings (
+    code        TEXT NOT NULL,
+    delist_date TEXT NOT NULL,
+    name        TEXT,
+    reason      TEXT,
+    PRIMARY KEY (code, delist_date)
+);
 CREATE TABLE IF NOT EXISTS corporate_actions (
     code         TEXT NOT NULL,
     date         TEXT NOT NULL,
@@ -485,6 +504,7 @@ CHECKED_NAVER_BARS = "naver_bars"
 CHECKED_NAVER_FLOW = "naver_flow"
 CHECKED_DART_SHARES = "dart_shares_delisted"
 CHECKED_DART_SHARES_LISTED = "dart_shares_listed"
+CHECKED_DELISTED_HIST = "delisted_hist_2006"   # 028: 2006~ 네이버 폐지 일봉을 받아 봤다(자료 유무 무관)
 CHECKED_DART_FILING_DATES = "dart_filing_dates"   # 2019~ 접수일을 다 훑었다(earnings_disclosures)
 
 

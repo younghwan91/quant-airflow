@@ -47,6 +47,30 @@ CREATE TABLE IF NOT EXISTS daily_bars_raw (
 );
 SELECT create_hypertable('daily_bars_raw', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
 
+-- 2006~ 폐지 종목 일봉(028) — 네이버 수정가격, daily_bars 의 2016 이전을 폐지 종목만으로 만들지 않으려고 따로.
+CREATE TABLE IF NOT EXISTS daily_bars_delisted_naver (
+    code        TEXT NOT NULL,
+    date        DATE NOT NULL,
+    open        BIGINT,
+    high        BIGINT,
+    low         BIGINT,
+    close       BIGINT,
+    volume      BIGINT,
+    trade_value BIGINT,
+    source      TEXT NOT NULL DEFAULT 'naver_adj',
+    PRIMARY KEY (code, date)
+);
+SELECT create_hypertable('daily_bars_delisted_naver', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
+
+-- KIND 상장폐지 현황 원문(028) — 폐지일·사유. 같은 코드가 두 번 폐지될 수 있어 PK 에 날짜.
+CREATE TABLE IF NOT EXISTS kind_delistings (
+    code        TEXT NOT NULL,
+    delist_date DATE NOT NULL,
+    name        TEXT,
+    reason      TEXT,
+    PRIMARY KEY (code, delist_date)
+);
+
 -- 키움 ka10081 수정주가 이벤트(027) — 분할·병합·증자·배당락. 이 날 이전 가격 × (1 + upd_rt/100).
 CREATE TABLE IF NOT EXISTS corporate_actions (
     code         TEXT NOT NULL,

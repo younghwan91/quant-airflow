@@ -12,6 +12,8 @@
 | `daily_bars` | 일봉 OHLCV + 거래대금. `source`='kiwoom'(상장 종목) / 'naver'(폐지 종목 백필 — 거래대금은 close×volume 근사). **`trade_value` 는 백만원 단위다**(두 source 모두, `minute_bars.trade_value` 는 원) — 원으로 읽어 문턱이 1e6 배 틀어진 사고가 있다(daytrade-it volume_entry, 2026-10-09) **원 일봉이 아니다** — 키움 수정주가(upd_stkpc_tp=1)로 받아 수집 시점보다 앞선 병합·분할만큼 과거가 소급 조정돼 있다(005930 2017-03-31 41,200 vs 실제 2,060,000). 그날 주식수와 곱하는 시총은 `daily_bars_raw` 로 |
 | `daily_bars_raw` | **무수정 주가** 일봉(upd_stkpc_tp=0, 026) — 상장 종목 + ETF(278530·069500·229200), 2016-09-09~. 시총 = `close` × 그날 `shares_outstanding_history`. 폐지 종목은 키움이 안 줘서 없다(그쪽 원 종가는 `supply_demand.close`). `daily_bars_raw` DAG(평일 19:00)가 최근 5일을 다시 받는다 |
 | `corporate_actions` | 키움 ka10081 **수정주가 이벤트**(027) — 이벤트가 찍힌 날만, `upd_stkpc_tp`(비트 합: 1 유상·2 무상·4 배당락·8 분할·16 병합·32 합병·64 감자·256 권리락 — 8 만 실측 확인)·`upd_rt`(%) 원천 그대로. `date` 는 새 기준 첫 거래일, 그 이전 가격 × (1 + upd_rt/100). 005930 2018-05-04 = 8, −98.00. 일봉 백필·`daily_bars_raw` DAG 가 채운다(16:00 수집은 안 넣는다), 상장 종목만 |
+| `daily_bars_delisted_naver` | **폐지 종목** 일봉 2006~폐지일(028, 네이버 siseJson). **수정가격**(`source='naver_adj'`) — 폐지 종목은 수정 이벤트가 없어 원 가격으로 못 돌린다(시총에 주의). `trade_value` 는 close×volume 근사(백만원). 2016-09 이후는 `daily_bars` 의 naver 행과 겹친다. `daily_bars` 에 넣지 않은 이유: 2016 이전이 폐지 종목만인 유니버스가 된다 |
+| `kind_delistings` | KIND 상장폐지 현황 원문(028) — 코드·폐지일·사유, 1991~. 2006~2008 이 연 16~35건뿐이라 완전하지 않다 — 폐지 유니버스는 이것 ∪ `delisted_stocks` 로 |
 | `daily_bars_adjusted` | 액면분할 백조정 일봉. 평일 `daily_price_adjust` + 토요일 `weekly_price_adjust` 가 **전량 재계산**한다(back-adjust 는 종목별 전체 이력을 봐야 해서 증분이 불가능하다 — 실측 6분 23초 / 피크 RSS 5.2GB). `source` 는 `daily_bars` 에서 전파 |
 | `supply_demand` | 투자자별 순매매 **수량(주)** — 금액이 아니다(`amt_qty_tp="2"`). `flu_rt` 는 **키움이 준 등락률 × 100(bp)**: 175 = +1.75%. ⚠️ **2026-09-15 부터 전일 KRX 종가 대비가 아니다** — 키움의 기준가가 바뀌었다(005930 10-07: 종가 269,000 · 전일대비 −3,000 → 기준가 272,000, 그런데 전일 KRX 종가는 273,000). 그 전엔 종가 대비 수익률과 상관 0.9975 였고 그 뒤로는 80% 가 5bp 넘게 어긋난다. 출처 값을 그대로 두므로 **수익률은 `daily_bars_adjusted` 에서 계산할 것**(이 컬럼을 읽는 소비자는 2026-10-08 현재 없다). `natn`(국가)은 실측상 늘 0. `source`='kiwoom'(전체) / 'naver'(폐지 부분 백필 — 기관·외국인만, 개인·기관세부는 NULL → **지표마다 유니버스가 달라진다**) |
 | `short_selling` | 공매도 추이(수량·잔고·비율·평균가) |
@@ -104,6 +106,7 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 | `025_archive_earnings_scale_shift` | **데이터 정정** — 여러 해 줄곧 원화가 아닌 단위로 들어온 2종목 41행(008700 2019Q1~ ×1/1,000, 241560 두산밥캣 2023Q4~ ×1/1,300 달러 보고)을 `legacy.earnings_scale_shift` 로(사용자 승인). `dart_earnings._known_bad` 가 023·025 로 뺀 분기를 다시 받지 않는다 |
 | `026_daily_bars_raw` | `daily_bars_raw` 신설 — `daily_bars` 가 수정주가라 과거 시총이 수 배 부풀던 것(swing-it 실측 월말 종목-월 3~14%). `daily_bars` 는 덮지 않는다(사용자 승인) |
 | `027_corporate_actions` | `corporate_actions` 신설 — 수정주가를 ±30% 점프 탐지(가짜 이음매 423 종목-일) 대신 원주가 × 이벤트 누적계수로 다시 만들기 위해(swing-it 요청). ka10081 이 행마다 `upd_stkpc_tp`·`upd_rt` 를 준다(10-12 프로브) |
+| `028_delisted_history` | `daily_bars_delisted_naver`·`kind_delistings` 신설 — 2006~2016 이력 확장의 생존편향 쪽(사용자 승인 2026-10-12). 키움은 폐지 코드를 안 준다 |
 
 > ⚠️ 001 은 코드가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이 `daily_earnings` 가
 > 초록불이었던 건 비수기라 `rows=0` 이어서 DB 를 건드리기 전에 빠져나갔기 때문이지,
