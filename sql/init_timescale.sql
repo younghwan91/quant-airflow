@@ -529,3 +529,95 @@ SELECT add_compression_policy('consensus', INTERVAL '30 days');
 SELECT add_compression_policy('news_articles', INTERVAL '30 days');
 SELECT add_compression_policy('disclosures', INTERVAL '30 days');
 -- earnings는 일반 테이블이라 압축/보존 정책 대상 아님 (위 CREATE TABLE 주석 참고).
+
+-- 정규장 종가 뷰(031) — 2026-09-14~ 일봉·수급 종가는 KRX 애프터마켓 포함 통합값이라 기준가 항등식으로 파생한다.
+-- 설명·검증·롤백은 sql/migrations/031_regular_close.sql. 이 블록은 그 파일과 글자 그대로 같아야 한다(tests/test_data_checks.py).
+CREATE OR REPLACE FUNCTION krx_tick_size(p_price numeric, p_day date) RETURNS integer
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+    SELECT CASE
+        WHEN p_price IS NULL OR p_day IS NULL THEN NULL
+        WHEN p_day >= DATE '2023-01-25' THEN
+            CASE WHEN p_price < 2000 THEN 1 WHEN p_price < 5000 THEN 5 WHEN p_price < 20000 THEN 10
+                 WHEN p_price < 50000 THEN 50 WHEN p_price < 200000 THEN 100 WHEN p_price < 500000 THEN 500
+                 ELSE 1000 END
+        ELSE
+            CASE WHEN p_price < 1000 THEN 1 WHEN p_price < 5000 THEN 5 WHEN p_price < 10000 THEN 10
+                 WHEN p_price < 50000 THEN 50 WHEN p_price < 100000 THEN 100 WHEN p_price < 500000 THEN 500
+                 ELSE 1000 END
+    END
+$$;
+
+CREATE OR REPLACE FUNCTION krx_tick_round(p_price numeric, p_day date) RETURNS numeric
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+    SELECT round(p_price / krx_tick_size(p_price, p_day)) * krx_tick_size(p_price, p_day)
+$$;
+
+CREATE OR REPLACE FUNCTION krx_base_close(p_close numeric, p_flu_rt numeric, p_day date) RETURNS numeric
+LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
+DECLARE
+    raw  numeric;
+    std  integer;
+    g    integer;
+    cand numeric;
+BEGIN
+    IF p_close IS NULL OR p_flu_rt IS NULL OR p_day IS NULL OR p_close <= 0 OR p_flu_rt <= -10000 THEN
+        RETURN NULL;
+    END IF;
+    raw := p_close * 10000 / (10000 + p_flu_rt);
+    std := krx_tick_size(raw, p_day);
+    FOREACH g IN ARRAY ARRAY[1000, 500, 100, 50, 10, 5, 1] LOOP
+        CONTINUE WHEN g > std;
+        cand := round(raw / g) * g;
+        IF cand > 0 AND abs((p_close / cand - 1) * 10000 - p_flu_rt) <= 0.5 THEN
+            -- 이웃 격자값도 flu_rt 를 맞추면 정밀도가 모자란 것(flu_rt ≈ −100% 등) — 고르지 않는다
+            IF abs((p_close / (cand + g) - 1) * 10000 - p_flu_rt) <= 0.5
+               OR (cand > g AND abs((p_close / (cand - g) - 1) * 10000 - p_flu_rt) <= 0.5) THEN
+                RETURN NULL;
+            END IF;
+            RETURN cand;
+        END IF;
+    END LOOP;
+    RETURN NULL;
+END
+$$;
+
+CREATE OR REPLACE VIEW regular_close AS
+SELECT s.code, s.date, s.close::numeric AS close, 'sd_close'::text AS src
+  FROM supply_demand s
+ WHERE s.date < DATE '2026-09-14' AND s.source LIKE 'kiwoom%'
+UNION ALL
+SELECT y.code, y.date,
+       CASE WHEN y.src = 'identity' THEN y.base END AS close,
+       CASE WHEN y.src = 'identity' AND y.base IS NULL THEN 'unmatched' ELSE y.src END AS src
+  FROM (
+    SELECT x.code, x.date, x.src,
+           CASE WHEN x.src = 'identity' THEN krx_base_close(x.next_close, x.next_flu_rt::numeric, x.date) END AS base
+      FROM (
+        SELECT w.code, w.date, w.next_close, w.next_flu_rt,
+               CASE WHEN c.next_date IS NULL THEN 'pending'
+                    WHEN w.next_date IS NULL THEN 'no_next'
+                    WHEN w.next_date <> c.next_date THEN 'gap'
+                    WHEN EXISTS (SELECT 1 FROM corporate_actions ca
+                                  WHERE ca.code = w.code AND ca.date = w.next_date
+                                    AND ca.upd_rt IS DISTINCT FROM 0) THEN 'base_reset'
+                    ELSE 'identity' END AS src
+          FROM (
+            SELECT s.code, s.date,
+                   lead(s.date)   OVER win AS next_date,
+                   lead(s.close)  OVER win AS next_close,
+                   lead(s.flu_rt) OVER win AS next_flu_rt
+              FROM supply_demand s
+             WHERE s.date >= DATE '2026-09-14' AND s.source LIKE 'kiwoom%'
+            WINDOW win AS (PARTITION BY s.code ORDER BY s.date)
+          ) w
+          JOIN (
+            SELECT d.date, lead(d.date) OVER (ORDER BY d.date) AS next_date
+              FROM (SELECT DISTINCT s.date FROM supply_demand s
+                     WHERE s.date >= DATE '2026-09-14' AND s.source LIKE 'kiwoom%') d
+          ) c ON c.date = w.date
+      ) x
+  ) y;
+
+COMMENT ON VIEW regular_close IS
+    '정규장 종가. 2026-09-14 전 = supply_demand.close(sd_close), 그 뒤 = 기준가 항등식(t+1 close/(1+flu_rt/1e4) 틱반올림). '
+    'close NULL 이면 src 가 이유(pending·no_next·gap·base_reset·unmatched). migration 031';

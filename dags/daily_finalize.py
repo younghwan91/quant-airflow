@@ -19,7 +19,8 @@
 거래량은 통합값이고 **시가만 정규장**이다(종가 불일치 86%). 이 docstring 이 전에 적었던 "NXT 오염은
 오진, 네이버 40/40 일치" 는 틀렸다 — 네이버 일별시세도 애프터마켓 포함 통합값이라 같은 값끼리 맞춘 것이다
 (오염원도 NXT 가 아니라 KRX 애프터마켓이다). 정규장 종가는 ``minute_bars`` 15:30 봉 또는 항등식
-``틱반올림(supply_demand.close(t+1) / (1 + flu_rt(t+1)/1e4))`` 로 얻는다(09-14 이후 99.98% 정확).
+``틱반올림(supply_demand.close(t+1) / (1 + flu_rt(t+1)/1e4))`` 로 얻는다(09-14 이후 분봉과 99.97% 일치) — DB 에서는
+``regular_close`` 뷰(migration 031).
 마지막 태스크 ``check_data_quality`` 가 이 항등식·분봉 세션 범위·원주가 카나리아를 매일 검사한다
 (``collectors/data_checks.py``).
 

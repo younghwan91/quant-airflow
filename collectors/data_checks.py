@@ -20,6 +20,8 @@ docstring 에 남았다(``daily_finalize``). 원천 정의가 조용히 바뀌�
    t+1 의 ``supply_demand`` 에서 ``틱반올림(close / (1 + flu_rt/1e4))`` 로 복원된다. ``flu_rt`` 의 기준가는
    애프터마켓 이후에도 전일 **정규장** 종가이고, 바뀐 건 ``close`` 쪽이다(09-14 이후 99.98% 정확).
    불일치가 문턱을 넘으면 ``flu_rt`` 정의나 수집이 또 바뀐 것이다. 권리락 등 기준가 조정 종목이 남는 몫이다.
+   복원은 :func:`base_close`(호가 표 단위부터 1원까지 격자 폴백 — 스팩·개편 전 코스닥) — DB 의 ``regular_close`` 뷰
+   (migration 031 ``krx_base_close``)와 같은 계산이다. 이 검사가 터지면 그 뷰도 틀린 값을 내고 있다.
    **전 거래일만 본다** — ``minute_bars`` 과거분은 수정주가라(뒤에 일어난 분할·병합이 소급) 오래된 날짜로 돌리면
    그만큼 어긋난다(2025-08 12% → 2026-07 2.5% → 2026-09~ 0.07%, 001520 2025-08-01 분봉 1,310 = 수정 일봉, 원 종가 655).
 3. **원주가 카나리아**(``check_raw_price_canary``) — ``daily_bars_raw`` 005930 2017-03-31 은 2,060,000
@@ -36,8 +38,11 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from decimal import Decimal
+from fractions import Fraction
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -58,6 +63,18 @@ DELAY_SHIFT = dt.timedelta(hours=1)
 
 #: 정규장 종가 봉(15:30 종가 단일가, 드물게 15:32). 마감 지연일엔 1시간 늦춘다.
 CLOSE_BAR_WINDOW = (dt.time(15, 30), dt.time(15, 32))
+
+#: 호가가격단위 개편일(2023-01-25). 기준가를 정한 날(t) 기준으로 표를 고른다.
+TICK_REFORM = dt.date(2023, 1, 25)
+#: (이 가격 미만, 단위). 개편 뒤 — 코스피·코스닥 공통.
+TICK_BANDS = ((2_000, 1), (5_000, 5), (20_000, 10), (50_000, 50), (200_000, 100), (500_000, 500))
+#: 개편 전 코스피 표(가장 굵은 쪽 — 코스닥 5만원 이상 100원은 :func:`base_close` 격자 폴백이 잡는다).
+TICK_BANDS_PRE_REFORM = ((1_000, 1), (5_000, 5), (10_000, 10), (50_000, 50), (100_000, 100), (500_000, 500))
+TOP_TICK = 1_000
+#: 기준가 복원 때 표 단위부터 시도하는 격자(굵은 것부터).
+BASE_TICK_GRID = (1_000, 500, 100, 50, 10, 5, 1)
+#: flu_rt(bp) 재현 허용 폭 — 키움 flu_rt 는 (close/기준가 − 1)×1e4 의 반올림이다.
+FLU_RT_TOL_BP = Fraction(1, 2)
 
 IDENTITY_MAX_MISMATCH = 0.01
 #: 항등식 표본이 이보다 적으면 실패 — 분봉이 반쪽만 들어왔거나 조인이 깨진 것이다(평소 1,400 안팎).
@@ -125,22 +142,102 @@ def check_session(day: dt.date, bar_counts: Mapping[dt.time, int]) -> CheckResul
     return CheckResult(name, True, f"{total}행 모두 세션 안({span})")
 
 
-def krx_tick(price: float) -> int:
-    """KRX 호가단위(2023-01-25 개편 뒤, 코스피·코스닥 공통)."""
-    for bound, tick in ((2_000, 1), (5_000, 5), (20_000, 10), (50_000, 50), (200_000, 100), (500_000, 500)):
+def krx_tick(price: float | Fraction, day: dt.date | None = None) -> int:
+    """``day`` 시점 그 가격대의 **가장 굵은** KRX 호가단위(``day`` 없으면 2023-01-25 개편 뒤 표).
+
+    개편 뒤는 코스피·코스닥 공통, 그 전은 코스피 표다 — 개편 전 코스닥 5만원 이상(100원)과 2025-03~ 스팩(1원)은
+    이 표보다 가늘고, :func:`base_close` 의 격자 폴백이 그 몫을 잡는다. SQL 판은 migration 031 ``krx_tick_size``.
+    """
+    bands = TICK_BANDS if day is None or day >= TICK_REFORM else TICK_BANDS_PRE_REFORM
+    for bound, tick in bands:
         if price < bound:
             return tick
-    return 1_000
+    return TOP_TICK
 
 
-def tick_round(price: float) -> int:
-    tick = krx_tick(price)
-    return int(price / tick + 0.5) * tick
+def _exact(x: float | int | Decimal | Fraction) -> Fraction:
+    """DB 값(정수·numeric·real)을 SQL numeric 처럼 십진 그대로 — float 의 이진 꼬리를 끌고 오지 않는다."""
+    if isinstance(x, (int, Decimal, Fraction)):
+        return Fraction(x)
+    return Fraction(repr(float(x)))
 
 
-def implied_prev_close(close: float, flu_rt_bp: float) -> int:
-    """t+1 의 ``supply_demand`` 한 행에서 t 의 정규장 종가(= t+1 기준가)를 복원한다."""
-    return tick_round(close / (1 + flu_rt_bp / 1e4))
+def _round_half_up(x: Fraction) -> int:
+    """SQL ``round(numeric)`` 과 같은 반올림(양수에서 0.5 는 올림)."""
+    return math.floor(x + Fraction(1, 2)) if x >= 0 else -math.floor(-x + Fraction(1, 2))
+
+
+def tick_round(price: float | Fraction, day: dt.date | None = None) -> int:
+    tick = krx_tick(price, day)
+    return _round_half_up(_exact(price) / tick) * tick
+
+
+def base_close(close: float | int | Decimal, flu_rt_bp: float | int | Decimal, day: dt.date | None = None) -> int | None:
+    """t+1 의 ``supply_demand`` 한 행(close, flu_rt)에서 t(=``day``) 의 기준가 = 정규장 종가를 복원한다.
+
+    원값 ``close / (1 + flu_rt/1e4)`` 를 그 가격대 표 단위부터 1원까지 더 가는 격자로 반올림해 보며 flu_rt 를
+    ±0.5bp 안에서 재현하는 첫 값을 고른다(키움 flu_rt 는 반올림 — 2025-01~2026-09 99.92% 일치). 진짜 기준가가 굵은
+    격자 위에 있으면 그 반올림이 곧 진짜 값이고, 아니면 굵은 후보는 2bp 넘게 어긋나 flu_rt 를 못 맞춘다 — 그래서
+    시장 구분 없이 스팩·개편 전 코스닥도 맞는다. None: 1원 격자로도 못 맞추거나(기준가 재설정) 이웃 격자값도 맞아
+    유일하지 않다(flu_rt ≈ −100% 처럼 bp 정밀도가 호가단위보다 굵을 때).
+    SQL 판은 migration 031 ``krx_base_close`` — 같은 결과여야 한다.
+    """
+    if close is None or flu_rt_bp is None:
+        return None
+    c, f = _exact(close), _exact(flu_rt_bp)
+    if c <= 0 or f <= -10_000:
+        return None
+    raw = c * 10_000 / (10_000 + f)
+    std = krx_tick(raw, day)
+    for g in BASE_TICK_GRID:
+        if g > std:
+            continue
+        cand = _round_half_up(raw / g) * g
+        if cand > 0 and _reproduces(c, f, cand):
+            # 이웃 격자값도 맞추면 flu_rt 정밀도가 모자란 것(flu_rt ≈ −100% 등) — 고르지 않는다
+            if _reproduces(c, f, cand + g) or (cand > g and _reproduces(c, f, cand - g)):
+                return None
+            return cand
+    return None
+
+
+def _reproduces(close: Fraction, flu_rt_bp: Fraction, base: int) -> bool:
+    return abs((close / base - 1) * 10_000 - flu_rt_bp) <= FLU_RT_TOL_BP
+
+
+def derive_regular_close(
+    rows: Iterable[tuple[str, dt.date, float | None, float | None]],
+    base_resets: Iterable[tuple[str, dt.date]] = (),
+) -> dict[tuple[str, dt.date], tuple[int | None, str]]:
+    """migration 031 ``regular_close`` 뷰의 2026-09-14~ 갈래를 파이썬으로 — (code, date) → (정규장 종가, src).
+
+    ``rows``: ``supply_demand`` 키움 행 (code, date, close, flu_rt) — 거래일 달력도 이 날짜들로 만든다.
+    ``base_resets``: ``corporate_actions`` 에서 upd_rt ≠ 0 인 (code, 새 기준 첫 거래일).
+    src 는 identity·pending·no_next·gap·base_reset·unmatched(뜻은 031 머리말).
+    """
+    by_code: dict[str, list[tuple[dt.date, float | None, float | None]]] = {}
+    for code, day, close, flu in rows:
+        by_code.setdefault(code, []).append((day, close, flu))
+    days = sorted({d for series in by_code.values() for d, _, _ in series})
+    next_day = dict(zip(days, [*days[1:], None], strict=True))
+    resets = set(base_resets)
+    out: dict[tuple[str, dt.date], tuple[int | None, str]] = {}
+    for code, series in by_code.items():
+        series.sort(key=lambda r: r[0])
+        for i, (day, _, _) in enumerate(series):
+            nxt = series[i + 1] if i + 1 < len(series) else None
+            if next_day[day] is None:
+                out[code, day] = (None, "pending")
+            elif nxt is None:
+                out[code, day] = (None, "no_next")
+            elif nxt[0] != next_day[day]:
+                out[code, day] = (None, "gap")
+            elif (code, nxt[0]) in resets:
+                out[code, day] = (None, "base_reset")
+            else:
+                base = base_close(nxt[1], nxt[2], day)
+                out[code, day] = (base, "identity" if base is not None else "unmatched")
+    return out
 
 
 def check_base_price_identity(
@@ -155,12 +252,12 @@ def check_base_price_identity(
     """``regular_close``: prev_day 정규장 종가(분봉). ``next_rows``: day 의 (code, close, flu_rt)."""
     name = f"identity {prev_day}→{day}"
     pairs = 0
-    bad: list[tuple[str, float, int]] = []
+    bad: list[tuple[str, float, int | None]] = []
     for code, close, flu in next_rows:
         if code not in regular_close or close is None or flu is None or close <= 0:
             continue
         pairs += 1
-        implied = implied_prev_close(close, flu)
+        implied = base_close(close, flu, prev_day)
         if implied != regular_close[code]:
             bad.append((code, regular_close[code], implied))
     if pairs < min_pairs:
@@ -169,7 +266,7 @@ def check_base_price_identity(
             f"대조 표본 {pairs} < {min_pairs} — {prev_day} 분봉 종가 봉이나 {day} 수급이 반쪽이다",
         )
     rate = len(bad) / pairs
-    sample = ", ".join(f"{c} 분봉 {int(r):,} vs 복원 {i:,}" for c, r, i in bad[:5])
+    sample = ", ".join(f"{c} 분봉 {int(r):,} vs 복원 {'없음' if i is None else f'{i:,}'}" for c, r, i in bad[:5])
     detail = f"불일치 {len(bad)}/{pairs} = {rate:.2%} (문턱 {max_mismatch:.0%})" + (f"; 예 {sample}" if bad else "")
     if rate > max_mismatch:
         return CheckResult(
