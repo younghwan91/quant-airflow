@@ -112,6 +112,18 @@ CREATE TABLE IF NOT EXISTS daily_bars (
     PRIMARY KEY (code, date)
 );
 CREATE INDEX IF NOT EXISTS idx_db_date ON daily_bars(date);
+CREATE TABLE IF NOT EXISTS daily_bars_raw (
+    code        TEXT NOT NULL,
+    date        TEXT NOT NULL,
+    open        INTEGER,
+    high        INTEGER,
+    low         INTEGER,
+    close       INTEGER,
+    volume      INTEGER,
+    trade_value INTEGER,
+    source      TEXT NOT NULL DEFAULT 'kiwoom_raw',   -- upd_stkpc_tp=0 무수정(026)
+    PRIMARY KEY (code, date)
+);
 CREATE TABLE IF NOT EXISTS short_selling (
     code            TEXT NOT NULL,
     date            TEXT NOT NULL,
@@ -710,9 +722,14 @@ def upsert_supply_demand(con: Any, records: list[tuple]) -> int:
     return _upsert(con, "supply_demand", SUPPLY_DEMAND_COLUMNS, records)
 
 
-def upsert_daily_bars(con: Any, records: list[tuple]) -> int:
-    """Insert/replace daily_bars rows (tuples ordered by DAILY_BAR_COLUMNS)."""
-    return _upsert(con, "daily_bars", DAILY_BAR_COLUMNS, records)
+def upsert_daily_bars(con: Any, records: list[tuple], table: str = "daily_bars") -> int:
+    """Insert/replace daily_bars rows (tuples ordered by DAILY_BAR_COLUMNS).
+
+    ``table="daily_bars_raw"`` 는 무수정 주가(026) — 같은 컬럼, source 기본값만 다르다.
+    """
+    if table not in ("daily_bars", "daily_bars_raw"):
+        raise ValueError(f"unexpected table {table!r}")
+    return _upsert(con, table, DAILY_BAR_COLUMNS, records)
 
 
 _SHORT_SELLING_COLS = [

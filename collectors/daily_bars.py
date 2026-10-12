@@ -41,8 +41,8 @@ from .storage import (
 _CHART_KEY = "stk_dt_pole_chart_qry"
 
 
-def _has_any_rows(con: Any, code: str) -> bool:
-    return fetchone(con, "SELECT 1 FROM daily_bars WHERE code=? LIMIT 1", (code,)) is not None
+def _has_any_rows(con: Any, code: str, table: str = "daily_bars") -> bool:
+    return fetchone(con, f"SELECT 1 FROM {table} WHERE code=? LIMIT 1", (code,)) is not None  # noqa: S608 — 리터럴
 
 
 def codes_current_as_of(con: Any, table: str, market_latest: str) -> set[str]:
@@ -63,9 +63,9 @@ def codes_current_as_of(con: Any, table: str, market_latest: str) -> set[str]:
     return {r[0] for r in fetchall(con, sql, (market_latest,))}
 
 
-def _latest_date(con: Any, code: str) -> str | None:
+def _latest_date(con: Any, code: str, table: str = "daily_bars") -> str | None:
     """Most recent stored bar date for ``code`` (YYYYMMDD), or None if empty."""
-    row = fetchone(con, "SELECT MAX(date) FROM daily_bars WHERE code=?", (code,))
+    row = fetchone(con, f"SELECT MAX(date) FROM {table} WHERE code=?", (code,))  # noqa: S608 — 리터럴
     v = row[0] if row else None
     if v is None:
         return None
@@ -151,6 +151,7 @@ def collect(
     resume: bool = False,
     update: bool = False,
     progress_every: int = 50,
+    raw: bool = False,
 ) -> dict[str, int]:
     """Collect daily bars for ``stocks`` into the DB. Returns a summary dict.
 
@@ -162,7 +163,12 @@ def collect(
         update: Incremental mode — per stock, skip if already current and
             otherwise append only bars newer than the latest stored one
             (still one call/stock; a single call backfills multi-day gaps).
+        raw: 무수정 주가(``upd_stkpc_tp="0"``)를 ``daily_bars_raw`` 에 쓴다(migration 026).
+            기본(수정주가 → ``daily_bars``)은 수집 시점보다 앞선 병합·분할만큼 과거가 소급 조정돼
+            "그날 실제 가격 × 그날 주식수" 시총이 틀린다.
     """
+    table = "daily_bars_raw" if raw else "daily_bars"
+    upd = "0" if raw else "1"
     cutoff = days_ago(days)
     base_dt = time.strftime("%Y%m%d")
     # In update mode, learn the newest trading day once so we can skip stocks
@@ -175,14 +181,14 @@ def collect(
 
     for i, stock in enumerate(stocks, 1):
         code = stock["code"]
-        if resume and _has_any_rows(con, code):
+        if resume and _has_any_rows(con, code, table):
             stats["skipped"] += 1
             continue
         # Incremental: stop pulling at the last bar we already have; skip
         # entirely if already at the latest trading day (nothing new).
         lower = ""
         if update:
-            latest = _latest_date(con, code)
+            latest = _latest_date(con, code, table)
             if latest is not None and latest >= market_latest:
                 stats["skipped"] += 1
                 continue
@@ -196,7 +202,7 @@ def collect(
                     next_key=next_key,
                     stk_cd=code,
                     base_dt=base_dt,
-                    upd_stkpc_tp="1",
+                    upd_stkpc_tp=upd,
                 )
                 stop = False
                 for row in resp.get(_CHART_KEY, []) or []:
@@ -215,7 +221,7 @@ def collect(
                 if stop or resp_cont != "Y" or not resp_next:
                     break
                 cont_yn, next_key = "Y", resp_next
-            stats["rows"] += upsert_daily_bars(con, records)
+            stats["rows"] += upsert_daily_bars(con, records, table)
             stats["done"] += 1
         except KiwoomAPIError as e:
             stats["failed"] += 1
@@ -248,16 +254,27 @@ def main() -> int:
         "--update", action="store_true",
         help="증분: 종목별 최신봉 이후만 추가, 이미 최신이면 건너뜀 (일일 갱신)",
     )
+    parser.add_argument(
+        "--raw", action="store_true",
+        help="무수정 주가(upd_stkpc_tp=0)를 daily_bars_raw 에 (migration 026)",
+    )
+    parser.add_argument(
+        "--codes", default="",
+        help="쉼표로 준 코드만(ETF 등) — 상장 종목 유니버스·stocks 마스터를 건드리지 않는다",
+    )
     args = parser.parse_args()
 
     con, api = open_session(args)
-    stocks = build_universe(api, con, args)
+    if args.codes:
+        stocks = [{"code": c.strip(), "name": c.strip()} for c in args.codes.split(",") if c.strip()]
+    else:
+        stocks = build_universe(api, con, args)
     print_banner(args, stocks,
                  "전체(~2.5년)" if args.days == 0 else f"최근 {args.days}일")
 
     stats = collect(
         api, con, stocks, days=args.days, max_pages=args.max_pages,
-        resume=args.resume, update=args.update,
+        resume=args.resume, update=args.update, raw=args.raw,
     )
 
     api.close()

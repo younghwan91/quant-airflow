@@ -32,6 +32,21 @@ CREATE TABLE IF NOT EXISTS daily_bars (
 -- 쪼갬 — 청크 메타데이터 오버헤드 + 백테스트의 여러 해 스캔이 느려짐. 1년 청크로.
 SELECT create_hypertable('daily_bars', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
 
+-- 키움 무수정 주가 일봉(026) — daily_bars 는 수집 시점 수정주가라 과거가 소급 조정돼 있다. 시총은 이것 × 주식수.
+CREATE TABLE IF NOT EXISTS daily_bars_raw (
+    code        TEXT NOT NULL,
+    date        DATE NOT NULL,
+    open        BIGINT,
+    high        BIGINT,
+    low         BIGINT,
+    close       BIGINT,
+    volume      BIGINT,
+    trade_value BIGINT,
+    source      TEXT NOT NULL DEFAULT 'kiwoom_raw',
+    PRIMARY KEY (code, date)
+);
+SELECT create_hypertable('daily_bars_raw', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
+
 CREATE TABLE IF NOT EXISTS supply_demand (
     code         TEXT NOT NULL,
     date         DATE NOT NULL,
@@ -448,6 +463,8 @@ ALTER TABLE disclosures SET (timescaledb.compress, timescaledb.compress_segmentb
 -- 실제 DB 가 어긋날 수 있다는 게 교훈이다 — init 스크립트는 최초 1회만 돈다.
 
 SELECT add_compression_policy('daily_bars', INTERVAL '30 days');
+ALTER TABLE daily_bars_raw SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
+SELECT add_compression_policy('daily_bars_raw', INTERVAL '30 days');
 SELECT add_compression_policy('supply_demand', INTERVAL '30 days');
 SELECT add_compression_policy('short_selling', INTERVAL '30 days');
 SELECT add_compression_policy('credit_balance', INTERVAL '30 days');
