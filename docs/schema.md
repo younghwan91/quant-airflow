@@ -205,6 +205,7 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 | `033_program_trading` | `program_trading` 신설 — 종목별 일별 프로그램 매매(swing-it 요청, 2016-09~) |
 | `034_earnings_dart_doc` | `earnings_dart_doc` 신설 — 2007~2015 DART 정기보고서 원문 파싱 실적·발행주식총수(2006~2016 이력 확장 완료 조건 C, 2016 겹침 97.9%). `earnings` 와 정의가 달라 섞지 않는다 |
 | `035_naver_research_prev_goal_null` | `naver_research_reports.prev_goal_price` 전부 NULL — 원천 값이 전 거래일 종가(price_at_write 와 100% 같음)였다(사용자 승인 10-13) |
+| `036_daily_bars_adj_v2_build_2008` | `daily_bars_adj_v2_build` 재생성 — 원주가 2007-11-22~ 확장분까지 v2 전량 재계산(검사 4종 뒤 이름 교체, 운영 표 제자리 갱신 금지) |
 
 > ⚠️ 001 은 코드가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이 `daily_earnings` 가
 > 초록불이었던 건 비수기라 `rows=0` 이어서 DB 를 건드리기 전에 빠져나갔기 때문이지,
