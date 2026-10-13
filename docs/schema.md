@@ -15,7 +15,7 @@
 | `daily_bars_delisted_naver` | **폐지 종목** 일봉 2006~폐지일(028, 네이버 siseJson). **수정가격**(`source='naver_adj'`) — 폐지 종목은 수정 이벤트가 없어 원 가격으로 못 돌린다(시총에 주의). `trade_value` 는 close×volume 근사(백만원). 2016-09 이후는 `daily_bars` 의 naver 행과 겹친다. `daily_bars` 에 넣지 않은 이유: 2016 이전이 폐지 종목만인 유니버스가 된다 |
 | `kind_delistings` | KIND 상장폐지 현황 원문(028) — 코드·폐지일·사유, 1991~. 2006~2008 이 연 16~35건뿐이라 완전하지 않다 — 폐지 유니버스는 이것 ∪ `delisted_stocks` 로 |
 | `naver_investor_trend` | 네이버 m.stock 일별 **외국인 보유율(%)·외국인/기관/개인 순매수(주)**·원 종가·거래량(032, `naver_mstock trend`) — 2008-01~, 폐지 종목 포함(백필 전용, 매일 수집 아님). 순매수는 네이버 정의(합 0 맞춤)라 `supply_demand` 키움 값과 다르다. 옛 구간 개인은 NULL |
-| `naver_research_reports` | 네이버 증권사 리포트 1건 1행 — 날짜·증권사·제목·의견·목표가(032, `naver_mstock research`). `write_date` 는 날짜만(시각 없음 → as-of 는 다음 거래일). EPS 컨센서스 이력은 무료 원천이 없어 없다 |
+| `naver_research_reports` | 네이버 증권사 리포트 1건 1행 — 날짜·증권사·제목·의견·목표가(032, `naver_mstock research`). `write_date` 는 날짜만(시각 없음 → as-of 는 다음 거래일). `price_at_write` = 작성일 **전 거래일 종가**(2020~). `prev_goal_price` 는 **항상 NULL** — 원천 `prevGoalPrice` 가 직전 목표가가 아니라 전 거래일 종가라 버린다(035); 직전 목표가는 같은 (code, broker) 의 이전 날짜 리포트에서. `broker` 는 네이버 라벨이라 게시 당시 이름과 지금 이름이 섞여 있다(현대차증권·DB금융투자·신한투자증권·하나증권은 옛 시기도 지금 이름). 대형사(삼성 2023-06~·NH·KB) 리포트는 거의 없다. `research_id` 는 네이버 게시 순번(날짜와 0.4% 어긋남, 같은 날 안의 순서는 발간 시각이 아니다). 매일 05:40 `daily_naver_research` 가 최근 10일 증분. EPS 컨센서스 이력은 무료 원천이 없어 없다 |
 | `program_trading` | 키움 ka90013 종목별 일별 **프로그램 매매 합계**(033) — 매수·매도·순매수 금액(백만원)·수량(주). 차익·비차익 분리는 TR 에 없다. 2016-09~ 백필(`flow_history --what program`), **상장 생존 종목만**(폐지 코드는 키움이 빈 응답) |
 | `daily_bars_adj_v2` | **원주가 × 이벤트 누적계수** 수정 일봉(029·030, `collectors/adjusted_v2.py`) — `daily_bars_raw` × `corporate_actions`(`upd_rt`≠0 전부 + 키움이 빠뜨린 날은 `daily_bars`÷원주가 비율 계단으로 추정 83건), 2026-09-14~ OHLCV 는 분봉 09:00~15:32(KRX 정규장 — 일봉 종가는 KRX 애프터마켓 20:00 까지의 통합값), 폐지 종목은 `daily_bars_delisted_naver` 수정가격 그대로. `raw_close` = 그날 KRX 원 종가(시총용, 폐지는 NULL), `factor`, `close_src`(kiwoom_raw·minute_krx·halted(09-14~ 거래정지일, 일봉 그대로)·naver_adj·no_krx_source·minute_basis_mismatch — 뒤 둘은 OHLCV NULL). 합격 검사 4종(swing-it 87955ba) 결과는 030 머리말. 2016-09-05~, 아직 매일 갱신하지 않는다(재계산은 `python -m collectors.adjusted_v2`) |
 | `daily_bars_adjusted` | 액면분할 백조정 일봉. 평일 `daily_price_adjust` + 토요일 `weekly_price_adjust` 가 **전량 재계산**한다(back-adjust 는 종목별 전체 이력을 봐야 해서 증분이 불가능하다 — 실측 6분 23초 / 피크 RSS 5.2GB). `source` 는 `daily_bars` 에서 전파. `daily_bars` 를 그대로 조정하므로 **2026-09-14~ 고가·저가·종가·거래량은 KRX 애프터마켓 포함 통합값, 시가만 정규장**(아래 [애프터마켓](#2026-09-14-krx-애프터마켓--일봉수급은-정규장-값이-아니다)) |
@@ -204,6 +204,7 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 | `032_naver_mstock` | `naver_investor_trend`·`naver_research_reports` 신설 — 2008~ 수급·보유율·리포트 목표가(swing-it 요청). 키움 ka10008 은 50일, 옛 frgn.naver 는 개편으로 사라짐 |
 | `033_program_trading` | `program_trading` 신설 — 종목별 일별 프로그램 매매(swing-it 요청, 2016-09~) |
 | `034_earnings_dart_doc` | `earnings_dart_doc` 신설 — 2007~2015 DART 정기보고서 원문 파싱 실적·발행주식총수(2006~2016 이력 확장 완료 조건 C, 2016 겹침 97.9%). `earnings` 와 정의가 달라 섞지 않는다 |
+| `035_naver_research_prev_goal_null` | `naver_research_reports.prev_goal_price` 전부 NULL — 원천 값이 전 거래일 종가(price_at_write 와 100% 같음)였다(사용자 승인 10-13) |
 
 > ⚠️ 001 은 코드가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이 `daily_earnings` 가
 > 초록불이었던 건 비수기라 `rows=0` 이어서 DB 를 건드리기 전에 빠져나갔기 때문이지,

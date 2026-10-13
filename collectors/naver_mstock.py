@@ -11,6 +11,11 @@
 - ``/api/research/stock/{code}?pageSize=100&page=N`` 리포트 목록(삼성전자 2013-04 까지), 상세
   ``/api/research/stock/{code}/{researchId}`` 에 opinion·goalPrice. 게시 **시각은 없다** — write_date 는 날짜뿐이라
   as-of 는 다음 거래일로 쓰는 게 안전하다. EPS 컨센서스 이력은 무료 원천이 없다.
+  상세의 ``prevGoalPrice`` 는 이름과 달리 직전 목표가가 아니라 ``priceAtWriteDate``(작성일 **전 거래일 종가**)와
+  같은 값이다 — 2026-10-13 실측 37,518행 100% 일치(005930 74557: 75,300 = 06-04 종가). 직전 목표가는 원천에
+  없으므로 ``prev_goal_price`` 는 NULL 로 둔다(035). 필요하면 같은 (code, broker) 의 이전 날짜 리포트에서 만든다.
+- ``/api/research/company?pageSize=100&page=N`` — 전 종목 리포트 목록(최신순). 매일 증분(``research-daily``)은
+  이것만 최근 며칠치 넘긴다 — 종목별 목록 3,700회 대신 몇 회.
 
 대상 = stocks(6자리) ∪ daily_bars_delisted_naver 코드(028 의 폐지 유니버스). 조회한 코드는 backfill_markers 로
 남겨 재실행 때 건너뛴다(자료 유무 무관).
@@ -18,6 +23,7 @@
 CLI:
     python -m collectors.naver_mstock trend --db <DSN>               # 2008-01~ 전 종목
     python -m collectors.naver_mstock research --db <DSN>
+    python -m collectors.naver_mstock research-daily --db <DSN> --days 10   # daily_naver_research DAG
     python -m collectors.naver_mstock trend --db <DSN> --codes 005930 --refetch
 """
 
@@ -28,7 +34,7 @@ import json
 import time
 import urllib.error
 import urllib.request
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from .storage import _upsert, checked_codes, connect, default_db_path, fetchall, mark_checked
@@ -123,7 +129,7 @@ def parse_research(item: dict, detail: dict | None) -> tuple:
     rc = (detail or {}).get("researchContent") or {}
     return (int(item["researchId"]), item.get("itemCode"), item.get("itemName"), item.get("brokerName"),
             item.get("writeDate"), item.get("title"), item.get("category"),
-            rc.get("opinion") or None, _num(rc.get("goalPrice")), _num(rc.get("prevGoalPrice")),
+            rc.get("opinion") or None, _num(rc.get("goalPrice")), None,  # prevGoalPrice = 전일 종가(머리말)
             _num(rc.get("priceAtWriteDate")), rc.get("attachUrl"), "naver_research")
 
 
@@ -145,6 +151,40 @@ def fetch_research(code: str, known: set[int], *, since: str = SINCE, get=get_js
         if len(items) < 100 or min(it.get("writeDate") or "" for it in items) < since:
             break
     return out
+
+
+def fetch_recent_research(known: set[int], since: str, *, get=get_json, sleep: float = 0.2,
+                          max_pages: int = 30) -> tuple[list[tuple], int]:
+    """전 종목 목록을 최신부터 ``since`` 까지 넘기며 ``known`` 에 없는 것만 상세를 받는다. (행, 목록 건수)."""
+    out, listed = [], 0
+    for page in range(1, max_pages + 1):
+        items = get(f"/research/company?pageSize=100&page={page}")
+        time.sleep(sleep)
+        if not items:
+            break
+        listed += len(items)
+        for it in items:
+            code = it.get("itemCode") or ""
+            if (it.get("writeDate") or "") < since or int(it["researchId"]) in known or not (len(code) == 6 and code.isdigit()):
+                continue
+            detail = get(f"/research/stock/{code}/{it['researchId']}")
+            time.sleep(sleep)
+            out.append(parse_research(it, detail))
+        if len(items) < 100 or min(it.get("writeDate") or "" for it in items) < since:
+            break
+    return out, listed
+
+
+def run_daily(con: Any, *, days: int = 10, sleep: float = 0.2, get=get_json) -> dict[str, int]:
+    """최근 ``days`` 일 리포트 증분. 새 리포트 0건은 휴일에 정상이지만 목록 자체가 비면 원천 장애다."""
+    since = (date.today() - timedelta(days=days)).isoformat()
+    known = {r[0] for r in fetchall(con, "SELECT research_id FROM naver_research_reports WHERE write_date >= ?",
+                                    (since,))}
+    recs, listed = fetch_recent_research(known, since, get=get, sleep=sleep)
+    if listed == 0:
+        raise SystemExit("리포트 목록 0건 — 빈 응답을 성공으로 넘기지 않는다(엔드포인트가 바뀌었는지 확인)")
+    rows = _upsert(con, "naver_research_reports", RESEARCH_COLUMNS, recs, pk_cols=("research_id",))
+    return {"listed": listed, "new": len(recs), "rows": rows, "since": since}
 
 
 def universe(con: Any) -> list[str]:
@@ -182,13 +222,17 @@ def run(con: Any, kind: str, codes: list[str], *, refetch: bool = False, sleep: 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("kind", choices=["trend", "research"])
+    ap.add_argument("kind", choices=["trend", "research", "research-daily"])
     ap.add_argument("--db", default=str(default_db_path()))
     ap.add_argument("--codes", default="")
     ap.add_argument("--refetch", action="store_true", help="마커를 무시하고 다시 받는다")
     ap.add_argument("--sleep", type=float, default=0.2)
+    ap.add_argument("--days", type=int, default=10, help="research-daily: 최근 며칠치를 다시 훑나")
     a = ap.parse_args()
     con = connect(a.db)
+    if a.kind == "research-daily":
+        print(f"✅ 완료: {run_daily(con, days=a.days, sleep=a.sleep)}")
+        return
     codes = [c for c in a.codes.split(",") if c] or universe(con)
     stats = run(con, a.kind, codes, refetch=a.refetch, sleep=a.sleep)
     print(f"✅ 완료: {stats}")

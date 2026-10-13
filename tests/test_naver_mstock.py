@@ -42,7 +42,7 @@ def test_fetch_research_skips_known_and_reads_goal_price():
     lst = [{"researchId": 2, "itemCode": "005930", "itemName": "삼성전자", "brokerName": "DS", "writeDate": "2026-10-12",
             "title": "t", "category": "종목분석"},
            {"researchId": 1, "itemCode": "005930", "writeDate": "2026-10-01"}]
-    detail = {"researchContent": {"opinion": "매수", "goalPrice": "530000", "prevGoalPrice": "", "priceAtWriteDate": "268500",
+    detail = {"researchContent": {"opinion": "매수", "goalPrice": "530000", "prevGoalPrice": "268500", "priceAtWriteDate": "268500",
                                   "attachUrl": "u"}}
 
     def get(path):
@@ -59,3 +59,48 @@ def test_run_marks_codes_and_resumes(tmp_path, monkeypatch):
     assert nm.run(con, "trend", ["005930", "000660"], sleep=0)["rows"] == 2
     assert nm.run(con, "trend", ["005930", "000660"], sleep=0)["skipped"] == 2
     assert con.execute("SELECT foreign_hold_ratio FROM naver_investor_trend WHERE code='000660'").fetchone()[0] == 50.76
+
+
+def test_prev_goal_price_is_never_stored_because_source_sends_prior_close():
+    # 원천 prevGoalPrice = priceAtWriteDate(전 거래일 종가) — 직전 목표가로 오해되지 않게 NULL(035)
+    row = nm.parse_research({"researchId": 74557, "itemCode": "005930", "writeDate": "2024-06-05"},
+                            {"researchContent": {"goalPrice": "110000", "prevGoalPrice": "75300",
+                                                 "priceAtWriteDate": "75300"}})
+    assert row[nm.RESEARCH_COLUMNS.index("prev_goal_price")] is None
+    assert row[nm.RESEARCH_COLUMNS.index("price_at_write")] == 75300
+
+
+def _company(rid, wd, code="005930"):
+    return {"researchId": rid, "itemCode": code, "itemName": "n", "brokerName": "b", "writeDate": wd,
+            "title": "t", "category": "종목분석"}
+
+
+def test_fetch_recent_research_pages_until_since_and_skips_known():
+    pages = {1: [_company(10 + i, "2026-10-13") for i in range(98)] + [_company(9, "2026-10-12"), _company(8, "2026-10-12")],
+             2: [_company(7, "2026-10-12"), _company(6, "2026-10-01", code="KR0001")] + [_company(5, "2026-09-01")] * 98}
+    calls = []
+
+    def get(path):
+        calls.append(path)
+        if path.startswith("/research/company"):
+            return pages.get(int(path.split("page=")[1]))
+        return {"researchContent": {"goalPrice": "1"}}
+
+    recs, listed = nm.fetch_recent_research({9}, "2026-10-02", get=get, sleep=0)
+    assert listed == 200 and sum(c.startswith("/research/company") for c in calls) == 2
+    ids = {r[0] for r in recs}
+    assert 9 not in ids and 8 in ids and 7 in ids and 6 not in ids and 5 not in ids and len(ids) == 100
+
+
+def test_run_daily_raises_on_empty_list_and_upserts(tmp_path):
+    import pytest
+    con = connect(tmp_path / "t.db")
+    with pytest.raises(SystemExit):
+        nm.run_daily(con, sleep=0, get=lambda p: [])
+    today = __import__("datetime").date.today().isoformat()
+
+    def get(path):
+        return [_company(1, today)] if path.startswith("/research/company") else {"researchContent": {"goalPrice": "5"}}
+
+    assert nm.run_daily(con, sleep=0, get=get)["rows"] == 1
+    assert nm.run_daily(con, sleep=0, get=get)["new"] == 0          # 이미 있는 id 는 상세를 다시 받지 않는다

@@ -110,8 +110,8 @@ CREATE TABLE IF NOT EXISTS naver_research_reports (
     category        TEXT,
     opinion         TEXT,
     goal_price      BIGINT,
-    prev_goal_price BIGINT,
-    price_at_write  BIGINT,
+    prev_goal_price BIGINT,          -- 항상 NULL: 원천 prevGoalPrice = 전 거래일 종가(035)
+    price_at_write  BIGINT,          -- 작성일 전 거래일 종가(2020~)
     attach_url      TEXT,
     source          TEXT NOT NULL DEFAULT 'naver_research',
     fetched_at      TIMESTAMPTZ NOT NULL DEFAULT now()

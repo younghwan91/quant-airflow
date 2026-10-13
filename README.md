@@ -194,6 +194,7 @@ flowchart LR
 | `daily_news` | 평일 10:05 · 16:05 | 토스·DART 뉴스/공시 수집 + LLM 판단(news_judgments) |
 | `premarket_news_judgment` | 평일 08:45 | daily_news와 동일 수집 — 개장 전 시가 진입 판단용 |
 | `daily_toss_company_news` | 평일 17:10 | 토스 **종목별** 뉴스 피드(전 거래일 거래대금 상위 300) → news_articles + news_company_feed. 스윙 연구·daytrade-it 전진 홀드아웃용(2023-03-16~ 아카이브는 015 로 이전) |
+| `daily_naver_research` | 매일 05:40 | 네이버 증권사 리포트(의견·목표가) 최근 10일 증분 → naver_research_reports. swing-it 07:43 전진 팔용 |
 | `earnings_backfill` | 일 10:00 | DART 실적 전체 이력 백필 |
 | `weekly_history_backfill` | 일 11:00 | 업종지수·공매도·신용 히스토리 깊이 재수집 |
 | `monthly_listed_shares_backfill` | 매월 1일 10:20 | DART 상장주식수 과거 백필(2016~2025, 생존편향 3층 중 "주식수"를 채우는 실제 DAG) |
