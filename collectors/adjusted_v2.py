@@ -14,6 +14,7 @@ KRX 애프터마켓(16:00~20:00, 2026-09-14~) 20:00 마지막가다(종목-일 8
   09-14 이전 한 달로 검증: 마지막 봉 종가 = 일봉 종가 99.7%, 시가 99.0%, 고저 99.2%, 거래량 중앙 비율 0.9994.
   분봉 시가가 원주가 시가와 0.5% 넘게 다르면(분봉이 수집 뒤 소급 조정된 경우) 쓰지 않는다 → ``close_src``
   'minute_basis_mismatch', 분봉이 아예 없으면 'no_krx_source' — 둘 다 OHLCV 를 NULL 로 둔다(틀린 값보다 없는 값).
+  KRX 상장 전 장외 시세(키움이 같은 코드로 주는 K-OTC·프리보드)는 'pre_listing' 으로 같은 처리(``listing_start``).
   거래정지일(거래량 0)은 체결이 없어 일봉 그대로 둔다('halted').
 - **폐지 종목 = daily_bars_delisted_naver(수정가격).** 키움이 폐지 종목 원주가·이벤트를 안 주므로 계수를 만들
   수 없다 — 네이버 수정가격을 그대로 넣고 ``factor``·``raw_close`` 는 NULL, ``close_src``='naver_adj'.
@@ -128,9 +129,24 @@ def infer_events(rows: list[tuple], kiwoom_adj: dict[date, float], events: dict[
     return out
 
 
+def listing_start(raw_dates: list[date], ref_dates: list[date]) -> date | None:
+    """KRX 상장 첫날 — 키움 원주가가 네이버(KRX) 시세보다 일주일 넘게 먼저 시작하면 그 앞은 장외 시세다.
+
+    키움 ka10081 은 K-OTC(2014-08-25~)·프리보드 시절 시세를 같은 코드로 준다: 018260 삼성SDS 원주가 2014-08-25~,
+    KRX 상장 2014-11-14. 2026-10-14 실측 8종목 2,606행(046120 오르비텍 2007-11~2010-06 하루 수백 주). 네이버
+    siseJson(``daily_bars_listed_naver``)은 KRX 상장일부터 준다. 두 원천이 다 있고 차이가 7일 넘을 때만 자른다.
+    """
+    if not raw_dates or not ref_dates:
+        return None
+    first = min(ref_dates)
+    return first if (first - min(raw_dates)).days > 7 else None
+
+
 def build_code(code: str, rows: list[tuple], events: dict[date, float],
-               minutes: dict[tuple[str, date], tuple]) -> list[tuple]:
-    out = []
+               minutes: dict[tuple[str, date], tuple], start: date | None = None) -> list[tuple]:
+    """``start``(KRX 상장 첫날) 앞 행은 지우지 않고 OHLCV NULL · close_src 'pre_listing' 으로 둔다(틀린 값보다 없는 값)."""
+    out = [(code, r[0], *([None] * 8), "pre_listing", "kiwoom_raw") for r in rows if start and r[0] < start]
+    rows = [r for r in rows if not start or r[0] >= start]
     for r in adjust(rows, events):
         src = "kiwoom_raw"
         if r[0] >= KRX_ONLY_FROM:
@@ -167,7 +183,7 @@ def collect(con: Any, codes: list[str] | None = None, table: str = TABLE) -> dic
     if codes:
         listed = [c for c in listed if c in codes]
         delisted = [c for c in delisted if c in codes]
-    stats = {"listed": 0, "delisted": 0, "rows": 0, "inferred": 0}
+    stats = {"listed": 0, "delisted": 0, "rows": 0, "inferred": 0, "pre_listing": 0}
     t0 = time.time()
     for n, code in enumerate(listed + delisted, 1):
         if n <= len(listed):
@@ -181,11 +197,16 @@ def collect(con: Any, codes: list[str] | None = None, table: str = TABLE) -> dic
             for d, c in fetchall(con, "SELECT date, close FROM daily_bars_listed_naver WHERE code = %s AND close > 0",
                                  (code,)):
                 kiwoom_adj.setdefault(d, float(c))
-            inferred = infer_events(rows, kiwoom_adj, events)
+            start = listing_start([r[0] for r in rows], [d for d, in fetchall(
+                con, "SELECT date FROM daily_bars_listed_naver WHERE code = %s", (code,))])
+            if start:
+                print(f"  상장 전 장외 시세 {code} ~{start} {sum(r[0] < start for r in rows)}행 → pre_listing", flush=True)
+                stats["pre_listing"] += 1
+            inferred = infer_events([r for r in rows if not start or r[0] >= start], kiwoom_adj, events)
             for d, rt in sorted(inferred.items()):
                 print(f"  추정 이벤트 {code} {d} upd_rt={rt:+.2f}%", flush=True)
             stats["inferred"] += len(inferred)
-            recs = build_code(code, rows, {**events, **inferred}, minutes)
+            recs = build_code(code, rows, {**events, **inferred}, minutes, start)
             stats["listed"] += 1
         else:
             rows = fetchall(con, "SELECT date, open, high, low, close, volume, trade_value"

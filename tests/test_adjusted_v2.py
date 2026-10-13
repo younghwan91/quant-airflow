@@ -72,3 +72,17 @@ def test_infer_events_ignores_seam_and_real_moves():
 def test_krx_patch_keeps_halted_day_without_minutes():
     row = (D(2026, 10, 8), 1000.0, 1000.0, 1000.0, 1000.0, 0, 0, 1000, 1.0)
     assert av.krx_patch(row, None) == (row, "halted")
+
+
+def test_listing_start_cuts_only_when_raw_starts_a_week_before_krx():
+    raw = [D(2014, 8, 25), D(2014, 11, 14)]
+    assert av.listing_start(raw, [D(2014, 11, 14)]) == D(2014, 11, 14)       # 018260 삼성SDS K-OTC
+    assert av.listing_start(raw, [D(2014, 8, 27)]) is None                   # 일주일 안 — 같은 시작으로 본다
+    assert av.listing_start(raw, []) is None                                 # 네이버 기준 없음 — 자르지 않는다
+
+
+def test_build_code_nulls_pre_listing_rows_and_keeps_them():
+    rows = [(D(2014, 8, 25), 50, 50, 50, 50, 10, 1), (D(2014, 11, 14), 300, 330, 290, 320, 1000, 300)]
+    out = av.build_code("018260", rows, {}, {}, start=D(2014, 11, 14))
+    assert out[0] == ("018260", D(2014, 8, 25), *([None] * 8), "pre_listing", "kiwoom_raw")
+    assert out[1][5] == 320 and out[1][-2] == "kiwoom_raw"
