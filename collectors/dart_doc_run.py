@@ -763,7 +763,8 @@ def coverage(a: argparse.Namespace) -> int:  # pragma: no cover — DB·캐시
     - 상장 종목: ``daily_bars_raw``(trade_value 백만원)가 그해에 있으면 그것, 없으면 ``naver_investor_trend``
       종가×거래량 근사(``가격`` 열에 ``근사`` 표시).
     - 폐지 종목: ``daily_bars_delisted_naver``(trade_value 자체가 종가×거래량 근사, 백만원 — 늘 ``근사``).
-    열: 분모·실적 있는 종목(비율)·12월 결산 아님 종목·그 종목-일 비중·매핑 없음·보고서 없음·미실행(list 캐시 없음).
+    열: 분모·실적 있는 종목(비율, 우선주는 보통주 실적이 있으면 있음)·알려진 비커버리지(12월 결산 아님·외국 기업 9xxxxx·
+    매핑 없음·보고서 없음)를 뺀 비율·12월 결산 아님 종목·그 종목-일 비중·미실행(list 캐시 없음).
     12월 결산 여부·보고서 유무는 run 이 쓴 list.json 캐시(사업보고서 기준월)로 본다.
     """
     import psycopg2
@@ -817,11 +818,18 @@ def coverage(a: argparse.Namespace) -> int:  # pragma: no cover — DB·캐시
 
     table = []
     for (y, grp), dmap in sorted(days.items()):
-        c: Counter = Counter()
+        c: Counter = Counter({k: 0 for k in ("n", "with_rows", "pref_via_common", "foreign", "no_map", "not_run",
+                                              "no_report", "non_dec", "non_dec_days")})
         tot_days = sum(dmap.values())
         for code, n in dmap.items():
             c["n"] += 1
-            c["with_rows"] += (code, y) in have
+            # 우선주(끝자리 0 아님)는 같은 회사 보통주 공시로 실적이 있다 — 2026-10-14 폐지 잔여 177건 전부 이것
+            via_common = code[-1] != "0" and (code[:5] + "0", y) in have
+            c["with_rows"] += (code, y) in have or via_common
+            c["pref_via_common"] += via_common and (code, y) not in have
+            if code.startswith("9") and (code, y) not in have:
+                c["foreign"] += 1   # 900xxx 외국 기업(외화 재무제표) — 파서 대상 아님
+                continue
             if not corp.get(code):
                 c["no_map"] += 1
                 continue
@@ -835,17 +843,19 @@ def coverage(a: argparse.Namespace) -> int:  # pragma: no cover — DB·캐시
             elif y not in dec:
                 c["non_dec"] += 1
                 c["non_dec_days"] += n
+        known = c["non_dec"] + c["no_map"] + c["no_report"] + c["foreign"]
         table.append({"year": y, "group": grp, "price_src": src_used.get((y, grp)), **c,
                       "with_rows_pct": round(c["with_rows"] / c["n"], 4) if c["n"] else None,
+                      "with_rows_pct_ex_known": round(c["with_rows"] / (c["n"] - known), 4) if c["n"] > known else None,
                       "non_dec_day_share": round(c["non_dec_days"] / tot_days, 4) if tot_days else None})
     if a.out:
         Path(a.out).write_text(json.dumps(table, ensure_ascii=False, indent=1))
-    print(f"{'연도':>4} {'구분':<8} {'분모':>5} {'실적있음':>8} {'비율':>6} {'비12월':>6} {'비12월 종목-일':>12} "
-          f"{'매핑없음':>8} {'보고서없음':>9} {'미실행':>6}  가격")
+    print(f"{'연도':>4} {'구분':<8} {'분모':>5} {'실적있음':>8} {'비율':>6} {'제외후':>6} {'비12월':>6} {'비12월 종목-일':>12} "
+          f"{'외국':>4} {'매핑없음':>8} {'보고서없음':>9} {'미실행':>6}  가격")
     for r in table:
         print(f"{r['year']:>4} {r['group']:<8} {r['n']:>5} {r['with_rows']:>8} {r['with_rows_pct'] or 0:>6.1%} "
-              f"{r['non_dec']:>6} {r['non_dec_day_share'] or 0:>12.1%} {r['no_map']:>8} {r['no_report']:>9} "
-              f"{r['not_run']:>6}  {r['price_src']}")
+              f"{r['with_rows_pct_ex_known'] or 0:>6.1%} {r['non_dec']:>6} {r['non_dec_day_share'] or 0:>12.1%} "
+              f"{r['foreign']:>4} {r['no_map']:>8} {r['no_report']:>9} {r['not_run']:>6}  {r['price_src']}")
     return 0
 
 
