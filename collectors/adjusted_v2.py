@@ -8,7 +8,8 @@ KRX 애프터마켓(16:00~20:00, 2026-09-14~) 20:00 마지막가다(종목-일 8
   ``date`` 는 새 기준 첫 거래일이므로 그날 자신은 곱하지 않는다. 거래량은 계수로 나눈다(주식수 기준을 맞춘다).
   종류(kind)로 거르지 않는다 — 배당락(4)으로 찍힌 행도 ``upd_rt`` ≠ 0 이면 실제 시가 갭이 그만큼 있다(주식배당,
   2026-10-13 실측 202건 중 200건 설명). 현금배당은 ``upd_rt`` 가 0 이라 곱해도 그대로다. 키움이 이벤트를 빠뜨린
-  날은 키움 수정주가(daily_bars) ÷ 원주가 비율의 계단으로 채운다(``infer_events`` — daily_bars 가 있는 2016-09~ 만).
+  날은 키움 수정주가(daily_bars) ÷ 원주가 비율의 계단으로 채운다(``infer_events``). daily_bars 가 없는 2016-09
+  이전은 같은 값을 주는 네이버 수정주가(``daily_bars_listed_naver``, 037)를 기준으로 쓴다.
 - **2026-09-14~ OHLCV = 분봉 09:00~15:32.** 종가는 15:32 까지 마지막 봉(동시호가 체결이 15:30~15:32 봉에 찍힌다).
   09-14 이전 한 달로 검증: 마지막 봉 종가 = 일봉 종가 99.7%, 시가 99.0%, 고저 99.2%, 거래량 중앙 비율 0.9994.
   분봉 시가가 원주가 시가와 0.5% 넘게 다르면(분봉이 수집 뒤 소급 조정된 경우) 쓰지 않는다 → ``close_src``
@@ -176,6 +177,10 @@ def collect(con: Any, codes: list[str] | None = None, table: str = TABLE) -> dic
                 con, "SELECT date, upd_rt FROM corporate_actions WHERE code = %s AND upd_rt <> 0", (code,))}
             kiwoom_adj = {d: float(c) for d, c in fetchall(
                 con, "SELECT date, close FROM daily_bars WHERE code = %s AND close > 0", (code,))}
+            # daily_bars 가 없는 2016-09 이전은 네이버 수정주가(같은 값, 037)를 기준으로 — 키움 값이 있는 날은 키움 우선
+            for d, c in fetchall(con, "SELECT date, close FROM daily_bars_listed_naver WHERE code = %s AND close > 0",
+                                 (code,)):
+                kiwoom_adj.setdefault(d, float(c))
             inferred = infer_events(rows, kiwoom_adj, events)
             for d, rt in sorted(inferred.items()):
                 print(f"  추정 이벤트 {code} {d} upd_rt={rt:+.2f}%", flush=True)

@@ -62,6 +62,21 @@ CREATE TABLE IF NOT EXISTS daily_bars_delisted_naver (
 );
 SELECT create_hypertable('daily_bars_delisted_naver', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
 
+-- 상장 종목 네이버 수정주가 2007-11~2016-09(037) — v2 이벤트 추정 기준(adjusted_v2.infer_events). 수익률 원천 아님.
+CREATE TABLE IF NOT EXISTS daily_bars_listed_naver (
+    code        TEXT NOT NULL,
+    date        DATE NOT NULL,
+    open        BIGINT,
+    high        BIGINT,
+    low         BIGINT,
+    close       BIGINT,
+    volume      BIGINT,
+    trade_value BIGINT,
+    source      TEXT NOT NULL DEFAULT 'naver_adj',
+    PRIMARY KEY (code, date)
+);
+SELECT create_hypertable('daily_bars_listed_naver', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
+
 -- KIND 상장폐지 현황 원문(028) — 폐지일·사유. 같은 코드가 두 번 폐지될 수 있어 PK 에 날짜.
 CREATE TABLE IF NOT EXISTS kind_delistings (
     code        TEXT NOT NULL,

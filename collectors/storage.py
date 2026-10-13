@@ -136,6 +136,18 @@ CREATE TABLE IF NOT EXISTS daily_bars_delisted_naver (
     source      TEXT NOT NULL DEFAULT 'naver_adj',       -- 폐지 종목 수정가격(028)
     PRIMARY KEY (code, date)
 );
+CREATE TABLE IF NOT EXISTS daily_bars_listed_naver (
+    code        TEXT NOT NULL,
+    date        TEXT NOT NULL,
+    open        INTEGER,
+    high        INTEGER,
+    low         INTEGER,
+    close       INTEGER,
+    volume      INTEGER,
+    trade_value INTEGER,
+    source      TEXT NOT NULL DEFAULT 'naver_adj',       -- 상장 종목 수정가격, v2 이벤트 추정 기준(037)
+    PRIMARY KEY (code, date)
+);
 CREATE TABLE IF NOT EXISTS program_trading (
     code         TEXT NOT NULL,
     date         TEXT NOT NULL,
@@ -587,6 +599,7 @@ CHECKED_NAVER_BARS = "naver_bars"
 CHECKED_NAVER_FLOW = "naver_flow"
 CHECKED_DART_SHARES = "dart_shares_delisted"
 CHECKED_DART_SHARES_LISTED = "dart_shares_listed"
+CHECKED_LISTED_NAVER = "listed_naver_ref"   # 037: 상장 종목 네이버 수정가 2007-11~2016-09 를 받아 봤다
 CHECKED_DELISTED_HIST = "delisted_hist_2006"   # 028: 2006~ 네이버 폐지 일봉을 받아 봤다(자료 유무 무관)
 CHECKED_DART_FILING_DATES = "dart_filing_dates"   # 2019~ 접수일을 다 훑었다(earnings_disclosures)
 
