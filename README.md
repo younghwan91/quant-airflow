@@ -24,7 +24,7 @@ compose 스택으로** 상시 돈다 — 한쪽을 내리고 올려도 다른 �
 |---|---|
 | `docker-compose.replica.yml` | TimescaleDB **PRIMARY**(:5433). 이름만 replica — 2026-09-11 `pg_promote()` 로 역할이 바뀌었고 볼륨·포트가 여러 DSN 에 박혀 있어 이름은 안 바꿨다. 역할은 `SELECT pg_is_in_recovery();`(false = PRIMARY)로 확인 |
 | `docker-compose.airflow.yml` | Airflow 4종. DB 는 이 파일에 없다 — `.env` 의 `TIMESCALE_HOST`/`TIMESCALE_PORT` 로 위 PRIMARY 에 붙는다 |
-| `docker-compose.timescale.yml` | 폐기된 trader 리플리카의 참고본. 지금 아무 데서도 띄우지 않는다 |
+| `docker-compose.timescale.yml` | 초기 DB 세팅(initdb) 참고본 |
 
 **DB 사본은 하나다** — 리플리카가 없어 두 번째 사본은 구글 드라이브 백업
 (`scripts/backup_to_gdrive.sh`, 이 호스트에서만 돈다)뿐이다.
@@ -59,24 +59,7 @@ TimescaleDB 는 LAN 에 열려 있어 다른 PC 도 읽기 전용으로 질의�
 `.env` 의 `KR_QUANT_DB`·`TIMESCALE_HOST`/`TIMESCALE_PORT` 를 본다 — 같은 호스트의 다른
 레포(scalp-it·daytrade-it 크론)도 이 파일에서 DSN 을 읽는다.
 
-<details>
-<summary>수집기를 다른 호스트로 떼어낼 때 (2026-09-11 ~ 10-06 의 trader 구성)</summary>
 
-그 호스트는 이 레포를 통째로 clone 하지 않고 리플리카용 compose·스키마와 알림 전송기만
-sparse 로 받았다:
-
-```bash
-git sparse-checkout set --no-cone /docker-compose.timescale.yml /sql/init_timescale.sql \
-  /scripts/alert.sh /scripts/cron_run.sh /collectors/alert.py /collectors/config.py /collectors/__init__.py
-```
-
-전체 레포는 항상 Airflow 호스트 쪽 clone 이 정본이다. sparse 체크아웃에서 만든 워크트리는
-그 패턴을 물려받으므로 거기서 테스트하려면 `git sparse-checkout disable` 한다. 백업은 그쪽에서
-돌리지 않는다 — 날짜 기반 파일명이라 낡은 스탠바이 덤프가 그날 파일을 덮어쓴다(2026-09-13 사고).
-리플리카가 WAL 스트리밍 끊김(`requested WAL segment ... has already been removed`)으로 죽었을
-때의 재시딩(`pg_basebackup -R -C -S <slot>`) 절차는 `docker-compose.replica.yml` 헤더에 있다.
-
-</details>
 
 ## 데이터 읽는 법
 
@@ -88,7 +71,7 @@ df = pd.read_sql("SELECT * FROM daily_bars_adjusted WHERE code = %s ORDER BY dat
                  conn, params=("005930",))
 ```
 
-분석·백테스트 코드는 [swing-it](https://github.com/younghwan91/swing-it)(구 kr-quant) 에 있으며 이
+분석·백테스트 코드는 [swing-it](https://github.com/younghwan91/swing-it) 에 있으며 이
 DB 를 읽기 전용으로 쓴다.
 
 ## 창고에 실제로 뭐가 들어 있나
@@ -161,16 +144,16 @@ flowchart LR
     SHARADAR --> DL --> BUILD --> DUCK
 
     subgraph CONSUMER["컨슈머(각자 전략 실행)"]
-        KRQ["kr-quant /<br/>portfolio-research<br/>(백테스트)"]
+        SW["swing-it /<br/>portfolio-research<br/>(백테스트)"]
         SCALP["scalp-it<br/>(실매매, news_judgments 소비)"]
         MACRO["macro-sector-agent<br/>(섹터 리서치)"]
     end
 
-    TS --> KRQ & SCALP & MACRO
-    DUCK --> KRQ
+    TS --> SW & SCALP & MACRO
+    DUCK --> SW
 ```
 
-이 저장소는 그 자체로 전략을 짜지 않는다 — 위 컨슈머들(`kr-quant`/`portfolio-research`
+이 저장소는 그 자체로 전략을 짜지 않는다 — 위 컨슈머들(`swing-it`/`portfolio-research`
 의 백테스트, `scalp-it`의 실매매, `macro-sector-agent`의 섹터 리서치)이 각자 전략을
 돌릴 수 있게 **믿을 수 있는 point-in-time 데이터를 공급하는 인프라**가 이 레포의
 역할이다. 가동 스케줄·시크릿 등 운영 디테일은 [`docs/operations.md`](docs/operations.md).
@@ -214,7 +197,12 @@ flowchart LR
 
 ---
 
-버그·질문은 [Issues](https://github.com/younghwan91/quant-airflow/issues)로.
+## ⭐ 도움이 되셨다면 (Star)
+
+이 파이프라인이 유용했다면 우측 상단 **[⭐ Star](https://github.com/younghwan91/quant-airflow)** 를 눌러주세요. 검색·추천 노출이 올라가 더 많은 분들이 찾을 수 있습니다.
+
+- 🐛 버그·질문 → [Issues](https://github.com/younghwan91/quant-airflow/issues)
+- 📈 업데이트 소식 → [팔로우 @younghwan91](https://github.com/younghwan91)
 
 ## 관련 프로젝트 — 오픈소스 퀀트 스택
 
@@ -229,8 +217,10 @@ flowchart LR
 | 🇰🇷 한국 주식 | **[fin-checkup](https://github.com/younghwan91/fin-checkup)** | 관심종목 위험 공시 텔레그램 알림 + DART·SEC 재무 건강검진 — 측정값과 사실만 전달한다 |
 | 🇰🇷 한국 주식 | **[swing-it](https://github.com/younghwan91/swing-it)** | 코스피·코스닥 알파 심사 프레임워크 — 개별 트레이드 분포로 판정하고 랜덤 음성대조·purged CV·Deflated Sharpe 를 CI 가드레일로 강제 |
 | 🇺🇸 미국 주식 | **[portfolio-research](https://github.com/younghwan91/portfolio-research)** | 미국주식 팩터 엔진 — point-in-time·생존편향 보정 데이터 위에서 walk-forward 를 Deflated Sharpe·PBO 로 게이팅 (+ ETF 전술배분 TAA — 9개 사전등록, 채택 0) |
+| 🇺🇸 미국 주식 | **[macro-sector-agent](https://github.com/younghwan91/macro-sector-agent)** | 하향식 미국 산업 사이클 리서치 — "어느 산업이 잊혔나"를 묻고 기계는 제외만 한다 |
 | 🇺🇸 미국 주식 | **[automated-stock-trading-systems](https://github.com/younghwan91/automated-stock-trading-systems)** | Bensdorp 의 7개 비상관 트레이딩 시스템 백테스터 (교육용 재구현) |
 | ₿ 암호화폐 | **[binance-quant-engine](https://github.com/younghwan91/binance-quant-engine)** | 암호화폐 선물 백테스트·실행 엔진 — 룩어헤드 0, 백테스트↔실거래 일체화 |
+| ₿ 암호화폐 | **[crypto-quant-insights](https://github.com/younghwan91/crypto-quant-insights)** | 실거래 선물 시스템 검증 차트 연구 노트 — 폭락 스트레스 테스트·Kelly 레버리지·체결 간극 |
 
 ## 만든 사람
 
