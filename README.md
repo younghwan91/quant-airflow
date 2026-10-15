@@ -2,8 +2,6 @@
 
 [![CI](https://github.com/younghwan91/quant-airflow/actions/workflows/ci.yml/badge.svg)](https://github.com/younghwan91/quant-airflow/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/younghwan91/quant-airflow?style=social)](https://github.com/younghwan91/quant-airflow)
-[![GitHub forks](https://img.shields.io/github/forks/younghwan91/quant-airflow?style=social)](https://github.com/younghwan91/quant-airflow)
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-younghwan--chae-0A66C2?logo=linkedin&logoColor=white)](https://www.linkedin.com/in/younghwan-chae/)
 
 퀀트 리서치용 시장 데이터를 매일 자동으로 수집·적재하는 Airflow 파이프라인이다.
@@ -197,14 +195,11 @@ flowchart LR
 
 라이선스는 [MIT](LICENSE).
 
-## ⭐ 도움이 되셨다면 (Star & 기여)
+## 기여 및 이슈 제보
 
-[![Star History Chart](https://api.star-history.com/svg?repos=younghwan91/quant-airflow&type=Date)](https://star-history.com/#younghwan91/quant-airflow&Date)
-
-`quant-airflow`가 데이터 파이프라인 구축이나 퀀트 연구에 유용하셨다면 우측 상단의 **[⭐ Star](https://github.com/younghwan91/quant-airflow)** 를 눌러주세요!
-- 상장폐지 4,169개 종목까지 보존하여 생존편향 없는 오픈소스 퀀트 데이터 파이프라인을 유지하는 데 큰 힘이 됩니다.
-- 🐛 버그 제보 & 질문: [GitHub Issues](https://github.com/younghwan91/quant-airflow/issues)
+- 🐛 버그 제보, 질문, 파이프라인 개선 제안: [GitHub Issues](https://github.com/younghwan91/quant-airflow/issues)
 - 📈 업데이트 소식: [팔로우 @younghwan91](https://github.com/younghwan91)
+
 
 ## 관련 프로젝트 — 오픈소스 퀀트 스택
 
