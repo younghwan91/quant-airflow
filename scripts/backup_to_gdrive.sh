@@ -24,6 +24,20 @@
 # — trader 처분(2026-10-07)으로 그것들의 두 번째 사본이 없어졌다.
 set -euo pipefail
 
+# rclone 재시도·속도. 2026-10-14·16·17 ticks-today/full 업로드가 구글 드라이브
+# `403 rateLimitExceeded`(분당 쿼리 쿼터)로 죽었다 — 우리 호출량이 아니라, rclone 기본
+# OAuth 클라이언트(project 202264815644)를 전 세계 rclone 사용자가 함께 쓰는 탓이다.
+# 10-16 실측: 기본 `--retries 3` 이 16:43→17:12→17:40 세 번 다 403 으로 끝났다.
+# 분당 쿼터는 매 분 리셋되므로 **1분 쉬고 더 많이 다시 시도**하면 지나간다. 호출 간격도
+# 두 배로 늘려(pacer 100ms→200ms) 쿼터를 덜 두드린다. 플래그 대신 환경변수로 두어 아래
+# 모든 rclone 호출(copyto·copy·lsf·deletefile·purge·sync)에 같이 걸린다.
+# 근본 해법은 rclone 리모트에 **자체 client_id/client_secret** 을 등록하는 것
+# (rclone 문서 "Making your own client_id", 브라우저 로그인이 필요해 사람이 한다).
+export RCLONE_RETRIES="${RCLONE_RETRIES:-6}"
+export RCLONE_RETRIES_SLEEP="${RCLONE_RETRIES_SLEEP:-60s}"
+export RCLONE_LOW_LEVEL_RETRIES="${RCLONE_LOW_LEVEL_RETRIES:-20}"
+export RCLONE_DRIVE_PACER_MIN_SLEEP="${RCLONE_DRIVE_PACER_MIN_SLEEP:-200ms}"
+
 # 레포 경로는 이 스크립트 위치에서 유도한다 — 2026-09-11 레포를
 # ~/Documents/git 에서 ~/git 으로 옮기면서 여기 하드코딩돼 있던 옛 경로가
 # 죽었고, 그 바람에 09-12 19:00 백업이 `cd: No such file or directory` 로
