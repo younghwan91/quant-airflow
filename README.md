@@ -1,5 +1,7 @@
 # quant-airflow
 
+**한국 주식 데이터를 TimescaleDB 에 쌓는 Airflow 파이프라인 — 상장폐지 종목까지 되살려 담아, 그 위에서 돌리는 백테스트가 생존편향에 빠지지 않는다.**
+
 [![CI](https://github.com/younghwan91/quant-airflow/actions/workflows/ci.yml/badge.svg)](https://github.com/younghwan91/quant-airflow/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-younghwan--chae-0A66C2?logo=linkedin&logoColor=white)](https://www.linkedin.com/in/younghwan-chae/)
@@ -9,64 +11,24 @@
   <img alt="연도별 일봉이 있는 종목 수 — 지금도 상장(파랑)과 이후 상장폐지(주황). 거래됐던 종목의 31% 가 폐지됐고 데이터에 남아 있다" src="docs/images/hero-light.png" width="100%">
 </picture>
 
-퀀트 리서치용 시장 데이터를 매일 자동으로 수집·적재하는 Airflow 파이프라인이다.
-**한국 주식**(코스피·코스닥)의 시세·수급·실적·컨센서스를 TimescaleDB 에 쌓고,
-**미국 주식**(Sharadar)은 벤더가 주는 벌크 스냅샷으로 DuckDB 스토어를 거래일마다 새로 짓는다.
+- **거래된 적 있는 종목의 31% 가 이미 상장폐지됐다.** 지금 상장된 종목만 수집하면 2008년 유니버스의 37% 가 사라진다. 여기서는 KRX 폐지 마스터 → 네이버 과거 일봉 → DART 상장주식수 순으로 되살려 넣는다. (출처: `daily_bars_adj_v2` × `stocks` / `delisted_stocks` ∪ `kind_delistings`, [`docs/images/hero-data.csv`](docs/images/hero-data.csv))
+- **16:00 에 받는 그날 값은 잠정치다.** 다음 날 새벽 `daily_finalize` 가 전 거래일 일봉·수급을 확정치로 다시 받아 덮고, 조정주가를 다시 만든다.
+- **LLM 뉴스 판정은 테이블에 남길 뿐, 이 레포는 주문을 내지 않는다.** 수집·적재만 한다 — 전략·백테스트·매매는 전부 이 DB 를 읽는 다른 레포의 몫이다.
 
-- **오케스트레이션**: Airflow(LocalExecutor) — 17개 DAG
-- **데이터 소스**: DART(실적·공시) · 키움 REST(시세·수급·공매도·신용·상장주식수) · KRX(상장폐지) · 네이버(컨센서스·폐지종목 시세) · Sharadar(미국) · 토스증권(뉴스, krx-news-client)
-- **스토어**: TimescaleDB(hypertable + 압축) — LAN 에 열어 메인 PC 가 읽기 전용으로 질의
-
-## 배치 — 한 호스트, 24/7 (2026-10-07~)
-
-Airflow(스케줄러·웹서버·메타DB)와 TimescaleDB 는 **같은 호스트(simnode)에서 서로 다른
-compose 스택으로** 상시 돈다 — 한쪽을 내리고 올려도 다른 쪽이 안 흔들린다. 같은 호스트에서
-다른 레포의 장중 라이브(scalp-it 틱 수집·감지기, daytrade-it 뉴스 데몬)도 돈다. 하루 4번
-껐다 켜던 옛 "가동 창"과 2026-09-11 ~ 10-06 의 두 호스트 시절(PRIMARY + trader 리플리카)
-경위는 [`docs/operations.md`](docs/operations.md) 에 있다.
-
-| compose 파일 | 내용 |
-|---|---|
-| `docker-compose.replica.yml` | TimescaleDB **PRIMARY**(:5433). 이름만 replica — 2026-09-11 `pg_promote()` 로 역할이 바뀌었고 볼륨·포트가 여러 DSN 에 박혀 있어 이름은 안 바꿨다. 역할은 `SELECT pg_is_in_recovery();`(false = PRIMARY)로 확인 |
-| `docker-compose.airflow.yml` | Airflow 4종. DB 는 이 파일에 없다 — `.env` 의 `TIMESCALE_HOST`/`TIMESCALE_PORT` 로 위 PRIMARY 에 붙는다 |
-| `docker-compose.timescale.yml` | 초기 DB 세팅(initdb) 참고본 |
-
-**DB 사본은 하나다** — 리플리카가 없어 두 번째 사본은 구글 드라이브 백업
-(`scripts/backup_to_gdrive.sh`, 이 호스트에서만 돈다)뿐이다.
+## Quick start
 
 ```bash
 git clone <this-repo> quant-airflow
 git clone https://github.com/younghwan91/swing-it.git ../swing-it                       # sibling
 git clone https://github.com/younghwan91/portfolio-research.git ../portfolio-research  # sibling
 cd quant-airflow
-cp .env.example .env   # 아래 필수값 채우기
+cp .env.example .env   # 아래 필수값 채우기 — TIMESCALE_HOST·KR_QUANT_DB 는 예제에 없으니 직접 추가, TIMESCALE_PORT 는 5433 으로
 
 docker compose -f docker-compose.replica.yml up -d   # DB(PRIMARY) — 볼륨은 external 이다
 docker compose -f docker-compose.airflow.yml up -d   # Airflow
 ```
 
-위 DB 줄은 **이미 데이터가 든 볼륨**을 띄우는 것이다. `docker-compose.replica.yml` 은 볼륨이
-`external` 이고 `POSTGRES_USER/PASSWORD/DB` 가 없어 빈 볼륨에서 initdb 를 하지 못한다 — 새
-머신에 처음 세울 때는 `docker-compose.timescale.yml`(그 환경변수와 `sql/init_timescale.sql`
-마운트가 있다)을 참고하거나 구글 드라이브 백업에서 복원한다. 스키마의 정본은
-`sql/init_timescale.sql` + `sql/migrations/*.sql` 이다.
-
-`.env` 에 채워야 하는 값:
-
-| 변수 | 용도 |
-|---|---|
-| `KIWOOM_APP_KEY` / `KIWOOM_APP_SECRET` | 키움 REST — 시세·수급·공매도·신용·상장주식수 |
-| `DART_API_KEY`(`_2`/`_3`) | DART OpenAPI — [무료 발급](https://opendart.fss.or.kr), 보조키를 추가하면 일한도가 키 개수만큼 늘어난다 |
-| `TIMESCALE_*` / `AIRFLOW_*` | DB 접속 정보·Airflow 시크릿(`.env.example` 에 생성법 주석 포함). `TIMESCALE_HOST` 는 호스트 LAN IP, `TIMESCALE_PORT=5433` |
-| `US_DATA_DIR` | Sharadar DuckDB 스토어(`us_micro.duckdb`) 디렉터리. 없으면 `daily_sharadar` 가 돌지 않는다 |
-
-TimescaleDB 는 LAN 에 열려 있어 다른 PC 도 읽기 전용으로 질의한다. 실제 접속값은 이 레포
-`.env` 의 `KR_QUANT_DB`·`TIMESCALE_HOST`/`TIMESCALE_PORT` 를 본다 — 같은 호스트의 다른
-레포(scalp-it·daytrade-it 크론)도 이 파일에서 DSN 을 읽는다.
-
-
-
-## 데이터 읽는 법
+쌓인 데이터는 Postgres 클라이언트면 무엇이든 읽는다.
 
 ```python
 import pandas as pd, psycopg2
@@ -76,67 +38,80 @@ df = pd.read_sql("SELECT * FROM daily_bars_adjusted WHERE code = %s ORDER BY dat
                  conn, params=("005930",))
 ```
 
-분석·백테스트 코드는 [swing-it](https://github.com/younghwan91/swing-it) 에 있으며 이
-DB 를 읽기 전용으로 쓴다.
+위 DB 줄은 **이미 데이터가 든 볼륨**을 띄우는 것이다. 새 머신에 처음 세울 때는 [설정·운영](#설정운영) 을 본다.
 
-## 창고에 실제로 뭐가 들어 있나
+## 무엇을 수집하나
 
-![DB 커버리지](docs/images/db-coverage.png)
+Airflow(LocalExecutor) DAG 21개, 그중 19개가 스케줄로 돈다. 모든 수집기는 `(code, date)` upsert 라 몇 번을 다시 돌려도 안전하고, 행마다 `source`(kiwoom/naver/krx/dart) 를 남긴다.
 
-*2026-08-28 기준 라이브 DB. 질의문은 [`docs/coverage.sql`](docs/coverage.sql).*
+| 영역 | 소스 | 테이블 | DAG |
+|---|---|---|---|
+| 일봉·수급·업종지수 | 키움 REST | `daily_bars` · `supply_demand` · `sector_index` | `daily_collection` 평일 16:00 → `daily_finalize` 화~토 06:30 확정 |
+| 무수정 일봉 | 키움 REST | `daily_bars_raw` | `daily_bars_raw` 평일 19:00 |
+| 조정주가 | (DB 내부 재생성) | `daily_bars_adjusted` | `daily_price_adjust` 평일 16:55 · `weekly_price_adjust` 토 10:40 |
+| 공매도·신용잔고 | 키움 REST | `short_selling` · `credit_balance` | `daily_short_credit` 화~토 10:00 |
+| 실적 (point-in-time) | DART | `earnings` | `daily_earnings` 평일 16:00 · `earnings_backfill` 일 10:00 |
+| 상장주식수 (point-in-time) | 키움 · DART | `shares_outstanding_history` | `weekly_listed_shares` 화 10:10 · `monthly_listed_shares_backfill` 매월 1일 |
+| 상장폐지 종목 복원 | KRX · 네이버 · DART | `delisted_stocks` · `daily_bars`(`source='naver'`) | `weekly_delisted_stocks` 토 10:05 |
+| 컨센서스 · 증권사 리포트 | 네이버 | `consensus` · `naver_research_reports` | `daily_consensus` 평일 17:00 · `daily_naver_research` 매일 05:40 |
+| 뉴스·공시 + LLM 판정 | 토스증권 · DART | `news_articles` · `news_company_feed` · `news_judgments` | `premarket_news_judgment` 평일 08:45 · `daily_news` 10:05/16:05 · `daily_toss_company_news` 17:10 |
+| 지수 편입·제외 공지 | KRX | `index_notices` · `index_changes` · `index_constituents` | `daily_index_notices` 평일 18:30 |
+| 히스토리 깊이 유지 | 키움 | 업종지수 · 공매도 · 신용 | `weekly_history_backfill` 일 11:00 |
+| 전날 실패분 재수집 | 키움 | — | `daily_collection_catchup` 평일 10:05 |
 
-## 생존편향을 정면으로 다룬다
+꺼진 DAG 둘: `daily_sharadar`(미국, 아래 참고)·`daily_krx_shares`(KRX 소스가 로그인 벽으로 막혀 수동 전용). 시각은 모두 KST. 소스 호출·파싱은 [kiwoom-client](https://github.com/younghwan91/kiwoom-client)·[krx-fundamentals-client](https://github.com/younghwan91/krx-fundamentals-client)·[krx-news-client](https://github.com/younghwan91/krx-news-client) 에 있고, 이 레포의 `collectors/` 는 조립·적재만 한다.
 
-**상장 2,646 vs 상장폐지 4,169** 가 이 저장소의 존재 이유다. 대부분의 수집기는 "현재
-상장된 종목" 목록 위를 돌고, 그 데이터로 만든 백테스트는 살아남은 회사만 보고 성적을
-잰다 — 한국 시장에서 그렇게 빠지는 몫이 **전체의 61%**다. 여기서는 3층으로 메운다.
+**미국(Sharadar)은 멈춰 있다.** 2026-09-14 구독 해지 이후 `daily_sharadar` 는 `schedule=None` 이고 DuckDB 스토어는 09-11 빌드에서 멈췄다. 벌크 스냅샷 → 재구축 → 검증 → `os.replace` 공개 설계는 [`docs/sharadar.md`](docs/sharadar.md) 에 그대로 남겨 뒀다.
+
+## 왜 이렇게 만들었나
+
+**생존편향은 수집 단계에서 메운다.** 대부분의 수집기는 "현재 상장된 종목" 목록 위를 돌고, 그 데이터로 만든 백테스트는 살아남은 회사만 보고 성적을 잰다. 여기서는 3층으로 되살린다.
 
 | 층 | 무엇을 | 어디서 |
 |---|---|---|
 | 마스터 | 상장폐지 종목 목록 | KRX → `delisted_stocks` |
-| 시세 | 폐지 전 과거 일봉 | 네이버 → `daily_bars` (`source='naver'`) |
+| 시세 | 폐지 전 과거 일봉 | 네이버 → `daily_bars` (`source='naver'`). 2016-09 이전 폐지분은 `daily_bars_delisted_naver`(KIND ∪ KRX 목록, migration 028, 수동 1회) |
 | 주식수 | 시총 분모(point-in-time) | DART → `shares_outstanding_history` |
 
-행마다 `source` 를 남기는 게 핵심이다. 네이버 폐지분은 거래대금이 근사값이고 수급도
-기관·외국인만 온다 — 읽는 쪽이 NULL(모름)과 0(없음)을 구분해야 지표마다 유니버스가
-조용히 달라지는 사고를 막는다.
+**NULL ≠ 0.** NULL 은 모름, 0 은 없음. 네이버 폐지분은 거래대금이 근사값이고 수급도 기관·외국인만 온다 — 원천이 주지 않는 값은 NULL 로 두고, 원천이 틀린 값은 "고쳐" 넣지 않고 `legacy` 스키마로 뺀다. 읽는 쪽이 이 둘을 구분해야 지표마다 유니버스가 조용히 달라지는 사고를 막는다.
 
-## 아키텍처
+**point-in-time.** `earnings`·`shares_outstanding_history` 는 `knowledge_date` 로 정정 이력을 쌓고 덮어쓰지 않는다. 오늘 값을 과거로 복사하면 과거 시점 백테스트가 미래를 본다.
 
-데이터가 둘이고 **적재 방식이 서로 다르다.** 한국은 소스 API 가 증분만 주므로 DB 에
-직접 upsert 하고, 미국은 벤더가 전체 스냅샷을 주므로 파일을 새로 지어 갈아끼운다.
-아래는 실제 `dags/*.py` 의 태스크 의존성(`>>`)을 그대로 옮긴 것이다.
+**잠정치와 확정치를 구분한다.** 장 마감 직후 값은 다음 날 새벽 확정치로 덮이고, `daily_finalize` 뒤에 도는 품질 검사(`collectors/data_checks.py`)가 분봉 세션 범위·종가 항등식·원주가 카나리아를 매일 본다. 2026-09-14 KRX 애프터마켓 개장 뒤 일봉의 고가·저가·종가·거래량이 통합값으로 바뀐 것을 한 달 가까이 몰랐던 것이 이 검사의 이유다.
+
+**"초록불 = 성공" 이 아니다.** 빈 응답을 성공으로 넘긴 수집기가 반복 사고였다. 새 수집기는 빈 응답에 예외를 던지고, 매일 `rows=0` 은 장애로 본다.
+
+**LLM 판정은 배치로, 결과는 테이블로.** 뉴스·공시 판정은 Batch API 로 돌리고 배치 id 를 `news_judge_batches` 원장에 먼저 적는다. 판정은 `news_judgments` 에 쌓일 뿐 — 그걸 어떻게 쓸지는 읽는 레포가 정한다.
+
+## 구조
+
+한국은 소스 API 가 증분만 주므로 DB 에 직접 upsert 한다. 아래는 실제 `dags/*.py` 의 태스크 의존성(`>>`)을 옮긴 것이다.
 
 ```mermaid
 flowchart LR
     subgraph SRC["데이터 소스"]
         KIWOOM["키움 REST<br/>kiwoom-client"]
         DART["DART 실적·공시<br/>krx-fundamentals-client"]
-        KRXM["KRX<br/>상장폐지 마스터"]
-        NAVER["네이버<br/>컨센서스·폐지시세"]
+        KRXM["KRX<br/>상장폐지 마스터 · 지수공지"]
+        NAVER["네이버<br/>컨센서스 · 리포트 · 폐지시세"]
         TOSS["토스증권 뉴스<br/>krx-news-client"]
-        SHARADAR["Sharadar<br/>벌크 스냅샷"]
     end
 
-    subgraph KR["한국 파이프라인 — DB에 직접 upsert"]
+    subgraph KR["한국 파이프라인 — DB 에 직접 upsert"]
         COL["daily_collection<br/>일봉+수급+업종지수"]
+        FIN["daily_finalize<br/>확정치 재수집 → 품질 검사"]
         NEWSCOL["collect_toss_news<br/>collect_dart_disclosures"]
-        JUDGE["judge_news<br/>(news_judge, LLM 판단)"]
+        JUDGE["judge_news<br/>(news_judge, LLM 배치)"]
         EARN["daily_earnings /<br/>earnings_backfill"]
-        CONS["daily_consensus"]
+        CONS["daily_consensus /<br/>daily_naver_research"]
         DELIST["weekly_delisted_stocks<br/>collect→backfill_bars→<br/>backfill_shares→backfill_flow"]
         ADJ["weekly_price_adjust<br/>(센서: backfill_delisted_bars 대기 후 rebuild)"]
     end
 
-    subgraph US["미국 파이프라인(Sharadar) — 스냅샷 통째로 교체"]
-        DL["download<br/>(bulk zip, 변경분만)"]
-        BUILD["rebuild<br/>build → 검증 gate"]
-    end
-
-    TS[("TimescaleDB<br/>hypertable")]
-    DUCK[("us_micro.duckdb<br/>os.replace로 원자적 교체")]
+    TS[("TimescaleDB<br/>hypertable + 압축")]
 
     KIWOOM --> COL --> TS
+    KIWOOM --> FIN --> TS
     TOSS --> NEWSCOL
     DART --> NEWSCOL
     NEWSCOL --> JUDGE --> TS
@@ -144,59 +119,55 @@ flowchart LR
     NAVER --> CONS --> TS
     KRXM --> DELIST
     NAVER --> DELIST
+    DART --> DELIST
     DELIST --> TS
     TS -. "wait_for_delisted_bars 센서" .-> ADJ --> TS
-    SHARADAR --> DL --> BUILD --> DUCK
 
-    subgraph CONSUMER["컨슈머(각자 전략 실행)"]
+    subgraph CONSUMER["읽는 쪽 (각자 전략 실행)"]
         SW["swing-it /<br/>portfolio-research<br/>(백테스트)"]
-        SCALP["scalp-it<br/>(실매매, news_judgments 소비)"]
+        LIVE["scalp-it / daytrade-it<br/>(장중 라이브)"]
         MACRO["macro-sector-agent<br/>(섹터 리서치)"]
     end
 
-    TS --> SW & SCALP & MACRO
-    DUCK --> SW
+    TS --> SW & LIVE & MACRO
 ```
 
-이 저장소는 그 자체로 전략을 짜지 않는다 — 위 컨슈머들(`swing-it`/`portfolio-research`
-의 백테스트, `scalp-it`의 실매매, `macro-sector-agent`의 섹터 리서치)이 각자 전략을
-돌릴 수 있게 **믿을 수 있는 point-in-time 데이터를 공급하는 인프라**가 이 레포의
-역할이다. 가동 스케줄·시크릿 등 운영 디테일은 [`docs/operations.md`](docs/operations.md).
+## 설정·운영
 
-## 무엇을 언제 수집하나
+Airflow(스케줄러·웹서버·메타DB)와 TimescaleDB 는 **같은 호스트(simnode)에서 서로 다른 compose 스택으로** 24/7 돈다 — 한쪽을 내리고 올려도 다른 쪽이 안 흔들린다.
 
-**매일 증분 + 주간 깊이 재수집**의 2단 구조다. 평일 DAG 가 최신분을 쌓고, 주간 DAG 가
-히스토리 깊이를 유지해 신규 상장·DB 리셋 이후에도 과거가 비지 않게 한다. 모든
-수집기가 `(code, date)` upsert 라 idempotent 하다.
+| compose 파일 | 내용 |
+|---|---|
+| `docker-compose.replica.yml` | TimescaleDB **PRIMARY**(:5433). 이름만 replica — `pg_promote()` 로 역할이 바뀌었고 볼륨·포트가 여러 DSN 에 박혀 있어 이름은 안 바꿨다. 역할은 `SELECT pg_is_in_recovery();`(false = PRIMARY) 로 확인 |
+| `docker-compose.airflow.yml` | Airflow 4종. DB 는 이 파일에 없다 — `.env` 의 `TIMESCALE_HOST`/`TIMESCALE_PORT` 로 위 PRIMARY 에 붙는다 |
+| `docker-compose.timescale.yml` | 초기 DB 세팅(initdb) 참고본 |
 
-| DAG | 스케줄(KST) | 수집 대상 |
-|---|---|---|
-| `daily_collection` | 평일 16:00 | 일봉 + 수급(키움) + 업종지수 |
-| `daily_collection_catchup` | 평일 10:05 | 전날 실패분만 재수집 |
-| `daily_short_credit` | 화~토 10:00 | 공매도 + 신용잔고(키움) |
-| `daily_earnings` | 평일 16:00 | DART 실적 증분(당기 + 전분기) |
-| `daily_price_adjust` | 평일 16:55 | `daily_bars_adjusted` 재생성 |
-| `daily_finalize` | 화~토 06:30 | 전 거래일 일봉·수급·업종지수를 **확정치로 재수집**(16:00 값은 잠정) → 조정주가 재생성 |
-| `daily_consensus` | 평일 17:00 | 네이버 컨센서스(월요일만 전종목) |
-| `daily_sharadar` | 화~토 17:30 | 미국 벌크 스냅샷 → 재구축 → 검증 → 공개 |
-| `daily_news` | 평일 10:05 · 16:05 | 토스·DART 뉴스/공시 수집 + LLM 판단(news_judgments) |
-| `premarket_news_judgment` | 평일 08:45 | daily_news와 동일 수집 — 개장 전 시가 진입 판단용 |
-| `daily_toss_company_news` | 평일 17:10 | 토스 **종목별** 뉴스 피드(전 거래일 거래대금 상위 300) → news_articles + news_company_feed. 스윙 연구·daytrade-it 전진 홀드아웃용(2023-03-16~ 아카이브는 015 로 이전) |
-| `daily_naver_research` | 매일 05:40 | 네이버 증권사 리포트(의견·목표가) 최근 10일 증분 → naver_research_reports. swing-it 07:43 전진 팔용 |
-| `earnings_backfill` | 일 10:00 | DART 실적 전체 이력 백필 |
-| `weekly_history_backfill` | 일 11:00 | 업종지수·공매도·신용 히스토리 깊이 재수집 |
-| `monthly_listed_shares_backfill` | 매월 1일 10:20 | DART 상장주식수 과거 백필(2016~2025, 생존편향 3층 중 "주식수"를 채우는 실제 DAG) |
-| `weekly_listed_shares` | 화 10:10 | 키움 상장주식수 스냅샷(2026년 이후분, 과거 백필 불가) |
-| `weekly_delisted_stocks` | 토 10:05 | 폐지 마스터 + 과거 일봉 + 상장주식수 백필(위 3층) |
-| `weekly_price_adjust` | 토 10:40 | 폐지 시세 백필 후 조정가 재생성 |
+`docker-compose.replica.yml` 은 볼륨이 `external` 이고 `POSTGRES_USER/PASSWORD/DB` 가 없어 빈 볼륨에서 initdb 를 하지 못한다. 새 머신에 처음 세울 때는 `docker-compose.timescale.yml`(그 환경변수와 `sql/init_timescale.sql` 마운트가 있다)을 참고하거나 구글 드라이브 백업에서 복원한다. 스키마의 정본은 `sql/init_timescale.sql` + `sql/migrations/*.sql`.
 
-나머지 DAG(`daily_krx_shares` — KRX 소스가 로그인 벽으로 막혀 현재 paused, 수동 트리거 전용 등)는 `dags/` 코드 참고.
+**DB 사본은 하나다** — 리플리카가 없어 두 번째 사본은 구글 드라이브 백업(`scripts/backup_to_gdrive.sh`)뿐이다.
+
+`.env` 에 채워야 하는 값:
+
+| 변수 | 용도 |
+|---|---|
+| `KIWOOM_APP_KEY` / `KIWOOM_APP_SECRET` | 키움 REST — 시세·수급·공매도·신용·상장주식수 |
+| `DART_API_KEY`(`_2`/`_3`) | DART OpenAPI — [무료 발급](https://opendart.fss.or.kr), 보조키를 추가하면 일한도가 키 개수만큼 늘어난다 |
+| `ANTHROPIC_API_KEY` | 뉴스·공시 LLM 판정(Batch API) |
+| `TIMESCALE_*` / `AIRFLOW_*` | DB 접속 정보·Airflow 시크릿(`.env.example` 에 생성법 주석 포함). **`.env.example` 에 없는 `TIMESCALE_HOST`(호스트 LAN IP)·`KR_QUANT_DB`(DSN) 는 직접 추가하고, `TIMESCALE_PORT` 는 예제의 5432 를 5433 으로 바꾼다** |
+| `ALERT_WEBHOOK_URL` | 선택. 비어 있으면 알림은 `alerts.log` 에만 쌓인다 |
+| `US_DATA_DIR` | Sharadar DuckDB 스토어 디렉터리. 없으면 `daily_sharadar` 가 돌지 않는다 |
+
+TimescaleDB 는 LAN 에 열려 있어 다른 PC 도 읽기 전용으로 질의한다. 같은 호스트의 다른 레포(scalp-it·daytrade-it 크론)도 이 `.env` 에서 DSN 을 읽는다 — 키 이름을 바꾸거나 지우지 않는다.
+
+![DB 커버리지](docs/images/db-coverage.png)
+
+*2026-08-28 기준 라이브 DB(그 뒤 `daily_bars_raw` 2007-11-22~ 확장·adj_v2 갱신, 그림은 옛 것). 질의문은 [`docs/coverage.sql`](docs/coverage.sql).*
 
 ## 더 자세히
 
-- [`docs/schema.md`](docs/schema.md) — 테이블·압축 설계·마이그레이션
-- [`docs/operations.md`](docs/operations.md) — 가동 창·시크릿·저장소 구조
-- [`docs/sharadar.md`](docs/sharadar.md) — 미국 파이프라인
+- [`docs/schema.md`](docs/schema.md) — 테이블·PK·단위·압축 설계·마이그레이션
+- [`docs/operations.md`](docs/operations.md) — 24/7 단일 호스트, 배포 경로, 알림, 백업
+- [`docs/sharadar.md`](docs/sharadar.md) — 미국 파이프라인(중단 상태)
 
 라이선스는 [MIT](LICENSE).
 
