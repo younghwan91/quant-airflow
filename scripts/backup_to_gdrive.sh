@@ -253,9 +253,10 @@ sync_host_files() {
     # 있다. 쌍 파일(eval/persistence_swing/pairs, 1.1GB)은 DB 에서 다시 만든다 — 바이트 동일 실측(2026-10-08).
     "swing-it-data|$REPO/../swing-it/data"
     "of80|$HOME/of80"
-    # portfolio-research 의 실험 좌표·산출물(results·configs·logs·analysis·universe_*.txt). 그 레포
-    # scripts/backup_essentials.sh 가 "재취득 불가"로 꼽은 것인데 외장 디스크용 수동 스크립트라 한 번도
-    # 안 돌았다. 스토어(*.duckdb — sharadar/duckdb 판본)·벌크(sharadar/ — sharadar/bulk)는 이미
+    # portfolio-research 의 실험 좌표·산출물(results·configs·logs·analysis·universe_*.txt). 대부분은 그
+    # 레포(공개)에도 있지만 configs 7개·logs·analysis·bin 은 이 디스크에만 있다(2026-10-24 대조) — 그
+    # 레포 scripts/backup_essentials.sh 는 외장 디스크용 수동 스크립트라 돈 적이 없다.
+    # 스토어(*.duckdb — sharadar/duckdb 판본)·벌크(sharadar/ — sharadar/bulk)는 이미
     # 드라이브에 있고, dartdoc_cache(이 레포 dart_doc_run 의 DART 원문 7.6GB)는 다시 받을 수 있어 뺀다.
     "portfolio-research-data|$HOME/data|/sharadar/** /dartdoc_cache/** /*.duckdb /*.duckdb.* /*.duckdb.tmp/**"
   )
