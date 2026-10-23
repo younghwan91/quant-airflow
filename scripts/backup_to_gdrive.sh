@@ -20,7 +20,7 @@
 # 행이 지워지지 않는다) 새 덤프가 옛 덤프의 내용을 다 품는다. 그래서 오래된 날짜본은 이력이
 # 아니라 사본이다. 남기는 것은 prune_old 주석 참고. 지운 것은 드라이브 휴지통에 30일 남는다.
 #
-# 이 호스트의 DB 밖 파일(각 레포 data/, ~/of80)도 sync_host_files 가 매일 올린다
+# 이 호스트의 DB 밖 파일(각 레포 data/, ~/of80, ~/data)도 sync_host_files 가 매일 올린다
 # — trader 처분(2026-10-07)으로 그것들의 두 번째 사본이 없어졌다.
 set -euo pipefail
 
@@ -242,9 +242,10 @@ dump_gptquant() {
 # 만들지 않으므로 매일 같은 사본이 쌓이지도 않는다(첫 회 이후는 증분이다).
 # 가상환경(~/of80/.rlvenv)은 빼고 대신 pip freeze 를 올린다 — 파일 2만 5천 개를 매일 훑을
 # 이유가 없고, 같은 버전으로 다시 만드는 데는 목록이면 된다.
+# spec 의 세 번째 칸(선택)은 그 소스에만 붙는 제외 패턴(공백 구분, 소스 루트 기준)이다.
 FILES_REMOTE="${BACKUP_FILES_REMOTE:-gdrive:2.4. 트레이딩/3. stocks 주식/simnode-files}"
 sync_host_files() {
-  local name src
+  local name src rest p
   local -a specs=(
     "daytrade-it-data|$REPO/../daytrade-it/data"
     "scalp-it-data|$REPO/../scalp-it/data"
@@ -252,16 +253,26 @@ sync_host_files() {
     # 있다. 쌍 파일(eval/persistence_swing/pairs, 1.1GB)은 DB 에서 다시 만든다 — 바이트 동일 실측(2026-10-08).
     "swing-it-data|$REPO/../swing-it/data"
     "of80|$HOME/of80"
+    # portfolio-research 의 실험 좌표·산출물(results·configs·logs·analysis·universe_*.txt). 대부분은 그
+    # 레포(공개)에도 있지만 configs 7개·logs·analysis·bin 은 이 디스크에만 있다(2026-10-24 대조) — 그
+    # 레포 scripts/backup_essentials.sh 는 외장 디스크용 수동 스크립트라 돈 적이 없다.
+    # 스토어(*.duckdb — sharadar/duckdb 판본)·벌크(sharadar/ — sharadar/bulk)는 이미
+    # 드라이브에 있고, dartdoc_cache(이 레포 dart_doc_run 의 DART 원문 7.6GB)는 다시 받을 수 있어 뺀다.
+    "portfolio-research-data|$HOME/data|/sharadar/** /dartdoc_cache/** /*.duckdb /*.duckdb.* /*.duckdb.tmp/**"
   )
   for spec in "${specs[@]}"; do
-    name="${spec%%|*}"; src="${spec#*|}"
+    name="${spec%%|*}"; rest="${spec#*|}"; src="${rest%%|*}"
+    local -a extra=() pats=()
+    # read -a 는 /*.duckdb 같은 패턴을 파일 이름으로 펼치지 않는다(for p in $x 는 펼친다).
+    [ "$rest" != "$src" ] && read -ra pats <<< "${rest#*|}"
+    for p in "${pats[@]}"; do extra+=(--exclude "$p"); done
     if [ ! -d "$src" ]; then
       echo "[$(date '+%F %T')] ⚠️ $src 없음 — $name 건너뜀" >&2
       continue
     fi
     rclone copy "$src" "$FILES_REMOTE/$name" \
       --exclude ".rlvenv/**" --exclude "__pycache__/**" --exclude "*.pyc" \
-      --exclude "eval/persistence_swing/pairs/**" \
+      --exclude "eval/persistence_swing/pairs/**" "${extra[@]}" \
       --transfers 8 --checkers 16 --fast-list
     echo "[$(date '+%F %T')] $name 동기화 완료 — $FILES_REMOTE/$name"
   done
