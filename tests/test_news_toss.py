@@ -93,3 +93,25 @@ def test_drop_edited_keeps_first_version_and_still_updates_same_version(tmp_path
 
     keep, skipped = _drop_edited(con, [same])
     assert [a.id for a in keep] == ["toss:edited"] and skipped == 0   # 같은 판의 재수집은 그대로 갱신
+
+
+def test_collect_raises_when_every_feed_fails(tmp_path, monkeypatch):
+    """라이브러리가 피드 400 을 삼켜 빈 목록을 돌려줘도 성공(fetched=0)으로 넘기지 않는다."""
+    import asyncio
+
+    import pytest
+
+    from collectors import news_toss
+
+    class _EmptyScraper:
+        async def scrape_news(self):
+            return []
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(news_toss, "TossScraper", _EmptyScraper)
+    con = connect(tmp_path / "t.db")
+    with pytest.raises(RuntimeError, match="0건"):
+        asyncio.run(news_toss.collect(con))
+    assert con.execute("SELECT count(*) FROM news_articles").fetchone()[0] == 0

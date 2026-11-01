@@ -85,6 +85,11 @@ async def collect(con: Any) -> dict[str, int]:
         articles = await scraper.scrape_news()
     finally:
         await scraper.close()
+    if not articles:
+        # krx-news-client 는 피드별 예외(400 포함)를 로그만 남기고 삼킨다 — 피드 3개가 다 실패해도
+        # 빈 목록이 돌아와 "✅ fetched=0" 성공으로 넘어갔다(2026-10-29~ 대시보드 API 400). 하이라이트
+        # 피드는 평일 장중·장후에 늘 수십 건이라 0 건은 장애로 본다(CLAUDE.md §5).
+        raise RuntimeError("토스 하이라이트 피드 0건 — 피드가 전부 실패했다(위 'toss: POST error' 로그)")
 
     unique, edited = _drop_edited(con, _dedupe(articles))
     if edited:
