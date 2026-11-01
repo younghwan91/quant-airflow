@@ -1,4 +1,4 @@
-"""collectors.data_checks — 세 검사가 현재 모양의 데이터는 통과시키고, 위반을 주입하면 실패하는지.
+"""collectors.data_checks — 검사들이 현재 모양의 데이터는 통과시키고, 위반을 주입하면 실패하는지.
 
 통과만 보는 테스트는 규칙이 죽어도 초록이다 — 검사마다 위반 주입 테스트를 짝으로 둔다.
 """
@@ -337,23 +337,158 @@ def test_canary():
     assert not dc.check_raw_price_canary(41_200).ok  # 위반 주입: 수정주가가 섞임
 
 
+# ── 조정주가 대 원주가 ─────────────────────────────────────────────────────
+
+D = dt.date
+P, T1 = D(2026, 9, 10), D(2026, 9, 11)   # 애프터마켓 전 — 전일 원 종가 = 기준가
+
+
+def _cell(code="000001", *, adj=(5_000.0, 5_100.0), raw=(10_000.0, 10_200.0), flu=None, prev=P, day=T1):
+    """flu 를 주면 기준가 = raw(t)/(1+flu/1e4)(수급 close = 원 종가)."""
+    base = None if flu is None else raw[1] / (1 + flu / 1e4)
+    return dc.AdjCell(code, prev, day, *adj, *raw, flu, base)
+
+
+def _clean(n=dc.ADJ_MIN_PAIRS):
+    return [_cell(f"{i:06d}", flu=200) for i in range(n)]
+
+
+def _adj_check(cells, resets=(), **kw):
+    return dc.check_adjusted_vs_raw(P, T1, cells, resets, **kw)
+
+
+def test_pair_adjusted_cells_uses_previous_row_and_supply_base():
+    adj = [("A", D(2026, 9, 8), 100.0), ("A", D(2026, 9, 9), 110.0), ("A", D(2026, 9, 11), 121.0),  # 09-10 정지
+           ("B", D(2026, 9, 10), None), ("B", D(2026, 9, 11), 50.0)]
+    raw = {("A", D(2026, 9, 9)): 1_100, ("A", D(2026, 9, 11)): 1_210}
+    cells = dc.pair_adjusted_cells(adj, raw, D(2026, 9, 9), {("A", D(2026, 9, 11)): (1_210, 1_000.0)})
+    assert [(c.code, c.prev, c.day) for c in cells] == [("A", D(2026, 9, 8), D(2026, 9, 9)), ("A", D(2026, 9, 9), D(2026, 9, 11))]
+    first, second = cells
+    assert first.raw_prev is None and first.raw == 1_100 and first.base is None
+    assert second.raw_prev == 1_100 and second.flu_rt == 1_000 and second.base == pytest.approx(1_100)
+
+
+def test_adjusted_vs_raw_passes_when_returns_match():
+    r = _adj_check(_clean(), strict=True)
+    assert r.ok and not r.warn, r.detail
+    assert f"이음매 0/{dc.ADJ_MIN_PAIRS}" in r.detail
+
+
+def test_adjusted_vs_raw_collection_seam_fails_when_strict_warns_otherwise():
+    # 117670 2026-10-06 모양: 조정주가 10,420 → 5,155, 원주가 10,420 → 10,310, 이벤트는 10-21(창 밖)
+    seam = _cell("117670", adj=(10_420.0, 5_155.0), raw=(10_420.0, 10_310.0), flu=-106)
+    cells = [*_clean(), seam]
+    r = _adj_check(cells, [("117670", D(2026, 10, 21))], strict=True)
+    assert not r.ok and r.kind == "seam"
+    assert "이음매 1/" in r.detail and "117670" in r.detail
+    r = _adj_check(cells, strict=False)
+    assert r.ok and r.warn and "117670" in r.detail
+
+
+def test_adjusted_vs_raw_zeroed_limit_day_fails():
+    # 001380 2025-03-26 모양: 원주가 3,500 → 2,450 하한가인데 조정주가 4,909 → 4,909
+    zeroed = _cell("001380", adj=(4_909.0, 4_909.0), raw=(3_500.0, 2_450.0), flu=-3_000)
+    assert not _adj_check([*_clean(), zeroed], strict=True).ok
+    # 같은 하한가를 조정주가도 따라가면 통과
+    kept = _cell("001380", adj=(4_909.0, 3_436.3), raw=(3_500.0, 2_450.0), flu=-3_000)
+    assert _adj_check([*_clean(), kept], strict=True).ok
+
+
+def test_adjusted_vs_raw_event_in_prev_t_is_skipped():
+    split = _cell("005930", adj=(53_000.0, 51_900.0), raw=(2_650_000.0, 51_900.0), flu=-208)
+    r = _adj_check([*_clean(), split], [("005930", T1)], strict=True)
+    assert r.ok and "이벤트 1" in r.detail
+    # 이벤트가 (prev, t] 밖이면(t 다음 날) 설명이 안 된다 — 원주가가 이어져 있으니 이음매
+    seam = _cell("005930", adj=(10_000.0, 5_000.0), raw=(10_000.0, 10_000.0), flu=0)
+    assert not _adj_check([*_clean(), seam], [("005930", D(2026, 9, 14))], strict=True).ok
+
+
+def test_adjusted_vs_raw_missing_raw_is_skipped_not_failed():
+    delisted = dc.AdjCell("999999", P, T1, 1_000.0, 100.0, None, None)
+    r = _adj_check([*_clean(), delisted], strict=True)
+    assert r.ok and "원주가 없음(폐지) 1" in r.detail
+
+
+def test_adjusted_vs_raw_base_reset_without_event_is_skipped():
+    # 298000 2026-06-15: 원주가 38,900 → 55,000(+41%), 기준가 77,800(×2 재설정, 이벤트 없음), 조정주가 −29.3% 가 맞다
+    reset = _cell("298000", adj=(77_800.0, 55_000.0), raw=(38_900.0, 55_000.0), flu=-2_931)
+    r = _adj_check([*_clean(), reset], strict=True)
+    assert r.ok and "기준가 재설정 1" in r.detail
+
+
+def test_adjusted_vs_raw_out_of_limit_is_skipped():
+    # 정리매매 등 ±30% 밖(flu −91%) — 원주가 자체가 끊겨 판단하지 않는다
+    crash = _cell("005110", adj=(1_254.0, 1_254.0), raw=(1_254.0, 112.0), flu=-9_107)
+    assert _adj_check([*_clean(), crash], strict=True).ok
+    # 수급 행이 없으면 원주가 비로 잰다: +43% 는 띠 밖, +28% 는 안(조정주가 0% 면 |dev| 21.9%)
+    assert _adj_check([*_clean(), _cell("X", adj=(100.0, 100.0), raw=(100.0, 143.0))], strict=True).ok
+    assert not _adj_check([*_clean(), _cell("X", adj=(100.0, 100.0), raw=(100.0, 128.0))], strict=True).ok
+
+
+def test_adjusted_vs_raw_aftermarket_limit_uses_flu_rt_not_raw_ratio():
+    # 0035S0 2026-09-30: 전일 통합 종가 27,050(정규장 29,900), 상한가 38,850 = 기준가 대비 +29.9%, 원주가 비 +43.6%
+    after_prev, after_day = D(2026, 9, 29), D(2026, 9, 30)
+    zeroed = _cell("0035S0", adj=(38_850.0, 38_850.0), raw=(27_050.0, 38_850.0), flu=2_993, prev=after_prev, day=after_day)
+    assert not _adj_check([*_clean(), zeroed], strict=True).ok
+    kept = _cell("0035S0", adj=(27_050.0, 38_850.0), raw=(27_050.0, 38_850.0), flu=2_993, prev=after_prev, day=after_day)
+    assert _adj_check([*_clean(), kept], strict=True).ok
+    # 애프터마켓 등락으로 기준가가 전일 통합 종가와 35% 다른 날(087010 10-08)도 원주가는 이어진 것으로 본다
+    gap = _cell("087010", adj=(96_900.0, 48_000.0), raw=(96_900.0, 91_500.0), flu=-2_994, prev=after_prev, day=after_day)
+    assert not _adj_check([*_clean(), gap], strict=True).ok
+    # 애프터마켓 전이면 같은 35% 차이는 기준가 재설정이다
+    assert _adj_check([*_clean(), _cell("087010", adj=(96_900.0, 48_000.0), raw=(96_900.0, 91_500.0), flu=-2_994)],
+                      strict=True).ok
+
+
+def test_adjusted_vs_raw_too_few_pairs_fails_even_when_not_strict():
+    r = _adj_check(_clean(n=10), strict=False)
+    assert not r.ok and r.kind == "sample"
+
+
+def test_adjusted_canaries_expected_state():
+    broken = {("025620", D(2021, 7, 29)): 15.39, ("258830", D(2021, 7, 29)): -0.8, ("001380", D(2025, 3, 26)): 0.0}
+    fixed = {("025620", D(2021, 7, 29)): 0.017, ("258830", D(2021, 7, 29)): 0.0, ("001380", D(2025, 3, 26)): -0.30}
+    loose = dc.check_adjusted_canaries(broken, strict=False)
+    assert len(loose) == 3 and all(r.ok and r.warn for r in loose)
+    assert not any(r.ok for r in dc.check_adjusted_canaries(broken, strict=True))
+    for strict in (False, True):
+        rs = dc.check_adjusted_canaries(fixed, strict=strict)
+        assert all(r.ok and not r.warn for r in rs)
+    assert "ADJUSTED_STRICT" in dc.check_adjusted_canaries(fixed, strict=False)[0].detail
+    assert all(r.ok and not r.warn for r in dc.check_adjusted_canaries({}, strict=True))  # 행 없음
+
+
+def test_adjusted_strict_default_is_off_until_swing_it_fix():
+    # 뒤집을 때 이 테스트도 같이 고친다(모듈 docstring 5의 조건을 확인한 뒤)
+    assert dc.ADJUSTED_STRICT is False
+
+
 # ── 조회 경로(sqlite) ─────────────────────────────────────────────────────
 
 
 def _seed(
     tmp_path, *, extra_bar: str | None = None, extra_codes: int = 1, extra_day: dt.date | None = None,
     premarket: bool = False, canary: int | None = 2_060_000, shift_base: bool = False,
+    adj_seam_day: dt.date | None = None,
 ):
     """``extra_bar``: 그 분에 ``extra_codes`` 종목 봉을 더한다(``extra_day`` 기본 T). ``premarket``: T 의
-    08:00~08:59 전 종목 봉(진짜 새 세션)."""
+    08:00~08:59 전 종목 봉(진짜 새 세션). 조정주가는 원주가 × 0.5 — ``adj_seam_day`` 면 000000 의 그날부터 × 0.25
+    (이벤트 없는 이음매)."""
     path = tmp_path / "q.db"
     con = storage.connect(path)
     con.execute("CREATE TABLE minute_bars (code TEXT, ts TEXT, open REAL, high REAL, low REAL, close REAL,"
                 " volume INTEGER, trade_value REAL, PRIMARY KEY (code, ts))")
-    d0, d1 = dt.date(2026, 10, 7), AFTER_DAY
+    dm1, d0, d1 = dt.date(2026, 10, 6), dt.date(2026, 10, 7), AFTER_DAY
     for i in range(dc.IDENTITY_MIN_PAIRS):
         code = f"{i:06d}"
         prev = 10_000 + 10 * i
+        con.execute("INSERT INTO supply_demand (code, date, close, flu_rt, source) VALUES (?,?,?,0, 'kiwoom')",
+                    (code, dm1.isoformat(), prev))
+        for day in (dm1, d0, d1):
+            factor = 0.25 if adj_seam_day and code == "000000" and day >= adj_seam_day else 0.5
+            con.execute("INSERT INTO daily_bars_raw (code, date, close) VALUES (?,?,?)", (code, day.isoformat(), prev))
+            con.execute("INSERT INTO daily_bars_adjusted (code, date, close) VALUES (?,?,?)",
+                        (code, day.isoformat(), prev * factor))
         for day in (d0, d1):
             for hm, px in (("09:00", prev - 100), ("15:30", prev), ("19:59", prev + 300)):
                 con.execute("INSERT INTO minute_bars VALUES (?,?,?,?,?,?,?,?)",
@@ -429,6 +564,34 @@ def test_main_fails_on_injected_adjusted_canary(tmp_path):
 
 def test_main_passes_without_canary_row(tmp_path):
     assert dc.main(["--db", _seed(tmp_path, canary=None), *ASOF]) == 0
+
+
+def test_main_adjusted_seam_warns_then_fails_when_strict(tmp_path, capsys, monkeypatch):
+    path = _seed(tmp_path, adj_seam_day=dt.date(2026, 10, 7))
+    assert dc.main(["--db", path, *ASOF]) == 0
+    out = capsys.readouterr().out
+    assert "[WARN] adjusted_vs_raw 2026-10-07~2026-10-07" in out and "000000 2026-10-07" in out
+    assert "(경고 1)" in out
+    monkeypatch.setattr(dc, "ADJUSTED_STRICT", True)
+    assert dc.main(["--db", path, *ASOF]) == dc.EXIT_DATA_FAIL
+    out = capsys.readouterr().out
+    assert "[FAIL:조정주가 이음매] adjusted_vs_raw" in out and "— 조정주가 이음매 1" in out
+
+
+def test_main_adjusted_check_skips_t(tmp_path, monkeypatch):
+    # T 의 원주가는 19:00 스냅숏 — T 칸의 어긋남은 보지 않는다(다음 날 창에서 본다)
+    monkeypatch.setattr(dc, "ADJUSTED_STRICT", True)
+    assert dc.main(["--db", _seed(tmp_path, adj_seam_day=AFTER_DAY), *ASOF]) == 0
+
+
+def test_main_empty_adjusted_is_sample_shortage(tmp_path, capsys):
+    path = _seed(tmp_path)
+    con = storage.connect(path)
+    con.execute("DELETE FROM daily_bars_adjusted")
+    con.commit()
+    con.close()
+    assert dc.main(["--db", path, *ASOF]) == 1
+    assert "[FAIL:표본 부족] adjusted_vs_raw" in capsys.readouterr().out
 
 
 def test_main_too_few_pairs_is_sample_shortage(tmp_path, capsys):
