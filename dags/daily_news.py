@@ -48,7 +48,8 @@ def daily_news():
             "--db", timescale_dsn(),
         ], env=dart_env())
 
-    @task(**DEFAULT_TASK_KW)
+    # 토스가 막혀도 DART 공시·종목별 기사 판정은 돈다 — 런 자체는 실패 태스크로 빨갛게 남는다.
+    @task(**{**DEFAULT_TASK_KW, "trigger_rule": "all_done"})
     def judge_news() -> None:
         run_collector([
             sys.executable, "-m", "collectors.news_judge",
