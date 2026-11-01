@@ -68,6 +68,10 @@ CONTAINER="${BACKUP_DB_CONTAINER:-quant-airflow-timescaledb-replica-1}"
 # PRIMARY DB 의 페이지 캐시를 밀어낸다(전체를 램에 캐시하는 게 DB 를 이 호스트로
 # 옮긴 이유였다). `.env` 의 BACKUP_STAGING_PARENT 로 디스크 경로를 준다. 없으면
 # 기존대로 mktemp 기본값(/tmp)을 쓴다 — trader 처럼 /tmp 가 디스크인 호스트용.
+# 부모 디렉터리는 여기서 만든다. 2026-10-24~31 에 `~/backup-staging` 이 사라져
+# mktemp 가 매번 실패했고, 백업이 8일 연속 돌지 않았다(알림은 alerts.log 에만).
+if [ -n "${BACKUP_STAGING_PARENT:-}" ]; then mkdir -p "$BACKUP_STAGING_PARENT"; fi
+BACKUP_OK_MARKER="${BACKUP_OK_MARKER:-$HOME/logs/quant-airflow/backup_last_ok}"
 TMPDIR="$(mktemp -d ${BACKUP_STAGING_PARENT:+-p "$BACKUP_STAGING_PARENT"})"
 # 비정상 종료는 사람에게 간다. 2026-09-12 의 `cd: No such file` 처럼 크론 로그에
 # 한 줄 남고 끝나던 실패가 이 레포 사고의 전형이었다(spec 2026-10-05). rc 를 **먼저**
@@ -80,6 +84,9 @@ on_exit() {
   if [ "$rc" -ne 0 ]; then
     { [ -n "${BACKUP_LOG:-}" ] && [ -r "$BACKUP_LOG" ] && tail -n 30 "$BACKUP_LOG"; } 2>/dev/null \
       | "$REPO/scripts/alert.sh" error "백업 실패 (rc=$rc, BACKUP_ONLY=${BACKUP_ONLY:-all})" || true
+  elif [ "${BACKUP_ONLY:-all}" = "all" ]; then
+    # 전체 경로가 끝난 시각 — daily_health_check.sh 의 report_backup_freshness 가 본다.
+    date '+%F %T' > "$BACKUP_OK_MARKER" 2>/dev/null || true
   fi
 }
 trap on_exit EXIT
