@@ -241,6 +241,27 @@ SELECT coalesce(t::text, ''), coalesce(b::text, ''), coalesce((b - t)::text, '')
     return 0
 }
 
+# 드라이브 백업(19:00 전체 경로)이 마지막으로 성공한 시각. 2026-10-24~31 에
+# 스테이징 디렉터리가 사라져 백업이 8일 연속 실패했는데, 알림이 alerts.log 에만
+# 쌓이고 이 점검은 백업을 안 봐서 아무도 몰랐다. 표시는 backup_to_gdrive.sh 의
+# EXIT 트랩이 BACKUP_ONLY=all 성공 때만 남긴다. 36시간 = 하루 한 번 + 여유.
+report_backup_freshness() {
+    local marker="${BACKUP_OK_MARKER:-$HOME/logs/quant-airflow/backup_last_ok}"
+    local last age_h
+    if [ ! -r "$marker" ]; then
+        warn "드라이브 백업: 성공 기록 없음 ($marker)"
+        return 0
+    fi
+    last=$(head -1 "$marker")
+    age_h=$(( ($(date +%s) - $(stat -c %Y "$marker")) / 3600 ))
+    if [ "$age_h" -ge 36 ]; then
+        warn "드라이브 백업: 마지막 성공 $last (${age_h}시간 전) — backup_to_gdrive.cron.log 확인"
+    else
+        log "드라이브 백업: 마지막 성공 $last"
+    fi
+    return 0
+}
+
 report_coverage
 # report_coverage 와 달리 주말·오전에도 돈다 — 전 거래일을 보는 점검이라
 # "오늘 장이 섰나" 와 무관하고, 토 10:00 의 daily_short_credit 실행분(금요일치)도
@@ -250,6 +271,7 @@ report_failures
 report_paused
 report_replication
 report_theme_freshness
+report_backup_freshness
 if [ ${#WARNINGS[@]} -gt 0 ]; then
     printf '%s\n' "${WARNINGS[@]}" | scripts/alert.sh warn "헬스체크 경보 ${#WARNINGS[@]}건 ($today)"
 fi
