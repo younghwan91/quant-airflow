@@ -37,11 +37,52 @@ docstring 에 남았다(``daily_finalize``). 원천 정의가 조용히 바뀌�
    (액면분할 전 원 종가)이어야 한다. 행이 없으면 통과(백필 범위 밖일 수 있다). 수정주가가 섞여 들어오면
    41,200 이 된다(``daily_bars`` 와 같은 값).
 
+4. **조정주가 대 원주가**(``check_adjusted_vs_raw``) — T-1 까지 최근 :data:`ADJ_WINDOW_DAYS` 거래일의 종목-일마다
+   ``daily_bars_adjusted`` 의 비 r_adj = adj(t)/adj(prev) 와 ``daily_bars_raw`` 원주가 비 r_raw 를 대조한다(prev = 그 종목의
+   직전 행). ``corporate_actions`` 에 (prev, t] 의 ``upd_rt`` ≠ 0 이벤트가 없고 원주가 쪽이 이어져 있으면(:func:`raw_in_band`)
+   두 비는 같아야 한다 — ``|r_adj/r_raw − 1|`` > :data:`ADJ_DEV_MAX` 인 칸이 이음매다. 건너뛰는 칸:
+     원주가 행이 없다   폐지 종목 — ``daily_bars_raw`` 는 상장 종목만. 실패가 아니다
+     이벤트가 있다      크기 대조는 swing-it 합격 검사 몫
+     원주가가 끊겼다    t 의 등락률(``supply_demand.flu_rt``, KRX 기준가 대비)이 가격제한폭 ±30% 밖이거나(정리매매·재상장),
+                        기준가가 전일 원 종가에서 :data:`ADJ_BASE_GAP_MAX`(전일이 2026-09-14~ 이면 애프터마켓 등락 몫을
+                        두고 :data:`ADJ_BASE_GAP_MAX_AFTERMARKET`) 넘게 떨어졌다(이벤트 없는 기준가 재설정).
+                        수급 행이 없으면 원주가 비가 [0.7, 1.3] 밖인지로 본다.
+   **띠를 원주가 비가 아니라 등락률로 재는 이유** — ① 2026-09-14~ 전일 원 종가는 애프터마켓 포함 통합값이라 기준가(전일
+   정규장 종가)와 다르다. 원주가 비로 재면 09-30~10-29 상하한가 25칸이 ±30.1~43.6% 로 띠 밖에 나가고, 그중
+   ``price_adjust`` 가 지운 0035S0 2026-09-30(기준가 대비 +29.9%, 원주가 비 +43.6%, 조정주가 0%)을 놓친다(§3
+   ``regular_close`` 함정). ② 원주가 비 띠 [0.7, 1/0.7] 로 재면 이력에서 24칸이 더 걸린다 — 15칸은 기준가가 전일 원 종가와
+   20~100% 다르고(키움이 이벤트를 빠뜨린 재설정) r_adj 가 등락률과 같아 조정주가가 맞는 칸이고(예 298000 2026-06-15 원주가
+   38,900 → 55,000 = +41%, 기준가 77,800, 조정주가 77,800 → 55,000 = flu_rt −29.3%), 9칸은 수급 행이 없고 원주가 비가
+   +30~43% 라 가격제한폭 밖이다(판단 불가).
+   **T 는 보지 않는다** — 06:30 의 T 원주가는 T 19:00 ``daily_bars_raw`` 스냅숏(애프터마켓 19:00 까지)이라 확정 일봉과
+   다르다(2026-10-30 실측 2,588종목 중 1,813 다름, 99분위 4.9%·최대 11.1%). T-1 은 T 19:00 런이 다시 받아 확정 일봉과 같다
+   (10-29 2,585종목 0 다름). 비교하는 두 종가는 2026-09-14~ 둘 다 통합 종가라 같은 정의끼리의 비다 — ``regular_close`` 와
+   섞지 않는다(섞으면 정의 차이가 이음매로 보인다). ``trade_value``(백만원)는 쓰지 않는다.
+
+   실측(2026-11-02 읽기 전용, 2016-09~2026-10-30 월별로 이 판정을 그대로): 대조 533만 칸 중 이음매 172칸·91일 —
+   2019-02-27 34·2021-07-29 31·2024-01-08 19칸에 몰리고(``daily_bars`` 수집 이음매가 그대로 넘어옴, 예 258830 2021-07-29
+   원주가 24,500 → 24,500 인데 조정주가 24,500 → 4,900) 나머지는 해마다 2~17칸(2025 7·2026 8) 흩어진다 — swing-it ``price_adjust`` 가 진짜
+   ±30% 상하한가를 지운 칸(예 001380 2025-03-26 원주가 3,500 → 2,450 인데 조정주가 4,909 → 4,909)과 **지금도 새로 생기는**
+   수집 이음매(117670 2026-10-06 조정주가 10,420 → 5,155 · 원주가 10,420 → 10,310 — 10-21 권리락 −50% 를 키움이 소급 수정했고
+   16:00 수집의 15일 창이 10-06 부터만 다시 써서 그 앞이 옛 기준으로 남았다). 창 20거래일은 이 15일 경계를 덮는다.
+   **지금 이 검사를 실패로 두면 거의 매일 빨갛다** — 20거래일 창으로 매일 돌렸다면 2025년 242런 중 96, 2026년(10-30 까지)
+   202런 중 109, 2026-09-15 뒤로는 30런 전부가 빨갰다. 매일 빨간 경보는 안 보게 된다. 그래서 swing-it ``price_adjust`` 수정이
+   배포되기 전에는 :data:`ADJUSTED_STRICT` = False 로 ``[WARN]`` 만 찍는다(표본 부족 — 재계산이 비었다 — 은 그래도 실패).
+5. **조정주가 카나리아**(``check_adjusted_canaries``) — 위 실측의 알려진 이음매 세 칸(이력 전체를 매일 훑지 않고 대표 칸만).
+   고쳐지면 r_adj 가 025620·258830 2021-07-29 |r| < 0.3(수집 이음매), 001380 2025-03-26 r ≈ −0.30(지워진 하한가)이 된다.
+   ``ADJUSTED_STRICT`` = False 면 깨진 칸은 ``[WARN]``, 고쳐진 칸은 그렇다고 찍는다.
+
+   **뒤집는 조건**: swing-it ``price_adjust`` 수정이 배포돼(``daily_bars_adjusted`` 는 매일 전량 재계산이라 다음 06:30 에 반영)
+   ``python -m collectors.data_checks`` 의 ``[WARN]`` 이 모두 사라지면 :data:`ADJUSTED_STRICT` 를 True 로 바꾼다 — 그 뒤엔
+   최근 창의 새 이음매와 카나리아가 되살아나는 것이 둘 다 실패다. 최근 창이 깨끗하지 않은데 카나리아만 고쳐졌으면 그 칸들을
+   먼저 본다(수정이 한 부류만 고쳤다).
+
 ``minute_bars`` 는 scalp-it 이 쓰는 테이블이다(DDL 도 거기). 그날 분봉이 비면 두 검사가 표본 0 으로 실패한다
 — 빈 표본을 통과로 넘기지 않는다(CLAUDE.md §5).
 
 실패는 원인별로 구분해 찍는다(:data:`KIND_LABEL`) — 접속 실패(종료 코드 3, DB·환경변수 문제라 데이터와 무관) /
-표본 부족(수집이 빠지거나 반쪽) / 항등식 불일치 / 세션 이탈 / 카나리아(수정주가 혼입). 데이터 검사 실패는 종료 코드 1.
+표본 부족(수집이 빠지거나 반쪽) / 항등식 불일치 / 세션 이탈 / 카나리아(수정주가 혼입) / 조정주가 이음매 / 조정주가 카나리아.
+데이터 검사 실패는 종료 코드 1. ``[WARN]`` 은 통과로 센다(종료 0).
 
 DSN 은 명령줄로 받지 않는다(``ps`` 에 비밀번호가 찍힌다) — 환경변수 ``KR_QUANT_DB`` 로 받는다. ``--db`` 는 sqlite 경로 전용.
 
@@ -102,6 +143,33 @@ IDENTITY_MIN_PAIRS = 300
 
 CANARY = ("005930", dt.date(2017, 3, 31), 2_060_000)
 
+#: 조정주가 대 원주가 대조 창(T-1 까지 거래일 수). 16:00 수집이 다시 쓰는 15일 창 경계를 덮는다(모듈 docstring 4).
+ADJ_WINDOW_DAYS = 20
+#: |r_adj/r_raw − 1| 문턱 — 실측 이음매는 −80%·+1,539% 처럼 크고 상하한가 지움은 ±23~43%.
+ADJ_DEV_MAX = 0.2
+#: 원주가 비가 이 밖이면(가격제한폭 ±30% 밖 — 거래정지 재개·빠진 이벤트의 기준가 재설정) 대조하지 않는다.
+ADJ_RAW_BAND = (0.7, 1.3)
+#: 기준가(전일 정규장 종가)가 전일 원 종가에서 이만큼 넘게 떨어지면 이벤트 없는 기준가 재설정으로 보고 대조하지 않는다.
+#: 전일이 애프터마켓 전이면 두 값은 같아야 한다(재설정 실측 20~100%). 전일이 2026-09-14~ 이면 전일 원 종가가 애프터마켓
+#: 끝 가격이라 정규장 종가와 그 세션 등락만큼 다르다 — 10월 실측 최대 35%(087010 10-07 정규장 130,600 · 통합 96,900).
+#: 그 뒤로는 ×2·÷2 재설정(+100%·−50%)만 가려낸다.
+ADJ_BASE_GAP_MAX = 0.15
+ADJ_BASE_GAP_MAX_AFTERMARKET = 0.45
+#: 대조 칸이 이보다 적으면 실패 — 조정주가 재계산이 비었거나 원주가가 안 들어왔다(평소 창 하나 ~5만 칸).
+ADJ_MIN_PAIRS = 300
+
+#: (code, t, 고쳐졌을 때 r_adj 하한, 상한) — 모듈 docstring 5. r_adj = adj(t)/adj(직전 행) − 1.
+ADJUSTED_CANARIES = (
+    ("025620", dt.date(2021, 7, 29), -0.3, 0.3),    # 원주가 1,780 → 1,810, 조정주가 1,780 → 29,179(이음매)
+    ("258830", dt.date(2021, 7, 29), -0.3, 0.3),    # 원주가 24,500 → 24,500, 조정주가 24,500 → 4,900(이음매)
+    ("001380", dt.date(2025, 3, 26), -0.31, -0.29),  # 원주가 3,500 → 2,450(하한가), 조정주가 4,909 → 4,909(지움)
+)
+#: False = swing-it price_adjust 수정 배포 전 — 이음매·깨진 카나리아는 [WARN]. 뒤집는 조건은 모듈 docstring 5.
+ADJUSTED_STRICT = False
+
+#: Postgres 세션의 쿼리 하나 시간 제한(:func:`main`).
+STATEMENT_TIMEOUT = "120s"
+
 #: DSN 을 받는 환경변수(다른 레포가 이미 쓰는 이름).
 DSN_ENV = "KR_QUANT_DB"
 _PG_PREFIXES = ("postgresql://", "postgres://")
@@ -113,6 +181,8 @@ KIND_LABEL = {
     "identity": "항등식 불일치",
     "session": "세션 이탈",
     "canary": "카나리아",
+    "seam": "조정주가 이음매",
+    "adjusted_canary": "조정주가 카나리아",
 }
 EXIT_DATA_FAIL = 1
 EXIT_CONNECT_FAIL = 3
@@ -125,6 +195,8 @@ class CheckResult:
     detail: str
     #: 실패 원인(:data:`KIND_LABEL` 키). 통과면 그 검사의 종류.
     kind: str = ""
+    #: 통과지만 알려진 결함이 남아 있다 — ``[WARN]`` 으로 찍고 종료 코드는 0.
+    warn: bool = False
 
 
 # ── 순수 함수 ──────────────────────────────────────────────────────────────
@@ -352,6 +424,162 @@ def check_raw_price_canary(close: float | None) -> CheckResult:
     return CheckResult(name, True, f"close {expected:,}", "canary")
 
 
+@dataclass(frozen=True)
+class AdjCell:
+    """한 종목의 이웃한 두 조정주가 행(prev → t)과 같은 날의 원주가(없으면 None).
+
+    ``flu_rt``·``base``: t 의 키움 ``supply_demand`` 등락률(bp)과 그 기준가(= ``close/(1+flu_rt/1e4)``, 전일 정규장
+    종가) — 가격제한폭과 기준가 재설정 판정에 쓴다(모듈 docstring 4). 수급 행이 없으면 None."""
+
+    code: str
+    prev: dt.date
+    day: dt.date
+    adj_prev: float
+    adj: float
+    raw_prev: float | None
+    raw: float | None
+    flu_rt: float | None = None
+    base: float | None = None
+
+
+def pair_adjusted_cells(
+    adj_rows: Iterable[tuple[str, dt.date, float | None]],
+    raw_close: Mapping[tuple[str, dt.date], float | None],
+    start: dt.date,
+    supply: Mapping[tuple[str, dt.date], tuple[float | None, float | None]] | None = None,
+) -> list[AdjCell]:
+    """``adj_rows``(code, date, close)에서 종목마다 이웃한 두 행을 짝짓는다 — t ≥ ``start`` 인 칸만.
+
+    prev 는 그 종목의 직전 조정주가 행이다(거래일 달력의 전날이 아니다 — 거래정지로 빈 날을 건너뛴다).
+    조정주가가 NULL·0 이하인 행은 짝에서 뺀다. ``supply``: (code, date) → 키움 수급 (close, flu_rt)."""
+    supply = supply or {}
+    by_code: dict[str, list[tuple[dt.date, float]]] = {}
+    for code, day, close in adj_rows:
+        if close is not None and close > 0:
+            by_code.setdefault(code, []).append((day, float(close)))
+    cells: list[AdjCell] = []
+    for code, series in by_code.items():
+        series.sort()
+        for (p, ap), (d, a) in zip(series, series[1:], strict=False):
+            if d < start:
+                continue
+            rp, r = raw_close.get((code, p)), raw_close.get((code, d))
+            sd_close, flu = supply.get((code, d), (None, None))
+            base = None
+            if sd_close is not None and flu is not None and sd_close > 0 and flu > -10_000:
+                base = float(sd_close) / (1 + float(flu) / 1e4)
+            cells.append(AdjCell(code, p, d, ap, a,
+                                 None if rp is None else float(rp), None if r is None else float(r),
+                                 None if base is None else float(flu), base))
+    return cells
+
+
+def raw_in_band(c: AdjCell, band: tuple[float, float] = ADJ_RAW_BAND) -> bool:
+    """원주가 쪽이 이어져 있고 가격제한폭 안인가 — 아니면 대조하지 않는다(모듈 docstring 4).
+
+    수급 등락률이 있으면 KRX 정의 그대로 본다: t 종가/기준가(``1 + flu_rt/1e4``)가 ``band`` 안이고, 기준가가 전일 원
+    종가에서 :data:`ADJ_BASE_GAP_MAX`(전일이 2026-09-14~ 이면 :data:`ADJ_BASE_GAP_MAX_AFTERMARKET`) 넘게 떨어져 있지
+    않다(넘으면 이벤트 없는 기준가 재설정 — 298000 2026-06-15 ×2). 수급 행이 없으면 원주가 비로 잰다."""
+    lo, hi = band
+    if c.flu_rt is not None and c.base is not None:
+        gap = ADJ_BASE_GAP_MAX if c.prev < AFTERMARKET_START else ADJ_BASE_GAP_MAX_AFTERMARKET
+        return lo <= 1 + c.flu_rt / 1e4 <= hi and abs(c.base / c.raw_prev - 1) <= gap
+    return lo <= c.raw / c.raw_prev <= hi
+
+
+def _has_event(events: Mapping[str, list[dt.date]], code: str, prev: dt.date, day: dt.date) -> bool:
+    return any(prev < e <= day for e in events.get(code, ()))
+
+
+def check_adjusted_vs_raw(
+    first: dt.date,
+    last: dt.date,
+    cells: Iterable[AdjCell],
+    base_resets: Iterable[tuple[str, dt.date]] = (),
+    *,
+    dev_max: float = ADJ_DEV_MAX,
+    raw_band: tuple[float, float] = ADJ_RAW_BAND,
+    min_pairs: int = ADJ_MIN_PAIRS,
+    strict: bool | None = None,
+) -> CheckResult:
+    """``cells``: :func:`pair_adjusted_cells`. ``base_resets``: ``corporate_actions`` upd_rt ≠ 0 의 (code, date).
+
+    이벤트도 없고 원주가 비가 ``raw_band`` 안인데 |r_adj/r_raw − 1| > ``dev_max`` 인 칸이 하나라도 있으면 이음매 —
+    ``strict``(기본 :data:`ADJUSTED_STRICT`)면 실패, 아니면 ``warn`` 통과(모듈 docstring 4). 원주가가 없는 칸(폐지 종목)은
+    건너뜀이다. 대조 칸이 ``min_pairs`` 보다 적으면 ``strict`` 와 무관하게 실패."""
+    strict = ADJUSTED_STRICT if strict is None else strict
+    name = f"adjusted_vs_raw {first}~{last}"
+    events: dict[str, list[dt.date]] = {}
+    for code, day in base_resets:
+        events.setdefault(code, []).append(day)
+    pairs = no_raw = with_event = out_band = 0
+    bad: list[tuple[AdjCell, float, float]] = []
+    for c in cells:
+        if c.raw_prev is None or c.raw is None or c.raw_prev <= 0 or c.raw <= 0:
+            no_raw += 1
+            continue
+        if _has_event(events, c.code, c.prev, c.day):
+            with_event += 1
+            continue
+        if not raw_in_band(c, raw_band):
+            out_band += 1
+            continue
+        r_raw = c.raw / c.raw_prev
+        pairs += 1
+        r_adj = c.adj / c.adj_prev
+        if abs(r_adj / r_raw - 1) > dev_max:
+            bad.append((c, r_adj, r_raw))
+    skipped = f"건너뜀: 이벤트 {with_event}·가격제한폭 밖/기준가 재설정 {out_band}·원주가 없음(폐지) {no_raw}"
+    if pairs < min_pairs:
+        return CheckResult(
+            name, False,
+            f"대조 칸 {pairs} < {min_pairs}({skipped}) — daily_bars_adjusted 재계산이 비었거나 daily_bars_raw 가 안 들어왔다",
+            "sample",
+        )
+    sample = ", ".join(
+        f"{c.code} {c.day} 조정 {c.adj_prev:,.0f}→{c.adj:,.0f}({r_adj - 1:+.1%}) vs 원 {c.raw_prev:,.0f}→{c.raw:,.0f}({r_raw - 1:+.1%})"
+        for c, r_adj, r_raw in bad[:5]
+    )
+    detail = f"이음매 {len(bad)}/{pairs}칸(문턱 |r_adj/r_raw−1| > {dev_max:.0%}; {skipped})"
+    if bad:
+        detail += (f"; 예 {sample} — 원주가로 설명 안 되는 조정주가 점프(daily_bars 수집 이음매이거나 swing-it"
+                   " price_adjust 가 상하한가를 지웠다)")
+        if strict:
+            return CheckResult(name, False, detail + ". collectors/data_checks.py 모듈 docstring 4·5", "seam")
+        return CheckResult(name, True, detail + " — swing-it price_adjust 수정 배포 전이라 경고만(ADJUSTED_STRICT)",
+                           "seam", warn=True)
+    return CheckResult(name, True, detail, "seam")
+
+
+def check_adjusted_canaries(
+    observed: Mapping[tuple[str, dt.date], float | None],
+    *,
+    strict: bool | None = None,
+) -> list[CheckResult]:
+    """``observed``: (code, t) → r_adj(None = 행 없음). :data:`ADJUSTED_CANARIES` 마다 한 결과.
+
+    ``strict``(기본 :data:`ADJUSTED_STRICT`)가 False 면(swing-it 수정 배포 전) 깨진 칸은 ``warn`` 통과, True 면 실패
+    (모듈 docstring 5)."""
+    strict = ADJUSTED_STRICT if strict is None else strict
+    out: list[CheckResult] = []
+    for code, day, lo, hi in ADJUSTED_CANARIES:
+        name = f"canary daily_bars_adjusted {code} {day}"
+        r = observed.get((code, day))
+        if r is None:
+            out.append(CheckResult(name, True, "행 없음 — 통과(조정주가 범위 밖)", "adjusted_canary"))
+        elif lo <= r <= hi:
+            note = "" if strict else " — 고쳐졌다(최근 창 [WARN] 도 사라지면 ADJUSTED_STRICT 를 True 로)"
+            out.append(CheckResult(name, True, f"r_adj {r:+.1%} ∈ [{lo:+.0%}, {hi:+.0%}]{note}", "adjusted_canary"))
+        else:
+            head = f"r_adj {r:+.1%} ∉ [{lo:+.0%}, {hi:+.0%}] — 조정주가 이음매(모듈 docstring 4)"
+            if strict:
+                out.append(CheckResult(name, False, head + " 가 되살아났다", "adjusted_canary"))
+            else:
+                out.append(CheckResult(name, True, head + " 그대로 — swing-it price_adjust 수정 배포 전이라 경고만",
+                                       "adjusted_canary", warn=True))
+    return out
+
+
 # ── 조회(sqlite·Postgres 공용) ──────────────────────────────────────────────
 
 
@@ -440,15 +668,59 @@ def fetch_canary_close(con: Any) -> float | None:
     return None if not row else row[0]
 
 
+def adjusted_vs_raw_result(con: Any, days: list[dt.date]) -> CheckResult:
+    """``days``: 오름차순 거래일 — 첫날은 직전 행 몫으로만 읽고 대조는 둘째 날부터 끝까지."""
+    if len(days) < 2:
+        return CheckResult("adjusted_vs_raw", False, f"대조할 거래일 부족({len(days)}일)", "sample")
+    lo, first, last = days[0].isoformat(), days[1], days[-1]
+    adj = storage.fetchall(
+        con, "SELECT code, date, close FROM daily_bars_adjusted WHERE date >= ? AND date <= ?", (lo, last.isoformat()),
+    )
+    raw = storage.fetchall(
+        con, "SELECT code, date, close FROM daily_bars_raw WHERE date >= ? AND date <= ?", (lo, last.isoformat()),
+    )
+    resets = storage.fetchall(
+        con, "SELECT code, date FROM corporate_actions WHERE date > ? AND date <= ? AND upd_rt <> 0",
+        (lo, last.isoformat()),
+    )
+    supply = storage.fetchall(
+        con, "SELECT code, date, close, flu_rt FROM supply_demand WHERE date >= ? AND date <= ? AND source = 'kiwoom'",
+        (first.isoformat(), last.isoformat()),
+    )
+    cells = pair_adjusted_cells(
+        [(code, _as_date(d), c) for code, d, c in adj],
+        {(code, _as_date(d)): c for code, d, c in raw},
+        first,
+        {(code, _as_date(d)): (c, f) for code, d, c, f in supply},
+    )
+    return check_adjusted_vs_raw(first, last, cells, [(code, _as_date(d)) for code, d in resets])
+
+
+def fetch_adjusted_canaries(con: Any) -> dict[tuple[str, dt.date], float | None]:
+    """카나리아 칸의 r_adj — 그 종목의 t 와 직전 조정주가 행(30일 안)으로."""
+    out: dict[tuple[str, dt.date], float | None] = {}
+    for code, day, _, _ in ADJUSTED_CANARIES:
+        rows = storage.fetchall(
+            con,
+            "SELECT date, close FROM daily_bars_adjusted WHERE code = ? AND date >= ? AND date <= ? ORDER BY date DESC LIMIT 2",
+            (code, (day - dt.timedelta(days=30)).isoformat(), day.isoformat()),
+        )
+        ok = len(rows) == 2 and _as_date(rows[0][0]) == day and rows[0][1] and rows[1][1]
+        out[code, day] = float(rows[0][1]) / float(rows[1][1]) - 1 if ok else None
+    return out
+
+
 def run_checks(con: Any, asof: dt.date) -> list[CheckResult]:
-    """``asof`` 전 마지막 거래일 T 를 본다: T-1·T 의 세션, (T-1 → T) 항등식, 카나리아.
+    """``asof`` 전 마지막 거래일 T 를 본다: T-1·T 의 세션, (T-1 → T) 항등식, 카나리아, T-1 까지
+    :data:`ADJ_WINDOW_DAYS` 거래일의 조정주가 대 원주가, 조정주가 카나리아.
 
     T-1 세션도 보는 이유: 06:30 에 T 의 애프터마켓 봉은 ~13% 만 적재돼 있다(모듈 docstring) — T-1 은 다 있다.
+    조정주가 대조가 T 를 빼는 이유: T 의 원주가는 19:00 스냅숏이다(모듈 docstring 4).
     """
-    days = trading_days(con, asof, 2)
+    days = trading_days(con, asof, ADJ_WINDOW_DAYS + 2)
     if len(days) < 2:
         return [CheckResult("trading days", False, f"{asof} 전 supply_demand 거래일이 2개 미만", "sample")]
-    prev_day, day = days
+    prev_day, day = days[-2:]
     return [
         session_result(con, prev_day),
         session_result(con, day),
@@ -458,6 +730,8 @@ def run_checks(con: Any, asof: dt.date) -> list[CheckResult]:
             fetch_supply_rows(con, day),
         ),
         check_raw_price_canary(fetch_canary_close(con)),
+        adjusted_vs_raw_result(con, days[:-1]),
+        *check_adjusted_canaries(fetch_adjusted_canaries(con)),
     ]
 
 
@@ -482,6 +756,9 @@ def main(argv: list[str] | None = None) -> int:
         con = storage.connect(target)
         if storage._is_pg(con):
             con.set_session(readonly=True)
+            # 태스크 시간 제한(10분)이 프로세스를 죽여도 서버 쪽 쿼리는 남는다 — 죽은 클라이언트의 29시간 쿼리가
+            # 압축 정책 뒤로 전 DAG·백업을 막은 일(2026-10-14)이 있다. 평소 쿼리 하나 1초 안팎.
+            storage.fetchall(con, "SELECT set_config('statement_timeout', ?, false)", (STATEMENT_TIMEOUT,))
         targets = [asof]
         if args.days > 1:
             targets = [d + dt.timedelta(days=1) for d in trading_days(con, asof, args.days)]
@@ -499,7 +776,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[FAIL:{KIND_LABEL['connect']}] DB 접속·조회 실패: {type(e).__name__}: {''.join(msg)}", flush=True)
         return EXIT_CONNECT_FAIL
     for r in results:
-        tag = "OK" if r.ok else f"FAIL:{KIND_LABEL.get(r.kind, r.kind)}"
+        tag = ("WARN" if r.warn else "OK") if r.ok else f"FAIL:{KIND_LABEL.get(r.kind, r.kind)}"
         print(f"[{tag}] {r.name}: {r.detail}", flush=True)
     failed = [r for r in results if not r.ok]
     if failed:
@@ -510,7 +787,8 @@ def main(argv: list[str] | None = None) -> int:
         kinds = ", ".join(f"{k} {n}" for k, n in by_kind.items())
         print(f"데이터 품질 검사 실패 {len(failed)}/{len(results)} — {kinds}", flush=True)
         return EXIT_DATA_FAIL
-    print(f"데이터 품질 검사 통과 {len(results)}건", flush=True)
+    warned = sum(r.warn for r in results)
+    print(f"데이터 품질 검사 통과 {len(results)}건" + (f"(경고 {warned})" if warned else ""), flush=True)
     return 0
 
 
