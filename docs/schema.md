@@ -24,7 +24,8 @@
 | `short_selling` | 공매도 추이(수량·잔고·비율·평균가). 매일 수집은 2024-05~, 그 앞 2016-09~ 는 `flow_history --what short` 백필 — **백필 구간은 상장 생존 종목만**(키움이 폐지 코드에 빈 응답, 2026-10 기준 상장 종목) |
 | `credit_balance` | 신용잔고(신규·상환·잔고·비율). 매일 수집은 2026-02~, 그 앞 2016-09~ 는 `flow_history --what credit` 백필(ka10013 `dt`=기준일) — **백필 구간은 상장 생존 종목만** |
 | `sector_index` | 업종지수 OHLCV |
-| `shares_outstanding_history` | 상장주식수 이력(point-in-time 시총 계산용). `source` 가 kiwoom(주간 스냅샷)/krx(중단)/dart(과거 백필)를 구분. 키움은 현재 스냅샷만 주므로 **2016~2025 구간은 DART `--listed` 백필로 채운다** |
+| `shares_outstanding_history` | 상장주식수 이력(point-in-time 시총 계산용). `source` 가 kiwoom(주간 스냅샷)/krx(중단)/dart(과거 백필)를 구분. 키움은 현재 스냅샷만 주므로 **2016~2025 구간은 DART `--listed` 백필로 채운다**. `knowledge_date`: dart 는 **마지막 정정본** 접수일이라 늦다(첫 공시는 아래 표), 키움은 2026-11-02 뒤 행만 `date` 와 같고 앞은 NULL — **`coalesce(knowledge_date, date)` 로 읽는다**(`knowledge_date <= x` 는 키움 행을 통째로 뺀다). 빈 해는 `backfill_markers` `dart_shares_013:<연도>` = DART 에 보고서 없음(013)일 때만 |
+| `shares_original_filing` | 위 dart 행의 **처음 공개된 날·그때 값**(`first_public_date`·`rcept_no`·`shares_original`, 039). 원본 공시 원문에서 읽었다. 행이 없으면 늦은 도장이 그대로다. point-in-time 시총은 두 표를 합쳐 as-of 한다(같은 기준일은 늦게 안 판이 덮는다) — krx-quant-core `load_risk_inputs(shares_basis="first_public")` |
 | `consensus` | 네이버 애널리스트 컨센서스(목표가·투자의견·EPS) |
 | `news_articles` | krx-news-client(pip)로 수집한 뉴스(현재 토스만). PK `(id, published_at)` — `id`=`make_article_id(source,url)`라 재크롤링해도 같은 행을 갱신한다. 백테스팅+실매매, 추후 LLM 매매판단용. 두 경로가 같은 id 로 들어온다 — `daily_news`(하이라이트 피드, 최신 수십 건)와 `daily_toss_company_news`(종목별 피드, 2023-03-16~). 후자는 **이미 있는 id 를 건너뛴다**(토스가 고친 기사는 createdAt 이 바뀌어 PK 로는 두 행이 된다 — 먼저 본 판을 남긴다). 종목별 피드 기사는 `content` 가 NULL(피드는 본문을 안 준다) |
 
@@ -213,6 +214,7 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 | `036_daily_bars_adj_v2_build_2008` | `daily_bars_adj_v2_build` 재생성 — 원주가 2007-11-22~ 확장분까지 v2 전량 재계산(검사 4종 뒤 이름 교체, 운영 표 제자리 갱신 금지) |
 | `037_daily_bars_listed_naver` | `daily_bars_listed_naver` 신설 — 상장 종목 네이버 수정주가 2007-11~2016-09, v2 의 빠진 수정 이벤트(거래정지 뒤 재개일 감자·병합) 추정 기준. 수익률 원천 아님 |
 | `038_daily_bars_adj_v2_swap_2008` | `daily_bars_adj_v2_build`(2007-11-22~, 1,001만행) → `daily_bars_adj_v2`, 옛 표 → `daily_bars_adj_v2_2016`. 검사 4종 결과는 038 머리말 |
+| `039_shares_original_filing` | `shares_original_filing` 신설 — stockTotqySttus `rcept_no` 가 마지막 정정본이라 `knowledge_date` 가 늦다(비교 가능 17,425행 중 3,397, 30일+ 2,202). 본표는 고치지 않는다 |
 
 > ⚠️ 001 은 코드가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이 `daily_earnings` 가
 > 초록불이었던 건 비수기라 `rows=0` 이어서 DB 를 건드리기 전에 빠져나갔기 때문이지,

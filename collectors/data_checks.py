@@ -78,6 +78,12 @@ docstring 에 남았다(``daily_finalize``). 원천 정의가 조용히 바뀌�
    ``python -m collectors.data_checks`` 의 ``[WARN]`` 이 모두 사라지면 :data:`ADJUSTED_STRICT` 를 True 로 바꾼다 — 그 뒤엔
    최근 창의 새 이음매와 카나리아가 되살아나는 것이 둘 다 실패다. 최근 창이 깨끗하지 않은데 카나리아만 고쳐졌으면 그 칸들을
    먼저 본다(수정이 한 부류만 고쳤다).
+6. **상장주식수**(``check_shares_canaries``·``check_shares_missing``) — DART 라벨 표기 차이로 값이 버려지고 그것이 영구
+   "자료 없음" 마커가 되어 코드-연도 1,873개가 비었고(009150·034730 2021 등), ``rcept_no`` 가 마지막 정정본이라
+   ``knowledge_date`` 가 늦었다(``dart_shares.py`` 모듈 docstring, migration 039). 다시 비지 않는지 본다:
+   카나리아(:data:`SHARES_CANARIES`)는 값과 처음 안 날(본표 ``knowledge_date``·``shares_original_filing.first_public_date`` 중
+   이른 쪽), 결측률은 해마다 마지막 거래일 상장 종목 중 그 해 주식수 행도 013 마커도 없는 비율이 :data:`SHARES_MISSING_MAX` 이하.
+   백필 전에는 :data:`SHARES_STRICT` = False 로 ``[WARN]`` 만 찍는다. 백필이 끝나 ``[WARN]`` 이 사라지면 True 로 뒤집는다.
 
 ``minute_bars`` 는 scalp-it 이 쓰는 테이블이다(DDL 도 거기). 그날 분봉이 비면 두 검사가 표본 0 으로 실패한다
 — 빈 표본을 통과로 넘기지 않는다(CLAUDE.md §5).
@@ -170,6 +176,21 @@ ADJUSTED_CANARIES = (
 #: True = swing-it price_adjust 수정(PR #12, 2026-11-02 배포) 뒤 — 새 이음매·되살아난 카나리아는 실패. 모듈 docstring 5.
 ADJUSTED_STRICT = True
 
+#: (code, 기준일, 발행주식총수 | None, 처음 안 날 | None) — 모듈 docstring 6. 2026-11-02 stockTotqySttus·원본 공시로 실측.
+SHARES_CANARIES = (
+    ("009150", dt.date(2021, 12, 31), 74_693_696, None),   # 라벨 `의결권이 있는\n주식(보통주)` — 옛 파서가 버렸다
+    ("034730", dt.date(2021, 12, 31), 74_149_329, None),   # 라벨 `의결권있는 주식`
+    ("066570", dt.date(2021, 12, 31), 163_647_814, dt.date(2022, 3, 16)),  # 라벨 `의결권 있는 주식\n(보통주)`, 1분기만 `보통주`
+    ("068270", dt.date(2021, 12, 31), None, dt.date(2022, 3, 8)),   # 본표 도장은 정정본 05-12
+    ("017670", dt.date(2021, 12, 31), None, dt.date(2022, 3, 16)),  # 본표 도장은 정정본 08-12, 2021-11 인적분할 뒤 첫 값
+)
+#: 결측률을 볼 첫 해(그 전은 정기보고서 접수일 표가 없어 첫 공시 도장이 없다).
+SHARES_MISSING_FROM_YEAR = 2019
+#: 그 해 마지막 거래일 상장 종목 중 주식수 행도 013 마커도 없는 비율 상한.
+SHARES_MISSING_MAX = 0.05
+#: False = 백필 전 — 깨져도 ``[WARN]``. 모듈 docstring 6.
+SHARES_STRICT = False
+
 #: Postgres 세션의 쿼리 하나 시간 제한(:func:`main`).
 STATEMENT_TIMEOUT = "120s"
 
@@ -186,6 +207,8 @@ KIND_LABEL = {
     "canary": "카나리아",
     "seam": "조정주가 이음매",
     "adjusted_canary": "조정주가 카나리아",
+    "shares_canary": "주식수 카나리아",
+    "shares_missing": "주식수 결측률",
 }
 EXIT_DATA_FAIL = 1
 EXIT_CONNECT_FAIL = 3
@@ -583,6 +606,56 @@ def check_adjusted_canaries(
     return out
 
 
+def _shares_verdict(name: str, kind: str, problem: str | None, ok_detail: str, strict: bool) -> CheckResult:
+    if problem is None:
+        return CheckResult(name, True, ok_detail, kind)
+    if strict:
+        return CheckResult(name, False, problem, kind)
+    return CheckResult(name, True, problem + " — 백필 전이라 경고만(SHARES_STRICT)", kind, warn=True)
+
+
+def check_shares_canaries(
+    observed: Mapping[tuple[str, dt.date], tuple[int | None, dt.date | None]],
+    *,
+    strict: bool | None = None,
+) -> list[CheckResult]:
+    """``observed``: (code, 기준일) → (본표 주식수, 처음 안 날). 없으면 (None, None). 모듈 docstring 6."""
+    strict = SHARES_STRICT if strict is None else strict
+    out: list[CheckResult] = []
+    for code, day, shares, known in SHARES_CANARIES:
+        got_shares, got_known = observed.get((code, day), (None, None))
+        problems = []
+        if shares is not None and got_shares != shares:
+            problems.append(f"주식수 {got_shares} ≠ {shares}")
+        if known is not None and got_known != known:
+            problems.append(f"처음 안 날 {got_known} ≠ {known}")
+        problem = ("; ".join(problems) + " — dart_shares 파서·첫 공시 도장") if problems else None
+        out.append(_shares_verdict(f"canary shares {code} {day}", "shares_canary", problem,
+                                   f"주식수 {got_shares}, 처음 안 날 {got_known}", strict))
+    return out
+
+
+def check_shares_missing(
+    by_year: Mapping[int, tuple[int, int]],
+    *,
+    max_rate: float = SHARES_MISSING_MAX,
+    strict: bool | None = None,
+) -> list[CheckResult]:
+    """``by_year``: 연도 → (그 해 마지막 거래일 상장 종목 수, 주식수 행도 013 마커도 없는 수). 모듈 docstring 6."""
+    strict = SHARES_STRICT if strict is None else strict
+    out: list[CheckResult] = []
+    for year, (total, missing) in sorted(by_year.items()):
+        name = f"shares_missing {year}"
+        detail = f"{missing}/{total} = {missing / total:.1%}(상한 {max_rate:.0%})" if total else "상장 종목 0"
+        problem = None
+        if not total:
+            problem = detail + " — 그 해 daily_bars·stocks 를 못 읽었다"
+        elif missing / total > max_rate:
+            problem = detail + " — 코드-연도가 다시 비었다(dart_shares 파서·마커·DAG)"
+        out.append(_shares_verdict(name, "shares_missing", problem, detail, strict))
+    return out
+
+
 # ── 조회(sqlite·Postgres 공용) ──────────────────────────────────────────────
 
 
@@ -713,9 +786,60 @@ def fetch_adjusted_canaries(con: Any) -> dict[tuple[str, dt.date], float | None]
     return out
 
 
+def _has_table(con: Any, table: str) -> bool:
+    if storage._is_pg(con):
+        row = storage.fetchone(con, "SELECT to_regclass(?)", (table,))
+    else:
+        row = storage.fetchone(con, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", (table,))
+    return bool(row and row[0])
+
+
+def fetch_shares_canaries(con: Any) -> dict[tuple[str, dt.date], tuple[int | None, dt.date | None]]:
+    """카나리아 칸의 (본표 주식수, 처음 안 날 = 본표 도장·옆 표 첫 공시 중 이른 쪽). 옆 표(039)가 아직 없으면 본표만."""
+    side = _has_table(con, "shares_original_filing")
+    out: dict[tuple[str, dt.date], tuple[int | None, dt.date | None]] = {}
+    for code, day, _, _ in SHARES_CANARIES:
+        row = storage.fetchone(
+            con, "SELECT shares_outstanding, knowledge_date FROM shares_outstanding_history WHERE code = ? AND date = ?",
+            (code, day.isoformat()),
+        )
+        shares = int(row[0]) if row and row[0] is not None else None
+        known = [_as_date(row[1])] if row and row[1] else []
+        if side:
+            first = storage.fetchone(
+                con, "SELECT first_public_date FROM shares_original_filing WHERE code = ? AND date = ?",
+                (code, day.isoformat()),
+            )
+            known += [_as_date(first[0])] if first and first[0] else []
+        out[code, day] = (shares, min(known) if known else None)
+    return out
+
+
+def fetch_shares_missing(con: Any, first_year: int, last_year: int) -> dict[int, tuple[int, int]]:
+    """해마다 마지막 거래일 하루만 본다(``daily_bars`` 전체를 매일 훑지 않는다). ``stocks`` = 상장 마스터."""
+    out: dict[int, tuple[int, int]] = {}
+    for year in range(first_year, last_year + 1):
+        row = storage.fetchone(con, "SELECT MAX(date) FROM daily_bars WHERE date <= ? AND date >= ?",
+                               (f"{year}-12-31", f"{year}-01-01"))
+        if not row or row[0] is None:
+            out[year] = (0, 0)
+            continue
+        got = storage.fetchone(
+            con,
+            "SELECT count(*), SUM(CASE WHEN EXISTS (SELECT 1 FROM shares_outstanding_history s"
+            "   WHERE s.code = b.code AND s.date >= ? AND s.date <= ?)"
+            " OR EXISTS (SELECT 1 FROM backfill_markers m WHERE m.code = b.code AND m.source = ?)"
+            " THEN 0 ELSE 1 END)"
+            " FROM daily_bars b JOIN stocks k ON k.code = b.code WHERE b.date = ?",
+            (f"{year}-01-01", f"{year}-12-31", f"{storage.CHECKED_DART_SHARES_YEAR}:{year}", _as_date(row[0]).isoformat()),
+        )
+        out[year] = (int(got[0] or 0), int(got[1] or 0))
+    return out
+
+
 def run_checks(con: Any, asof: dt.date) -> list[CheckResult]:
     """``asof`` 전 마지막 거래일 T 를 본다: T-1·T 의 세션, (T-1 → T) 항등식, 카나리아, T-1 까지
-    :data:`ADJ_WINDOW_DAYS` 거래일의 조정주가 대 원주가, 조정주가 카나리아.
+    :data:`ADJ_WINDOW_DAYS` 거래일의 조정주가 대 원주가, 조정주가 카나리아, 상장주식수 카나리아·연도별 결측률.
 
     T-1 세션도 보는 이유: 06:30 에 T 의 애프터마켓 봉은 ~13% 만 적재돼 있다(모듈 docstring) — T-1 은 다 있다.
     조정주가 대조가 T 를 빼는 이유: T 의 원주가는 19:00 스냅숏이다(모듈 docstring 4).
@@ -735,6 +859,8 @@ def run_checks(con: Any, asof: dt.date) -> list[CheckResult]:
         check_raw_price_canary(fetch_canary_close(con)),
         adjusted_vs_raw_result(con, days[:-1]),
         *check_adjusted_canaries(fetch_adjusted_canaries(con)),
+        *check_shares_canaries(fetch_shares_canaries(con)),
+        *check_shares_missing(fetch_shares_missing(con, SHARES_MISSING_FROM_YEAR, asof.year - 1)),
     ]
 
 

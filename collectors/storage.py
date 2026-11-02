@@ -255,6 +255,14 @@ CREATE TABLE IF NOT EXISTS shares_outstanding_history (
     PRIMARY KEY (code, date)     -- Postgres side (init_timescale.sql) must use BIGINT, not INTEGER(32bit) — 삼성전자(58억주) overflows it
 );
 CREATE INDEX IF NOT EXISTS idx_sh_date ON shares_outstanding_history(date);
+CREATE TABLE IF NOT EXISTS shares_original_filing (   -- migration 039, dart_shares --original
+    code              TEXT NOT NULL,
+    date              TEXT NOT NULL,      -- shares_outstanding_history.date 와 같은 기준일
+    first_public_date TEXT NOT NULL,      -- 원본 정기보고서 접수일
+    rcept_no          TEXT NOT NULL,      -- 원본 접수번호
+    shares_original   INTEGER NOT NULL,   -- 원본 원문의 발행주식총수(보통주)
+    PRIMARY KEY (code, date)
+);
 CREATE TABLE IF NOT EXISTS earnings (
     code            TEXT NOT NULL,
     period          TEXT NOT NULL,   -- e.g. '2020Q1'
@@ -599,6 +607,7 @@ CHECKED_NAVER_BARS = "naver_bars"
 CHECKED_NAVER_FLOW = "naver_flow"
 CHECKED_DART_SHARES = "dart_shares_delisted"
 CHECKED_DART_SHARES_LISTED = "dart_shares_listed"
+CHECKED_DART_SHARES_YEAR = "dart_shares_013"   # + ":<연도>" — 그 해 보고서 넷 다 DART 013(dart_shares.year_marker)
 CHECKED_LISTED_NAVER = "listed_naver_ref"   # 037: 상장 종목 네이버 수정가 2007-11~2016-09 를 받아 봤다
 CHECKED_DELISTED_HIST = "delisted_hist_2006"   # 028: 2006~ 네이버 폐지 일봉을 받아 봤다(자료 유무 무관)
 CHECKED_DART_FILING_DATES = "dart_filing_dates"   # 2019~ 접수일을 다 훑었다(earnings_disclosures)
@@ -899,6 +908,7 @@ def upsert_sector_index(con: Any, records: list[tuple]) -> int:
 
 _SHARES_OUTSTANDING_COLS = ["code", "date", "shares_outstanding"]
 _SHARES_OUTSTANDING_COLS_SOURCED = [*_SHARES_OUTSTANDING_COLS, "source"]
+_SHARES_OUTSTANDING_COLS_KNOWN = [*_SHARES_OUTSTANDING_COLS_SOURCED, "knowledge_date"]
 
 
 def upsert_shares_outstanding(
@@ -911,7 +921,15 @@ def upsert_shares_outstanding(
     실측: `SELECT source, count(*)` 가 `kiwoom 28,892 / dart 2,013 / krx 0` 인데
     krx 수집기는 분명히 이 함수를 부르고 있었다. 어느 소스에서 왔는지 모르면
     소스별 신뢰도·백필 범위를 구분할 수 없다.
+
+    키움 행은 그날 받은 스냅숏이라 ``knowledge_date`` = ``date`` 로 넣는다(2026-11-02~). 그 전 키움 행은 NULL 그대로다
+    — 읽는 쪽이 ``coalesce(knowledge_date, date)`` 로 본다(``knowledge_date <= x`` 로 거르면 키움 행이 통째로 빠진다).
     """
+    if source == "kiwoom":
+        return _upsert(
+            con, "shares_outstanding_history", _SHARES_OUTSTANDING_COLS_KNOWN,
+            [(*r, source, r[1]) for r in records],
+        )
     if source is not None:
         return _upsert(
             con, "shares_outstanding_history", _SHARES_OUTSTANDING_COLS_SOURCED,

@@ -24,7 +24,7 @@ from collectors.listed_shares import _SHARES_FIELD, _SHARES_UNIT_MULTIPLIER, col
 def con():
     c = sqlite3.connect(":memory:")
     c.execute("CREATE TABLE shares_outstanding_history (code TEXT, date TEXT,"
-              " shares_outstanding INTEGER, source TEXT DEFAULT 'kiwoom',"
+              " shares_outstanding INTEGER, source TEXT DEFAULT 'kiwoom', knowledge_date TEXT,"
               " PRIMARY KEY (code, date))")
     return c
 
@@ -81,3 +81,10 @@ def test_good_rows_still_land_and_a_bad_one_does_not_take_them_down(con):
     }
     assert stats["done"] == 2
     assert stats["failed"] == 1
+
+
+def test_kiwoom_rows_are_known_on_their_own_date(con):
+    """키움 스냅숏은 그날 안다 — knowledge_date 가 NULL 이면 `knowledge_date <= x` 로 읽는 쪽에서 통째로 빠졌다."""
+    collect(_api({"005930": {_SHARES_FIELD: "5969783"}}), con, _stocks("005930"))
+    day, known = con.execute("SELECT date, knowledge_date FROM shares_outstanding_history").fetchone()
+    assert known == day

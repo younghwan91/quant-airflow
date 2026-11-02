@@ -250,6 +250,15 @@ CREATE TABLE IF NOT EXISTS shares_outstanding_history (
 );
 SELECT create_hypertable('shares_outstanding_history', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
 CREATE INDEX IF NOT EXISTS idx_sh_date ON shares_outstanding_history(date);
+-- 첫 공시 도장(039) — stockTotqySttus 의 rcept_no 는 마지막 정정본이라 knowledge_date 가 늦다. 읽는 쪽은 두 표를 합쳐 as-of 한다.
+CREATE TABLE IF NOT EXISTS shares_original_filing (
+    code              TEXT   NOT NULL,
+    date              DATE   NOT NULL,
+    first_public_date DATE   NOT NULL,
+    rcept_no          TEXT   NOT NULL,
+    shares_original   BIGINT NOT NULL,
+    PRIMARY KEY (code, date)
+);
 
 -- 일반 테이블(하이퍼테이블 아님): 자연키가 (code, period, knowledge_date)라
 -- 파티션 후보인 avail_date가 PK에 없고, TimescaleDB는 파티션 컬럼이 빠진 유니크
