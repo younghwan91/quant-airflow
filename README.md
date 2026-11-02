@@ -42,7 +42,7 @@ df = pd.read_sql("SELECT * FROM daily_bars_adjusted WHERE code = %s ORDER BY dat
 
 ## 무엇을 수집하나
 
-Airflow(LocalExecutor) DAG 21개, 그중 19개가 스케줄로 돈다. 모든 수집기는 `(code, date)` upsert 라 몇 번을 다시 돌려도 안전하고, 행마다 `source`(kiwoom/naver/krx/dart) 를 남긴다.
+Airflow(LocalExecutor) DAG 22개, 그중 20개가 스케줄로 돈다. 모든 수집기는 `(code, date)` upsert 라 몇 번을 다시 돌려도 안전하고, 행마다 `source`(kiwoom/naver/krx/dart) 를 남긴다.
 
 | 영역 | 소스 | 테이블 | DAG |
 |---|---|---|---|
@@ -51,7 +51,8 @@ Airflow(LocalExecutor) DAG 21개, 그중 19개가 스케줄로 돈다. 모든 �
 | 조정주가 | (DB 내부 재생성) | `daily_bars_adjusted` | `daily_price_adjust` 평일 16:55 · `weekly_price_adjust` 토 10:40 |
 | 공매도·신용잔고 | 키움 REST | `short_selling` · `credit_balance` | `daily_short_credit` 화~토 10:00 |
 | 실적 (point-in-time) | DART | `earnings` | `daily_earnings` 평일 16:00 · `earnings_backfill` 일 10:00 |
-| 상장주식수 (point-in-time) | 키움 · DART | `shares_outstanding_history` | `weekly_listed_shares` 화 10:10 · `monthly_listed_shares_backfill` 매월 1일 |
+| 상장주식수 (point-in-time) | 키움 · DART | `shares_outstanding_history` · `shares_original_filing`(처음 공개된 날·그때 값) | `weekly_listed_shares` 화 10:10 · `monthly_listed_shares_backfill` 매월 1일 |
+| WICS 섹터·산업군 주간 스냅샷 | wiseindex | `wics_membership` | `weekly_wics` 화 18:25 |
 | 상장폐지 종목 복원 | KRX · 네이버 · DART | `delisted_stocks` · `daily_bars`(`source='naver'`) | `weekly_delisted_stocks` 토 10:05 |
 | 컨센서스 · 증권사 리포트 | 네이버 | `consensus` · `naver_research_reports` | `daily_consensus` 평일 17:00 · `daily_naver_research` 매일 05:40 |
 | 뉴스·공시 + LLM 판정 | 토스증권 · DART | `news_articles` · `news_company_feed` · `news_judgments` | `premarket_news_judgment` 평일 08:45 · `daily_news` 10:05/16:05 · `daily_toss_company_news` 17:10 |
@@ -59,7 +60,7 @@ Airflow(LocalExecutor) DAG 21개, 그중 19개가 스케줄로 돈다. 모든 �
 | 히스토리 깊이 유지 | 키움 | 업종지수 · 공매도 · 신용 | `weekly_history_backfill` 일 11:00 |
 | 전날 실패분 재수집 | 키움 | — | `daily_collection_catchup` 평일 10:05 |
 
-꺼진 DAG 둘: `daily_sharadar`(미국, 아래 참고)·`daily_krx_shares`(KRX 소스가 로그인 벽으로 막혀 수동 전용). 시각은 모두 KST. 소스 호출·파싱은 [kiwoom-client](https://github.com/younghwan91/kiwoom-client)·[krx-fundamentals-client](https://github.com/younghwan91/krx-fundamentals-client)·[krx-news-client](https://github.com/younghwan91/krx-news-client) 에 있고, 이 레포의 `collectors/` 는 조립·적재만 한다.
+꺼진 DAG 둘: `daily_sharadar`(미국, 아래 참고)·`daily_krx_shares`(KRX 소스가 로그인 벽으로 막혀 수동 전용). 시각은 모두 KST. 소스 호출·파싱은 [kiwoom-client](https://github.com/younghwan91/kiwoom-client)·[krx-fundamentals-client](https://github.com/younghwan91/krx-fundamentals-client)·[krx-news-client](https://github.com/younghwan91/krx-news-client) 에 있고, 이 레포의 `collectors/` 는 조립·적재만 한다. `earnings_disclosures`(실적 공시 접수일)와 `shares_original_filing` 은 아직 정기 DAG 가 없어 수동으로 채운다.
 
 **미국(Sharadar)은 멈춰 있다.** 2026-09-14 구독 해지 이후 `daily_sharadar` 는 `schedule=None` 이고 DuckDB 스토어는 09-11 빌드에서 멈췄다. 벌크 스냅샷 → 재구축 → 검증 → `os.replace` 공개 설계는 [`docs/sharadar.md`](docs/sharadar.md) 에 그대로 남겨 뒀다.
 
@@ -77,9 +78,9 @@ Airflow(LocalExecutor) DAG 21개, 그중 19개가 스케줄로 돈다. 모든 �
 
 **point-in-time.** `earnings`·`shares_outstanding_history` 는 `knowledge_date` 로 정정 이력을 쌓고 덮어쓰지 않는다. 오늘 값을 과거로 복사하면 과거 시점 백테스트가 미래를 본다.
 
-**잠정치와 확정치를 구분한다.** 장 마감 직후 값은 다음 날 새벽 확정치로 덮이고, `daily_finalize` 뒤에 도는 품질 검사(`collectors/data_checks.py`)가 분봉 세션 범위·종가 항등식·원주가 카나리아·조정주가 이음매(원주가 대비)를 매일 본다. 2026-09-14 KRX 애프터마켓 개장 뒤 일봉의 고가·저가·종가·거래량이 통합값으로 바뀐 것을 한 달 가까이 몰랐던 것이 이 검사의 이유다.
+**잠정치와 확정치를 구분한다.** 장 마감 직후 값은 다음 날 새벽 확정치로 덮이고, `daily_finalize` 뒤에 도는 품질 검사(`collectors/data_checks.py`)가 분봉 세션 범위·종가 항등식·원주가 카나리아·조정주가 이음매(원주가 대비)·상장주식수 카나리아와 결측률을 매일 본다. 2026-09-14 KRX 애프터마켓 개장 뒤 일봉의 고가·저가·종가·거래량이 통합값으로 바뀐 것을 한 달 가까이 몰랐던 것이 이 검사의 이유다.
 
-**"초록불 = 성공" 이 아니다.** 빈 응답을 성공으로 넘긴 수집기가 반복 사고였다. 새 수집기는 빈 응답에 예외를 던지고, 매일 `rows=0` 은 장애로 본다.
+**"초록불 = 성공" 이 아니다.** 빈 응답을 성공으로 넘긴 수집기가 반복 사고였다. 새 수집기는 빈 응답에 예외를 던지고, 매일 `rows=0` 은 장애로 본다. 실행 0회는 실패로 안 잡히므로 `scripts/daily_health_check.sh` 가 11:35·18:10 에 주요 테이블의 최신 날짜와 swing-it 전진 모의매매 장부의 신선도를 따로 본다.
 
 **LLM 판정은 배치로, 결과는 테이블로.** 뉴스·공시 판정은 Batch API 로 돌리고 배치 id 를 `news_judge_batches` 원장에 먼저 적는다. 판정은 `news_judgments` 에 쌓일 뿐 — 그걸 어떻게 쓸지는 읽는 레포가 정한다.
 
@@ -127,9 +128,10 @@ flowchart LR
         SW["swing-it /<br/>portfolio-research<br/>(백테스트)"]
         LIVE["scalp-it / daytrade-it<br/>(장중 라이브)"]
         MACRO["macro-sector-agent<br/>(섹터 리서치)"]
+        FLOW["sector-flow<br/>(섹터 수급 일일 리포트)"]
     end
 
-    TS --> SW & LIVE & MACRO
+    TS --> SW & LIVE & MACRO & FLOW
 ```
 
 ## 설정·운영
