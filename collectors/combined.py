@@ -142,7 +142,10 @@ def collect(
                 s_resp = api.stock_info.investor_institution_by_stock(
                     dt=base_dt, stk_cd=code, amt_qty_tp="2", trde_tp="0", unit_tp="1"
                 )
-                sd_buffer.extend(build_sd_records(code, s_resp, sd_cutoff))
+                # 일봉과 같은 가드 — 장중 catchup 이 진행 중인 오늘 행(수급 0)을 쓰면 16:00 까지
+                # MAX(date) 가 오늘이 된다(359410 첫 거래일 2026-11-02). 레코드[1] = date.
+                sd_buffer.extend(rec for rec in build_sd_records(code, s_resp, sd_cutoff)
+                                 if rec[1] <= market_latest)
             stats["done"] += 1
         except KiwoomAPIError as e:
             stats["failed"] += 1
