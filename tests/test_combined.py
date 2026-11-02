@@ -208,3 +208,38 @@ def test_currency_check_costs_two_queries_not_two_per_stock(con, monkeypatch):
     lookups = [q for q in seen if "SELECT DISTINCT code" in q]
     assert len(lookups) == 2, f"종목 수와 무관하게 2회여야 한다 (실제 {len(lookups)}회)"
     assert not [q for q in seen if "MAX(date)" in q], "종목별 MAX(date) 가 남아 있다"
+
+
+def test_update_does_not_write_todays_in_progress_supply_row(tmp_path, monkeypatch):
+    """10:05 catchup 이 첫 거래일 종목(359410 2026-11-02)의 진행 중인 오늘 행을 수급 0 으로 적었다.
+
+    일봉 경로에는 ``dt <= market_latest`` 가드가 있는데 수급 경로에 없었다. 그 행 때문에 16:00 까지
+    ``MAX(date)`` 가 오늘이 되어 전 종목 리포트가 표본 1개로 돌았다."""
+    import datetime as dt
+
+    import collectors.combined as cb
+    from collectors.storage import connect
+
+    con = connect(str(tmp_path / "t.db"))  # 실제 스키마 — 위 fixture 의 표는 열이 없다
+    today = dt.date.today()
+    done_day = (today - dt.timedelta(days=3)).strftime("%Y%m%d")  # sd_cutoff(최근 100일) 안
+    live_day = today.strftime("%Y%m%d")
+
+    class _StockInfo:
+        def investor_institution_by_stock(self, **kwargs):
+            return {"stk_invsr_orgn": [
+                {"dt": live_day, "cur_prc": "32500", "flu_rt": "+91.18", "acc_trde_qty": "16171609",
+                 "ind_invsr": "0", "frgnr_invsr": "0", "orgn": "0"},
+                {"dt": done_day, "cur_prc": "17000", "flu_rt": "+1.00", "acc_trde_qty": "100",
+                 "ind_invsr": "1", "frgnr_invsr": "2", "orgn": "3"},
+            ]}
+
+    api = _FakeApi(_FakeChart(_rows(done_day)))
+    api.stock_info = _StockInfo()
+    monkeypatch.setattr(cb, "_market_latest_date", lambda *a, **k: done_day)
+
+    cb.collect(api, con, [{"code": "359410", "name": "영광"}], update=True)
+
+    dates = [r[0] for r in con.execute("SELECT date FROM supply_demand WHERE code = '359410'").fetchall()]
+    assert live_day not in dates, "진행 중인 오늘 행을 썼다"
+    assert done_day in dates, "완료된 거래일 행까지 버렸다"
