@@ -94,7 +94,7 @@ def daily_finalize():
         # all_done: 상류(재수집·조정주가)가 실패해도 검사는 돈다 — 그날 원천이 바뀐 것이 상류 실패의 원인일 수 있다.
         # 평소 수 초(실DB 1회 ~8~13초), 10분이면 걸린 것이다.
         # 실패 줄 머리 [FAIL:<원인>] = 접속 실패(종료 3)·표본 부족·항등식 불일치·세션 이탈·카나리아·조정주가 이음매·
-        # 조정주가 카나리아(종료 1). [WARN] 은 통과(조정주가 검사, swing-it price_adjust 수정 배포 전 — data_checks.ADJUSTED_STRICT).
+        # 조정주가 카나리아·주식수 카나리아·주식수 결측률(종료 1). [WARN] 은 통과(data_checks.ADJUSTED_STRICT·SHARES_STRICT).
         # 데이터 실패 = 원천 정의가 바뀌었다(새 세션·flu_rt 기준가·수정주가 혼입) — 메시지대로 docs/schema.md 와 같이 본다.
         # DSN 은 환경변수로 — 명령줄에 두면 ps 에 비밀번호가 찍힌다(data_checks 는 --db 에 DSN 을 거부한다).
         run_collector(

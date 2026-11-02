@@ -14,6 +14,17 @@ import pytest
 from collectors import data_checks as dc
 from collectors import storage
 
+
+@pytest.fixture(autouse=True)
+def _shares_checks_out_of_the_way(request, monkeypatch):
+    """세션·항등식 쪽 테스트의 시드 DB 에는 주식수 표가 없다 — 주식수 검사는 아래 test_shares_* 가 따로 본다."""
+    if request.node.name.startswith("test_shares_"):
+        return
+    monkeypatch.setattr(dc, "fetch_shares_canaries", lambda con: {
+        (c, d): (s, k) for c, d, s, k in dc.SHARES_CANARIES})
+    monkeypatch.setattr(dc, "fetch_shares_missing", lambda con, a, b: {})
+
+
 T = dt.time
 AFTER_DAY = dt.date(2026, 10, 8)
 BEFORE_DAY = dt.date(2026, 9, 11)
@@ -649,3 +660,82 @@ def test_daily_finalize_check_task_shape():
     body = ast.unparse(fn)
     assert "'--db'" not in body
     assert dc.DSN_ENV in body
+
+
+# ── 상장주식수 ───────────────────────────────────────────────────────────────
+
+
+def _good_shares():
+    return {(c, d): (s, k) for c, d, s, k in dc.SHARES_CANARIES}
+
+
+def test_shares_canaries_pass_when_values_and_first_known_match():
+    got = dc.check_shares_canaries(_good_shares(), strict=True)
+    assert len(got) == len(dc.SHARES_CANARIES) and all(r.ok and not r.warn for r in got)
+
+
+def test_shares_canary_known_values_are_the_measured_ones():
+    # 카나리아 표 자체가 조용히 바뀌지 않게(2026-11-02 실측) — 숫자는 공시에서 왔다
+    table = {(c, str(d)): (s, str(k) if k else None) for c, d, s, k in dc.SHARES_CANARIES}
+    assert table["009150", "2021-12-31"][0] == 74_693_696
+    assert table["034730", "2021-12-31"][0] == 74_149_329
+    assert table["066570", "2021-12-31"] == (163_647_814, "2022-03-16")
+    assert table["068270", "2021-12-31"][1] == "2022-03-08"
+    assert table["017670", "2021-12-31"][1] == "2022-03-16"
+
+
+@pytest.mark.parametrize(
+    ("code", "day", "value", "needle"),
+    [
+        ("009150", dt.date(2021, 12, 31), (None, None), "주식수 None"),            # 행이 없다
+        ("034730", dt.date(2021, 12, 31), (70_360_297, None), "주식수 70360297"),  # 1분기 값
+        ("068270", dt.date(2021, 12, 31), (None, dt.date(2022, 5, 12)), "처음 안 날 2022-05-12"),  # 늦은 도장
+    ],
+)
+def test_shares_canary_warns_before_backfill_and_fails_after(code, day, value, needle):
+    observed = _good_shares()
+    observed[code, day] = value
+    soft = [r for r in dc.check_shares_canaries(observed, strict=False) if code in r.name]
+    assert soft[0].ok and soft[0].warn and needle in soft[0].detail and "SHARES_STRICT" in soft[0].detail
+    hard = [r for r in dc.check_shares_canaries(observed, strict=True) if code in r.name]
+    assert not hard[0].ok and hard[0].kind == "shares_canary"
+
+
+def test_shares_missing_gate():
+    by_year = {2021: (1000, 20), 2022: (1000, 21), 2023: (0, 0)}
+    strict = {r.name: r for r in dc.check_shares_missing(by_year, strict=True)}
+    assert strict["shares_missing 2021"].ok
+    assert not strict["shares_missing 2022"].ok and strict["shares_missing 2022"].kind == "shares_missing"
+    assert not strict["shares_missing 2023"].ok, "상장 종목 0 은 통과가 아니다(CLAUDE.md §5)"
+    soft = dc.check_shares_missing(by_year, strict=False)
+    assert all(r.ok for r in soft) and [r.warn for r in soft] == [False, True, True]
+
+
+def test_shares_strict_after_backfill():
+    # 뒤집은 근거 — 모듈 docstring 6(백필·039 적용, 카나리아 5/5, 결측률 0.1~0.5%)
+    assert dc.SHARES_STRICT is True
+
+
+def test_shares_fetch_from_tables(tmp_path):
+    con = storage.connect(tmp_path / "s.db")
+    day = "2021-12-31"
+    con.execute("INSERT INTO shares_outstanding_history(code,date,shares_outstanding,knowledge_date,source)"
+                " VALUES('068270',?,137947128,'2022-05-12','dart')", (day,))
+    con.execute("INSERT INTO shares_original_filing(code,date,first_public_date,rcept_no,shares_original)"
+                " VALUES('068270',?,'2022-03-08','R',137947128)", (day,))
+    con.execute("INSERT INTO shares_outstanding_history(code,date,shares_outstanding,knowledge_date,source)"
+                " VALUES('066570',?,163647814,'2022-03-16','dart')", (day,))
+    got = dc.fetch_shares_canaries(con)
+    assert got["068270", dt.date(2021, 12, 31)] == (137947128, dt.date(2022, 3, 8))
+    assert got["066570", dt.date(2021, 12, 31)] == (163647814, dt.date(2022, 3, 16))
+    assert got["009150", dt.date(2021, 12, 31)] == (None, None)
+    # 결측률: A 행 있음 · B 없음 · C 013 마커 · D 는 상장 마스터에 없음(폐지) — 분모 3, 결측 1
+    for code in "ABC":
+        con.execute("INSERT INTO stocks(code,name) VALUES(?,?)", (code, code))
+    for code in "ABCD":
+        con.execute("INSERT INTO daily_bars(code,date,open,high,low,close,volume,trade_value,source)"
+                    " VALUES(?,'2021-12-30',1,1,1,1,1,1,'kiwoom')", (code,))
+    con.execute("INSERT INTO shares_outstanding_history(code,date,shares_outstanding,source) VALUES('A','2021-09-30',5,'dart')")
+    storage.mark_checked(con, f"{storage.CHECKED_DART_SHARES_YEAR}:2021", ["C"], "2026-11-02")
+    assert dc.fetch_shares_missing(con, 2021, 2022) == {2021: (3, 1), 2022: (0, 0)}
+    con.close()
