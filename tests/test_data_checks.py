@@ -458,9 +458,9 @@ def test_adjusted_canaries_expected_state():
     assert all(r.ok and not r.warn for r in dc.check_adjusted_canaries({}, strict=True))  # 행 없음
 
 
-def test_adjusted_strict_default_is_off_until_swing_it_fix():
-    # 뒤집을 때 이 테스트도 같이 고친다(모듈 docstring 5의 조건을 확인한 뒤)
-    assert dc.ADJUSTED_STRICT is False
+def test_adjusted_strict_default_is_on_after_swing_it_fix():
+    # 2026-11-02 swing-it PR #12 배포·재계산 뒤 [WARN] 0건을 확인하고 뒤집었다(모듈 docstring 5)
+    assert dc.ADJUSTED_STRICT is True
 
 
 # ── 조회 경로(sqlite) ─────────────────────────────────────────────────────
@@ -568,6 +568,7 @@ def test_main_passes_without_canary_row(tmp_path):
 
 def test_main_adjusted_seam_warns_then_fails_when_strict(tmp_path, capsys, monkeypatch):
     path = _seed(tmp_path, adj_seam_day=dt.date(2026, 10, 7))
+    monkeypatch.setattr(dc, "ADJUSTED_STRICT", False)
     assert dc.main(["--db", path, *ASOF]) == 0
     out = capsys.readouterr().out
     assert "[WARN] adjusted_vs_raw 2026-10-07~2026-10-07" in out and "000000 2026-10-07" in out

@@ -67,7 +67,9 @@ docstring 에 남았다(``daily_finalize``). 원천 정의가 조용히 바뀌�
    16:00 수집의 15일 창이 10-06 부터만 다시 써서 그 앞이 옛 기준으로 남았다). 창 20거래일은 이 15일 경계를 덮는다.
    **지금 이 검사를 실패로 두면 거의 매일 빨갛다** — 20거래일 창으로 매일 돌렸다면 2025년 242런 중 96, 2026년(10-30 까지)
    202런 중 109, 2026-09-15 뒤로는 30런 전부가 빨갰다. 매일 빨간 경보는 안 보게 된다. 그래서 swing-it ``price_adjust`` 수정이
-   배포되기 전에는 :data:`ADJUSTED_STRICT` = False 로 ``[WARN]`` 만 찍는다(표본 부족 — 재계산이 비었다 — 은 그래도 실패).
+   배포되기 전에는 :data:`ADJUSTED_STRICT` = False 로 ``[WARN]`` 만 찍었다(표본 부족 — 재계산이 비었다 — 은 그래도 실패).
+   2026-11-02 swing-it PR #12 배포·재계산 뒤 ``[WARN]`` 이 모두 사라져 True 로 뒤집었다(옛 표는
+   ``legacy.daily_bars_adjusted_pre_seamfix_20261102``).
 5. **조정주가 카나리아**(``check_adjusted_canaries``) — 위 실측의 알려진 이음매 세 칸(이력 전체를 매일 훑지 않고 대표 칸만).
    고쳐지면 r_adj 가 025620·258830 2021-07-29 |r| < 0.3(수집 이음매), 001380 2025-03-26 r ≈ −0.30(지워진 하한가)이 된다.
    ``ADJUSTED_STRICT`` = False 면 깨진 칸은 ``[WARN]``, 고쳐진 칸은 그렇다고 찍는다.
@@ -164,8 +166,8 @@ ADJUSTED_CANARIES = (
     ("258830", dt.date(2021, 7, 29), -0.3, 0.3),    # 원주가 24,500 → 24,500, 조정주가 24,500 → 4,900(이음매)
     ("001380", dt.date(2025, 3, 26), -0.31, -0.29),  # 원주가 3,500 → 2,450(하한가), 조정주가 4,909 → 4,909(지움)
 )
-#: False = swing-it price_adjust 수정 배포 전 — 이음매·깨진 카나리아는 [WARN]. 뒤집는 조건은 모듈 docstring 5.
-ADJUSTED_STRICT = False
+#: True = swing-it price_adjust 수정(PR #12, 2026-11-02 배포) 뒤 — 새 이음매·되살아난 카나리아는 실패. 모듈 docstring 5.
+ADJUSTED_STRICT = True
 
 #: Postgres 세션의 쿼리 하나 시간 제한(:func:`main`).
 STATEMENT_TIMEOUT = "120s"
