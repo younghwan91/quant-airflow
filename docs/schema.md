@@ -86,7 +86,7 @@ T-1·T 분봉이 위 세션(애프터마켓은 지연 체결 여유로 20:10 까
 같은 태스크가 **`daily_bars_adjusted` 이음매**도 본다 — T-1 까지 20거래일, `corporate_actions` 이벤트(`upd_rt` ≠ 0)도 없고 원주가가 이어져 있는데
 (등락률 ±30% 안, 기준가 = 전일 원 종가) 조정주가 비가 `daily_bars_raw` 원주가 비와 20% 넘게 다른 칸, 그리고 알려진 이음매 카나리아 세 칸
 (025620·258830 2021-07-29, 001380 2025-03-26). 2016-09~2026-10 실측 172칸(수집 이음매·`price_adjust` 가 지운 상하한가, 지금도 생긴다 — 117670 2026-10-06)이라
-swing-it `price_adjust` 수정 배포 전에는 `[WARN]` 만 찍는다(`ADJUSTED_STRICT`, 뒤집는 조건은 `collectors/data_checks.py` 모듈 docstring 5). 폐지 종목(원주가 없음)은 건너뛴다.
+2026-11-02 swing-it `price_adjust` 수정(PR #12) 배포 뒤로는 **실패**다(`ADJUSTED_STRICT` = True — 그 전 `[WARN]` 시절과 옛 표 보존본 `legacy.daily_bars_adjusted_pre_seamfix_20261102` 는 `collectors/data_checks.py` 모듈 docstring 5). 폐지 종목(원주가 없음)은 건너뛴다.
 실패 줄은 원인을 머리에 단다(`[FAIL:접속 실패]` 종료 3 / `표본 부족`·`항등식 불일치`·`세션 이탈`·`카나리아`·`조정주가 이음매`·`조정주가 카나리아` 종료 1).
 06:30 에 T 의 애프터마켓 봉은 ~13% 만 적재돼 있어(scalp-it 15:45 수집, 다음 거래일 런이 채운다) T 의 세션 검사는 애프터마켓 쪽 새 세션을
 놓칠 수 있다 — 그래서 다 적재된 T-1 도 본다.
