@@ -262,6 +262,109 @@ report_backup_freshness() {
     return 0
 }
 
+# 전진 모의매매(swing-it paper_daily.sh, 평일 07:43) 감시. paper_daily.sh **밖**에서 보는 이유: 크론이 죽거나
+# 워크트리가 사라지면 paper_daily.sh 는 자기 실패를 적을 수조차 없다 — 장부가 커밋 전에 워크트리째 사라져
+# 열흘치가 빈 전례(2026-10-13~23)가 그랬다. 장부 내용은 날짜·팔 이름만 읽는다.
+#
+# 기대 날짜 = "마지막 크론일(토·일이면 금요일) **전**" 의 마지막 거래일(sector_index 001). 크론은 전 거래일 행을 쓴다:
+# 월요일 아침에야 금요일 행이 생기므로 토·일엔 금요일을 기대하면 매주 오보다. 18:10 엔 오늘 지수 행이 이미
+# 있어 단순 max(date) 도 오보다. 휴장일은 지수 행이 없어 저절로 맞는다(report_theme_freshness 와 같은 규약).
+# 지수까지 통째로 멈추면 이 기대도 같이 밀려 조용해지므로, 그 뒤 틱이 있는지 따로 본다(report_coverage 와 같은 근거).
+PAPER_LEDGERS=(leader21 leader_c20 leader_rs leader_m leader_p leader_m_ana)
+# pead_rank_F1 첫 행 전: 이 시각(2026-11-06 11:35 실행까지)까지는 장부 대신 그날 로그의 "시작 전" 을 받는다.
+PEAD_FIRST_ROW_CUTOFF="2026-11-06 12:00"
+
+report_paper_ledger() {
+    local wt="${PAPER_WORKTREE:-$HOME/git/.harness-wt/swing-it/feature-combined-strategy}"
+    local paper_log="${PAPER_LOG:-$HOME/logs/swing-it-paper.log}"
+    local dir="$wt/research/paper"
+    local dow cron_day expected ticks_after
+    dow=$(date +%u)
+    cron_day=$today
+    [ "$dow" -ge 6 ] && cron_day=$(date -d "$today -$((dow - 5)) days" +%F)
+
+    # 로그는 어제까지 쌓여 있다 — 오늘 실행 구간("== 오늘 ..." 첫 줄부터)만 본다. 토·일엔 실행이 없어 건너뛴다.
+    local today_log="" pead_log=""
+    if [ "$dow" -lt 6 ]; then
+        if [ -r "$paper_log" ]; then
+            today_log=$(awk -v h="== $today " 'index($0, h) == 1 { f = 1 } f' "$paper_log")
+            pead_log=$(printf '%s\n' "$today_log" | awk -v h="== $today " 'index($0, h) == 1 { f = ($NF == "pead_rank_F1") } f')
+        fi
+        if [ -z "$today_log" ]; then
+            warn "모의매매: 오늘 paper_daily 실행 흔적 없음 ($paper_log) — 크론 확인"
+        else
+            local failed
+            failed=$(printf '%s\n' "$today_log" | grep -E '^실패:' | tr '\n' ';')
+            if [ -n "$failed" ]; then
+                warn "모의매매: 오늘 로그에 실패 — $failed"
+            fi
+        fi
+    fi
+
+    if [ ! -d "$dir" ]; then
+        warn "모의매매: 워크트리 없음 ($wt) — 장부 손실 위험, 크론이 이 경로를 부른다"
+        return 0
+    fi
+
+    expected=$(ts_psql -qtA -c "SET statement_timeout='30s'" -c "
+SELECT max(date) FROM sector_index
+ WHERE code = '001' AND date < '$cron_day' AND date >= '$cron_day'::date - 30
+" 2>/dev/null | tr -d '[:space:]')
+    if [ -z "$expected" ]; then
+        warn "모의매매: 기대 거래일 조회 실패 (DB 연결 안 됨? sector_index 001)"
+        return 0
+    fi
+    ticks_after=$(ts_psql -qtA -c "SET statement_timeout='30s'" -c "
+SELECT EXISTS (SELECT 1 FROM ticks WHERE ts >= '$expected'::date + 1 AND ts < '$cron_day'::date)
+" 2>/dev/null | tr -d '[:space:]')
+    if [ "$ticks_after" = "t" ]; then
+        warn "모의매매: sector_index 001 이 $expected 에서 멈췄는데 그 뒤 틱이 있다 — 달력이 밀려 장부 점검도 같이 밀린다"
+    fi
+
+    # 팔별 최신 날짜. 행은 언제나 {"date": ..., "arm": ... 로 시작한다(json.dumps 키 순서).
+    arm_dates() {
+        sed -nE 's/^\{"date": "([0-9-]{10})", "arm": "([^"]+)".*/\2 \1/p' "$1" 2>/dev/null \
+            | sort | awk '{ last[$1] = $2 } END { for (a in last) print a, last[a] }'
+    }
+    local stale="" name file line arm got
+    for name in "${PAPER_LEDGERS[@]}"; do
+        file="$dir/${name}_ledger.jsonl"
+        if [ ! -s "$file" ]; then
+            stale+=" ${name}=장부없음"
+            continue
+        fi
+        while read -r arm got; do
+            [ "$got" = "$expected" ] || stale+=" ${arm}=${got}"
+        done < <(arm_dates "$file")
+    done
+    if [ -n "$stale" ]; then
+        warn "모의매매: 장부 날짜 어긋남 (기대 $expected):$stale"
+    else
+        log "모의매매 leader 장부: 전부 $expected"
+    fi
+
+    local pead_max=""
+    if [ -s "$dir/pead_rank_f1_ledger.jsonl" ]; then
+        pead_max=$(arm_dates "$dir/pead_rank_f1_ledger.jsonl" | awk '$1 == "pead_rank_F1" { print $2 }')
+    fi
+    if [ -n "$pead_max" ]; then
+        if [ "$pead_max" = "$expected" ]; then
+            log "모의매매 pead_rank_F1 장부: 최신 $pead_max"
+        else
+            warn "모의매매: pead_rank_F1 장부 최신 $pead_max ≠ 기대 $expected"
+        fi
+    elif [[ "$(date '+%F %H:%M')" > "$PEAD_FIRST_ROW_CUTOFF" ]]; then
+        warn "모의매매: pead_rank_F1 장부에 행이 없다 (기대 $expected) — 첫 행 시한 지남"
+    elif [ "$dow" -ge 6 ]; then
+        log "모의매매 pead_rank_F1: 첫 행 전 (주말이라 로그 안 봄)"
+    elif printf '%s\n' "$pead_log" | grep -q '^시작 전'; then
+        log "모의매매 pead_rank_F1: 첫 행 전 (오늘 로그 '시작 전')"
+    else
+        warn "모의매매: pead_rank_F1 첫 행 전인데 오늘 로그에 '시작 전' 이 없다 — 그 단계가 안 돌았다"
+    fi
+    return 0
+}
+
 report_coverage
 # report_coverage 와 달리 주말·오전에도 돈다 — 전 거래일을 보는 점검이라
 # "오늘 장이 섰나" 와 무관하고, 토 10:00 의 daily_short_credit 실행분(금요일치)도
@@ -272,6 +375,7 @@ report_paused
 report_replication
 report_theme_freshness
 report_backup_freshness
+report_paper_ledger
 if [ ${#WARNINGS[@]} -gt 0 ]; then
     printf '%s\n' "${WARNINGS[@]}" | scripts/alert.sh warn "헬스체크 경보 ${#WARNINGS[@]}건 ($today)"
 fi

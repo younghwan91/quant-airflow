@@ -131,6 +131,7 @@ git push (simnode)
 |---|---|---|
 | Airflow 태스크 | **재시도를 다 쓴 최종 실패**만 | `dags/_common.py` `DAG_DEFAULT_ARGS["on_failure_callback"]` |
 | `daily_health_check.sh` | `⚠️` 가 하나라도 있으면 실행당 1건 | `warn()` 모음 → `alert.sh` |
+| `daily_health_check.sh` `report_paper_ledger` | swing-it 전진 모의매매 — 오늘 실행 흔적 없음·`실패:` 줄·워크트리 없음·장부 날짜가 전 거래일(sector_index 001, 크론 기준)과 다름 | 위 `warn()` 경로(`paper_daily.sh` 밖이라 죽은 크론도 잡힌다) |
 | `daily_finalize.check_data_quality` | 전 거래일 분봉 세션 범위·기준가 항등식·원주가 카나리아 중 하나라도 깨질 때(재시도 0, 상류 실패에도 돈다, 10분 제한). 로그의 `[FAIL:<원인>]` 이 접속 실패·표본 부족·항등식 불일치·세션 이탈·카나리아·조정주가 이음매·조정주가 카나리아를 가른다. 조정주가 대 원주가 검사는 swing-it `price_adjust` 수정 배포 전이라 `[WARN]`(종료 0, 알림 없음) — `ADJUSTED_STRICT` 를 True 로 바꾸면 실패가 된다 | 위 Airflow 태스크 콜백 — 원천 정의 변경(새 세션·`flu_rt` 기준가·수정주가 혼입)·조정주가 이음매, `docs/schema.md` 애프터마켓 절 |
 | `backup_to_gdrive.sh` | rc≠0 로 끝날 때 | EXIT 트랩 → `alert.sh` (본문: `BACKUP_LOG` 꼬리). 전체 경로가 성공하면 `~/logs/quant-airflow/backup_last_ok` 에 시각을 남기고, 헬스체크가 36시간 넘게 묵으면 `⚠️` 로 잡는다 |
 | simnode 크론 3줄 | 스크립트가 뜨기 전에 죽을 때 | `cron_run.sh` (안에서 이미 알렸으면 `[alert.py]` 마커로 생략) |
