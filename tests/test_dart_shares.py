@@ -288,7 +288,8 @@ def test_drop_unit_errors_single_point_uses_db_reference_and_hard_cap():
     [
         ("2021-12-31", "2026-11-05", True),   # 옛 기준일의 전진 구간 정정
         ("2025-12-31", "2027-01-10", True),
-        ("2021-12-31", "2026-11-04", False),  # 전진 전
+        ("2025-12-31", "2026-08-06", True),   # 예열 시작 — 실행마다 여기부터 다시 시뮬레이션한다
+        ("2025-12-31", "2026-08-05", False),
         ("2026-06-30", "2026-11-20", False),  # 2026 기준일은 정상 경로
         ("2026-01-01", "2026-11-05", False),
     ],
@@ -297,8 +298,8 @@ def test_f1_held_out(stlm, known, held):
     assert ds.f1_held_out(stlm, known) is held
 
 
-def test_f1_arm_start_matches_prereg_constant():
-    assert ds.F1_ARM_START == "2026-11-05"
+def test_f1_protect_from_matches_prereg_sim_from():
+    assert ds.F1_PROTECT_FROM == "2026-08-06"
 
 
 # ── 원장 적재 ────────────────────────────────────────────────────────────────
@@ -331,7 +332,8 @@ def test_plan_ledger_only_new_keys_and_no_guess():
 def test_plan_ledger_applies_unit_error_guard_with_db_reference():
     rows = [_line("A", 2021, "row", 4_463_032_000, "2021-12-31", "2022-03-08")]
     plan = ds.plan_ledger(rows, [("A", "2020-12-31", 4_463_000), ("A", "2019-12-31", 4_463_000)])
-    assert plan.records == [] and len(plan.unit_errors) == 1
+    assert plan.records == [] and plan.unit_errors == [("A", "2021-12-31", 4_463_032_000, "2022-03-08")]
+    assert "단위 오류로 버린 행 1" in ds.plan_report(plan)
 
 
 def _insert(con, records, expect):
@@ -388,7 +390,8 @@ def _parsed(common, asof=date(2021, 12, 31)):
         (_parsed(100), 100, "ok"),
         (_parsed(110), 110, "ok"),                         # 정정으로 값이 달라졌다 — 원본 값이 그때 알던 값이다
         (None, None, "no_table"),
-        (_parsed(100, date(2022, 3, 8)), None, "asof_mismatch"),
+        (_parsed(100, date(2020, 12, 31)), 100, "ok"),     # 표 앞 날짜가 틀려도 정정본과 값이 같으면(058420 2021)
+        (_parsed(110, date(2020, 12, 31)), None, "asof_mismatch"),
         (_parsed(100_000), None, "ratio_outlier"),         # 다른 표를 읽었거나 단위 오류
         (_parsed(100, None), 100, "ok"),                   # 기준일을 못 찾아도 정정본과 같으면
         (_parsed(110, None), None, "asof_unknown"),

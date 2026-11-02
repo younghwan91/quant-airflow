@@ -59,9 +59,11 @@ as-of 조회를 하므로(``market_cap_asof``, ``_listed_targets``의 ``date < '
   존중하고 ``--refetch`` 는 무시한다. ``--refetch`` 는 분기 폴백 행만 있는 해(옛 파서가 사업보고서 라벨을 못 읽은
   결과)도 다시 본다. 연도 마커는 ``--refetch`` 도 존중한다 — 그래야 한도에 걸린 재실행이 이어받는다.
 
-**F1 전진 팔 보호.** ``date`` < 2026 인데 ``knowledge_date`` ≥ :data:`F1_ARM_START` 인 행은 쓰지 않고 로그만 남긴다
-(:func:`f1_held_out`). 그런 행은 전진 구간 도중에 옛 기준일 값으로 주식수를 덮어 ``split_consistent_cap``
-(swing-it ``research/paper/pead_paper.py``)의 시총을 사전등록 뒤에 바꾼다.
+**F1 전진 팔 보호.** ``date`` < 2026 인데 ``knowledge_date`` ≥ :data:`F1_PROTECT_FROM` 인 행은 쓰지 않고 로그만 남긴다
+(:func:`f1_held_out`). 그런 행은 그날부터 다음 키움 행까지 옛 기준일 값으로 주식수를 덮어 ``split_consistent_cap``
+(swing-it ``research/paper/pead_paper.py``)의 시총을 사전등록 뒤에 바꾼다. 문턱이 첫 결정일(2026-11-05)이 아니라 예열
+시작(``SIM_FROM`` 2026-08-06)인 이유: 그 모의매매는 실행마다 ``SIM_FROM`` 부터 다시 시뮬레이션한다. 실측 2026-11-02: 2026-08-14~10-29
+도장 4행(066970·375500·055550·412540)이 ``SIM_FROM`` 뒤 7칸을 바꿨고 이 문턱에서 0칸이 됐다.
 
 **첫 공시 도장(``--original``, 표 ``shares_original_filing``, migration 039).** ``stockTotqySttus`` 의 ``rcept_no`` 는
 **마지막 정정본** 것이라 ``knowledge_date`` 가 늦다(017670 2021: 원본 2022-03-16, 저장 08-12 · 비교 가능 17,425행 중
@@ -109,8 +111,8 @@ from .storage import (
     mark_checked,
 )
 
-#: F1 전진 팔 첫 결정일(swing-it ``research/paper/pead_paper.py`` ``ARM_START``) — 모듈 docstring.
-F1_ARM_START = "2026-11-05"
+#: F1 전진 팔 예열 시작 격자일(swing-it ``research/paper/pead_paper.py`` ``SIM_FROM``, 첫 결정일 ``ARM_START`` 2026-11-05 의 k−3) — 모듈 docstring.
+F1_PROTECT_FROM = "2026-08-06"
 #: DART 가 "공시 없음" 으로 답하는 status. 이것만 마커가 된다.
 NO_FILING_STATUS = "013"
 #: 한 해에 보는 보고서 수(사업·3분기·반기·1분기, 라이브러리 ``SHARES_REPORT_FALLBACK``).
@@ -133,7 +135,7 @@ def year_marker(year: int) -> str:
 
 def f1_held_out(stlm: str, known: str) -> bool:
     """이 행을 쓰면 F1 전진 구간의 주식수를 옛 기준일 값으로 덮는가(모듈 docstring)."""
-    return stlm < "2026-01-01" and known >= F1_ARM_START
+    return stlm < "2026-01-01" and known >= F1_PROTECT_FROM
 
 
 @dataclass(frozen=True)
@@ -401,7 +403,7 @@ async def _run(args: argparse.Namespace) -> int:
             for shares, stlm, rcept in series:
                 if f1_held_out(stlm, rcept):
                     tally["f1_held_out"] += 1
-                    print(f"⚠️ {code} {stlm}: 접수일 {rcept} ≥ {F1_ARM_START} — F1 전진 보호로 쓰지 않는다", flush=True)
+                    print(f"⚠️ {code} {stlm}: 접수일 {rcept} ≥ {F1_PROTECT_FROM} — F1 전진 보호로 쓰지 않는다", flush=True)
                 else:
                     keep.append((code, stlm, shares, rcept, "dart"))
             if not args.dry_run:
@@ -458,7 +460,7 @@ def plan_ledger(rows: Iterable[dict], existing: Iterable[tuple]) -> LedgerPlan:
     for code, series in by_code.items():
         mine = have.get(code, {})
         keep, dropped = drop_unit_errors(series, [v for v in mine.values() if v])
-        plan.unit_errors += [(code, *p) for p in dropped]
+        plan.unit_errors += [(code, stlm, shares, known) for shares, stlm, known in dropped]
         seen: set[str] = set()
         for shares, stlm, known in keep:
             if stlm in mine or stlm in seen:
@@ -603,13 +605,16 @@ def original_value(parsed, target: dict) -> tuple[int | None, str]:
     """원문 파싱 결과(:class:`dart_doc.Shares` | None) → (원본 값, 사유). 값이 ``None`` 이면 건너뛴다(늦은 도장이 남는다)."""
     if parsed is None or not parsed.common or parsed.common <= 0:
         return None, "no_table"
-    if parsed.asof is not None and parsed.asof != Date.fromisoformat(target["date"]):
-        return None, "asof_mismatch"
     ratio = parsed.common / target["shares"]
     if not 1 / ORIGINAL_MAX_RATIO <= ratio <= ORIGINAL_MAX_RATIO:
         return None, "ratio_outlier"
-    if parsed.asof is None and parsed.common != target["shares"]:  # 기준일을 못 찾았으면 정정본과 같을 때만 믿는다
-        return None, "asof_unknown"
+    # 표 앞 날짜가 기준일과 다른 원문이 있다(20건 표본에 2건 — 058420 2021 사업보고서에 2020-12-31). 정정본과 값이 같으면 그 값이
+    # 원본에 있었다는 뜻이라 믿고, 값이 다르면 어느 시점 값인지 모르므로 버린다.
+    if parsed.common != target["shares"]:
+        if parsed.asof is None:
+            return None, "asof_unknown"
+        if parsed.asof != Date.fromisoformat(target["date"]):
+            return None, "asof_mismatch"
     return parsed.common, "ok"
 
 

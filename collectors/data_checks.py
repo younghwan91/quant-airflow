@@ -83,7 +83,8 @@ docstring 에 남았다(``daily_finalize``). 원천 정의가 조용히 바뀌�
    ``knowledge_date`` 가 늦었다(``dart_shares.py`` 모듈 docstring, migration 039). 다시 비지 않는지 본다:
    카나리아(:data:`SHARES_CANARIES`)는 값과 처음 안 날(본표 ``knowledge_date``·``shares_original_filing.first_public_date`` 중
    이른 쪽), 결측률은 해마다 마지막 거래일 상장 종목 중 그 해 주식수 행도 013 마커도 없는 비율이 :data:`SHARES_MISSING_MAX` 이하.
-   백필 전에는 :data:`SHARES_STRICT` = False 로 ``[WARN]`` 만 찍는다. 백필이 끝나 ``[WARN]`` 이 사라지면 True 로 뒤집는다.
+   백필 전에는 :data:`SHARES_STRICT` = False 로 ``[WARN]`` 만 찍었다. 2026-11-02 백필·첫 공시 적재(본표 1,675행·옆 표 3,669행, 카나리아 5/5,
+   결측률 0.1~0.5%) 뒤 True 로 뒤집었다 — 다시 비는 것이 실패다.
 
 ``minute_bars`` 는 scalp-it 이 쓰는 테이블이다(DDL 도 거기). 그날 분봉이 비면 두 검사가 표본 0 으로 실패한다
 — 빈 표본을 통과로 넘기지 않는다(CLAUDE.md §5).
@@ -186,10 +187,10 @@ SHARES_CANARIES = (
 )
 #: 결측률을 볼 첫 해(그 전은 정기보고서 접수일 표가 없어 첫 공시 도장이 없다).
 SHARES_MISSING_FROM_YEAR = 2019
-#: 그 해 마지막 거래일 상장 종목 중 주식수 행도 013 마커도 없는 비율 상한.
-SHARES_MISSING_MAX = 0.05
-#: False = 백필 전 — 깨져도 ``[WARN]``. 모듈 docstring 6.
-SHARES_STRICT = False
+#: 그 해 마지막 거래일 상장 종목 중 주식수 행도 013 마커도 없는 비율 상한. 백필 전 6~7%, 뒤 0.1~0.5%(2026-11-02).
+SHARES_MISSING_MAX = 0.02
+#: True = 백필·migration 039 적용(2026-11-02) 뒤 — 깨지면 실패. 모듈 docstring 6.
+SHARES_STRICT = True
 
 #: Postgres 세션의 쿼리 하나 시간 제한(:func:`main`).
 STATEMENT_TIMEOUT = "120s"

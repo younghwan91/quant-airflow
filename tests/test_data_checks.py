@@ -702,7 +702,7 @@ def test_shares_canary_warns_before_backfill_and_fails_after(code, day, value, n
 
 
 def test_shares_missing_gate():
-    by_year = {2021: (1000, 50), 2022: (1000, 51), 2023: (0, 0)}
+    by_year = {2021: (1000, 20), 2022: (1000, 21), 2023: (0, 0)}
     strict = {r.name: r for r in dc.check_shares_missing(by_year, strict=True)}
     assert strict["shares_missing 2021"].ok
     assert not strict["shares_missing 2022"].ok and strict["shares_missing 2022"].kind == "shares_missing"
@@ -711,9 +711,9 @@ def test_shares_missing_gate():
     assert all(r.ok for r in soft) and [r.warn for r in soft] == [False, True, True]
 
 
-def test_shares_strict_stays_soft_until_backfill_is_done():
-    # 뒤집는 조건 — 모듈 docstring 6. 백필·마이그레이션 전에 머지되면 매일 빨갛다
-    assert dc.SHARES_STRICT is False
+def test_shares_strict_after_backfill():
+    # 뒤집은 근거 — 모듈 docstring 6(백필·039 적용, 카나리아 5/5, 결측률 0.1~0.5%)
+    assert dc.SHARES_STRICT is True
 
 
 def test_shares_fetch_from_tables(tmp_path):
