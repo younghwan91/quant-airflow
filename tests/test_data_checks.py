@@ -446,10 +446,12 @@ def test_adjusted_vs_raw_too_few_pairs_fails_even_when_not_strict():
 
 
 def test_adjusted_canaries_expected_state():
-    broken = {("025620", D(2021, 7, 29)): 15.39, ("258830", D(2021, 7, 29)): -0.8, ("001380", D(2025, 3, 26)): 0.0}
-    fixed = {("025620", D(2021, 7, 29)): 0.017, ("258830", D(2021, 7, 29)): 0.0, ("001380", D(2025, 3, 26)): -0.30}
+    broken = {("025620", D(2021, 7, 29)): 15.39, ("258830", D(2021, 7, 29)): -0.8, ("001380", D(2025, 3, 26)): 0.0,
+              ("052670", D(2026, 2, 9)): 300.48}
+    fixed = {("025620", D(2021, 7, 29)): 0.017, ("258830", D(2021, 7, 29)): 0.0, ("001380", D(2025, 3, 26)): -0.30,
+             ("052670", D(2026, 2, 9)): -0.80}
     loose = dc.check_adjusted_canaries(broken, strict=False)
-    assert len(loose) == 3 and all(r.ok and r.warn for r in loose)
+    assert len(loose) == 4 and all(r.ok and r.warn for r in loose)
     assert not any(r.ok for r in dc.check_adjusted_canaries(broken, strict=True))
     for strict in (False, True):
         rs = dc.check_adjusted_canaries(fixed, strict=strict)
