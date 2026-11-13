@@ -57,8 +57,12 @@ kr_quant(TimescaleDB) 수집·운영 레포. 다른 레포(swing-it·scalp-it·d
 - 소스 호출·파싱은 클라이언트 라이브러리(`~/git/kiwoom-client`·`krx-fundamentals-client`·`krx-news-client`)에 넣고,
   `collectors/` 는 조립·적재만 한다. 라이브러리 변경은 이미지 재빌드 전엔 안 들어온다.
 - 분석·연구·매매 판정 코드는 여기 두지 않는다(swing-it 등 트레이더 레포). 이 레포는 원본 수집·적재만.
-- 기사 LLM 은 전역 규칙을 따른다. 이 레포 구현은 `collectors/news_judge.py`(배치 원장 `news_judge_batches`,
-  create 재시도 금지). Haiku 4.5 판정은 `legacy` 스키마 보관분 — 운영 테이블로 되돌리지 않는다.
+- 기사 LLM 판정은 `collectors/news_judge.py`(배치 원장 `news_judge_batches`, create 재시도 금지 — 다른 레포 판정기의 참고 구현,
+  swing-it `src/swing_it/news/judge.py` 도 같다):
+  - 모델은 `claude-haiku-5-5` 만. Haiku 4.5 는 쓰지 않는다 — 4.5 판정은 `legacy` 스키마 보관분, 운영 테이블로 되돌리지 않는다.
+  - 프롬프트 캐싱 의무 — 고정 지시문은 `cache_control` 붙은 `system` 으로, 건마다 다른 부분(기사·종목·이력)만 user 로. 지시문을 기사 뒤에 두지 않는다. 걸렸는지는 `usage.cache_read_input_tokens` 로 확인(5.5 최소 접두 512토큰).
+  - Batch API 의무 — 동기 `messages.create` 루프로 판정기를 만들지 않는다. 지연이 문제면 먼저 묻는다.
+  - 5.5 는 thinking 기본 켜짐 → `thinking: {type: "disabled"}`, temperature 는 보내지 않는다.
 
 ## 4. DAG 규약
 - `@dag(default_args=DAG_DEFAULT_ARGS)`(최종 실패 알림 콜백), 태스크는 `DEFAULT_TASK_KW`·`run_collector()`·`timescale_dsn()`·
@@ -99,7 +103,8 @@ $V/python -m pytest -q
 
 ## 7. 운영 체크아웃이 곧 운영 코드다
 - `~/git/quant-airflow` 작업 트리를 Airflow 가 bind-mount 한다(`dags/`·`collectors/`·`scripts/`). 크론 줄도
-  이 절대경로를 부른다. **거기서 브랜치 전환·미커밋 편집을 하지 않는다** — 작업은 워크트리에서.
+  이 절대경로를 부른다. **거기서 브랜치 전환·미커밋 편집을 하지 않는다** — 작업은 `~/git/.harness-wt/` 아래 워크트리에서
+  (전역 가드가 crontab 을 보고 이 체크아웃의 main 이외 전환·브랜치 생성을 막는다).
 - `../swing-it` 도 `/opt/swing-it:ro` 로 라이브 마운트된다(`*_price_adjust` 가 실행). swing-it 의
   `price_adjust.py` 가 numpy·pandas 밖을 import 하면 여기서만 죽는다(2026-09-14 사고).
 - 반영 경로: main 푸시 → pre-push 가 `ci.yml` 을 로컬에서 그대로 돌림 → 이 호스트 `cron-install`.
