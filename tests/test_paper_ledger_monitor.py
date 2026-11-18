@@ -20,6 +20,7 @@ LEDGERS = {
     "leader_m_ana": ["leader_M_ana"],
 }
 PEAD = "pead_rank_f1_ledger.jsonl"
+MTF = "mtf30_ledger.jsonl"
 
 # SQL 을 보고 답한다: 기대 거래일 쿼리는 "date < 크론일" 을 그대로 받아 답이 크론일에 달려 있음을 시험한다.
 DOCKER = r"""#!/usr/bin/env bash
@@ -79,10 +80,17 @@ def write_ledgers(env, day: str, skip: tuple = ()) -> None:
         rows = [f'{{"date": "2026-10-13", "arm": "{a}", "cfg": {{"date": "2099-01-01"}}}}' for a in arms]
         rows += [f'{{"date": "{day}", "arm": "{a}", "cfg": {{}}}}' for a in arms]
         (paper(env) / f"{name}_ledger.jsonl").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    if "mtf30" not in skip:
+        write_mtf(env, day)
 
 
 def write_pead(env, day: str) -> None:
     (paper(env) / PEAD).write_text(f'{{"date": "{day}", "arm": "pead_rank_F1", "rules": {{}}}}\n', encoding="utf-8")
+
+
+def write_mtf(env, day: str) -> None:
+    rows = [f'{{"arm": "mtf30_fwd", "asof": "{d}", "cfg": {{"asof": "2099-01-01"}}}}' for d in ("2026-10-30", day)]
+    (paper(env) / MTF).write_text("\n".join(rows) + "\n", encoding="utf-8")
 
 
 def write_log(env, day: str, pead_line: str = "시작 전: x", extra: str = "") -> None:
@@ -187,7 +195,7 @@ def test_weekend_expects_row_written_by_friday_cron(env):
     assert run(env, "2026-11-07 11:35:00") == []
     write_ledgers(env, "2026-11-04")
     write_pead(env, "2026-11-04")
-    assert len(run(env, "2026-11-08 18:10:00")) == 2
+    assert len(run(env, "2026-11-08 18:10:00")) == 3      # leader·pead·mtf30 셋 다 목요일 기대에 못 미침
 
 
 def test_db_down_warns(env):
@@ -204,3 +212,22 @@ def test_whole_calendar_stuck_is_caught_by_ticks(env):
     write_log(env, "2026-11-06", "이미 기록됨: 2026-11-05")
     warns = run(env, "2026-11-06 11:35:00", FAKE_TICKS="t")
     assert len(warns) == 1 and "틱이 있다" in warns[0]
+
+
+def test_stale_or_missing_mtf30_warns(env):
+    write_ledgers(env, "2026-11-05", skip=("mtf30",))
+    write_pead(env, "2026-11-05")
+    write_log(env, "2026-11-06", "기록: x")
+    warns = run(env, "2026-11-06 11:35:00")
+    assert len(warns) == 1 and "mtf30_fwd 장부에 행이 없다" in warns[0]
+    write_mtf(env, "2026-11-04")
+    warns = run(env, "2026-11-06 11:35:00")
+    assert len(warns) == 1 and "mtf30_fwd 장부 최신 2026-11-04" in warns[0]
+
+
+def test_mtf30_drift_line_warns(env):
+    write_ledgers(env, "2026-11-05")
+    write_pead(env, "2026-11-05")
+    write_log(env, "2026-11-06", "기록: x", extra="감시: 표류 main 1 shadow 0 — 행 drift 참조\n")
+    warns = run(env, "2026-11-06 11:35:00")
+    assert len(warns) == 1 and "표류" in warns[0]

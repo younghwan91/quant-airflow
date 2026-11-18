@@ -362,6 +362,23 @@ SELECT EXISTS (SELECT 1 FROM ticks WHERE ts >= '$expected'::date + 1 AND ts < '$
     else
         warn "모의매매: pead_rank_F1 첫 행 전인데 오늘 로그에 '시작 전' 이 없다 — 그 단계가 안 돌았다"
     fi
+
+    # mtf30_fwd(swing-it research/paper/MTF30_FORWARD_PREREG.md, 첫 행 2026-11-17 자료): 행이 {"arm": ..., "asof": ... 로 시작해서
+    # 위 arm_dates(행 머리 {"date", "arm"})가 못 읽는다 — 따로 본다. 표류(지난 행과 다시 계산한 장부가 다름)는 그날 로그의 "감시: 표류" 줄.
+    local mtf_file="$dir/mtf30_ledger.jsonl" mtf_max=""
+    if [ -s "$mtf_file" ]; then
+        mtf_max=$(sed -nE 's/^\{"arm": "mtf30_fwd", "asof": "([0-9-]{10})".*/\1/p' "$mtf_file" 2>/dev/null | sort | tail -1)
+    fi
+    if [ -z "$mtf_max" ]; then
+        warn "모의매매: mtf30_fwd 장부에 행이 없다 (기대 $expected)"
+    elif [ "$mtf_max" = "$expected" ]; then
+        log "모의매매 mtf30_fwd 장부: 최신 $mtf_max"
+    else
+        warn "모의매매: mtf30_fwd 장부 최신 $mtf_max ≠ 기대 $expected"
+    fi
+    if printf '%s\n' "$today_log" | grep -q '^감시: 표류'; then
+        warn "모의매매: mtf30_fwd 표류 — 지난 행과 다시 계산한 장부가 다르다(장부 행 drift 참조)"
+    fi
     return 0
 }
 
