@@ -18,8 +18,8 @@
 ## Quick start
 
 ```bash
-git clone <this-repo> quant-airflow
-git clone https://github.com/younghwan91/swing-it.git ../swing-it                       # sibling
+git clone https://github.com/younghwan91/quant-airflow.git
+git clone https://github.com/younghwan91/swing-it.git ../swing-it                       # sibling — compose 가 읽기 전용으로 마운트
 git clone https://github.com/younghwan91/portfolio-research.git ../portfolio-research  # sibling
 cd quant-airflow
 cp .env.example .env   # 아래 필수값 채우기 — TIMESCALE_HOST·KR_QUANT_DB 는 예제에 없으니 직접 추가, TIMESCALE_PORT 는 5433 으로
@@ -31,9 +31,10 @@ docker compose -f docker-compose.airflow.yml up -d   # Airflow
 쌓인 데이터는 Postgres 클라이언트면 무엇이든 읽는다.
 
 ```python
+import os
 import pandas as pd, psycopg2
-conn = psycopg2.connect(host="<db-host-ip>", port=5433,
-                        dbname="kr_quant", user="kr_quant", password="...")
+conn = psycopg2.connect(host=os.environ["TIMESCALE_HOST"], port=5433, dbname="kr_quant",
+                        user=os.environ["TIMESCALE_USER"], password=os.environ["TIMESCALE_PASSWORD"])
 df = pd.read_sql("SELECT * FROM daily_bars_adjusted WHERE code = %s ORDER BY date",
                  conn, params=("005930",))
 ```
@@ -163,7 +164,7 @@ TimescaleDB 는 LAN 에 열려 있어 다른 PC 도 읽기 전용으로 질의�
 
 ![DB 커버리지](docs/images/db-coverage.png)
 
-*2026-08-28 기준 라이브 DB(그 뒤 `daily_bars_raw` 2007-11-22~ 확장·adj_v2 갱신, 그림은 옛 것). 질의문은 [`docs/coverage.sql`](docs/coverage.sql).*
+*2026-08-28 기준 커버리지 그림. 질의문은 [`docs/coverage.sql`](docs/coverage.sql).*
 
 ## 더 자세히
 
