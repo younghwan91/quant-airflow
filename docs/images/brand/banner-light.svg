@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 280" fill="none">
+  <defs>
+    <linearGradient id="qa-banner-bg-l" x1="0" y1="0" x2="1200" y2="280" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F8FAFC"/>
+      <stop offset="100%" stop-color="#F0FDFA"/>
+    </linearGradient>
+    <linearGradient id="qa-mark-bg-l" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#115E59"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+    <linearGradient id="qa-edge-l" x1="16" y1="20" x2="48" y2="44" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#22D3EE"/>
+      <stop offset="100%" stop-color="#34D399"/>
+    </linearGradient>
+    <linearGradient id="qa-dag-l" x1="760" y1="90" x2="1050" y2="190" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0891B2"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+    <radialGradient id="qa-glow-l" cx="940" cy="140" r="145" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#22D3EE" stop-opacity="0.14"/>
+      <stop offset="100%" stop-color="#22D3EE" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="1" y="1" width="1198" height="278" rx="20" fill="url(#qa-banner-bg-l)" stroke="#CBD5E1" stroke-width="1.5"/>
+  <circle cx="940" cy="140" r="145" fill="url(#qa-glow-l)"/>
+
+  <!-- Brand Mark -->
+  <g transform="translate(56, 44)">
+    <rect width="64" height="64" rx="14" fill="url(#qa-mark-bg-l)"/>
+    <path d="M 18 22 L 32 32 L 18 42" stroke="url(#qa-edge-l)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <line x1="32" y1="32" x2="45" y2="32" stroke="#FB923C" stroke-width="2.2" stroke-linecap="round"/>
+    <rect x="13" y="17" width="10" height="10" rx="3" fill="#22D3EE"/>
+    <rect x="13" y="37" width="10" height="10" rx="3" fill="#34D399"/>
+    <circle cx="32" cy="32" r="4.5" fill="#F8FAFC" stroke="#115E59" stroke-width="1.5"/>
+    <ellipse cx="47" cy="24" rx="6" ry="2.6" fill="#FB923C"/>
+    <path d="M 41 24 V 40 C 41 41.5 43.7 42.6 47 42.6 C 50.3 42.6 53 41.5 53 40 V 24" stroke="#FB923C" stroke-width="2" fill="#FB923C" fill-opacity="0.22"/>
+    <path d="M 41 32 C 41 33.5 43.7 34.6 47 34.6 C 50.3 34.6 53 33.5 53 32" stroke="#FB923C" stroke-width="1.6"/>
+  </g>
+
+  <!-- Title & Tagline -->
+  <text x="56" y="152" fill="#0F172A" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="38" font-weight="800" letter-spacing="-0.025em">quant-airflow</text>
+  <text x="56" y="186" fill="#475569" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="16.5" font-weight="500">Survivorship-bias-free Korean equity pipeline into TimescaleDB</text>
+
+  <!-- Tech Pill -->
+  <rect x="56" y="210" width="380" height="28" rx="14" fill="#E2E8F0" fill-opacity="0.75" stroke="#CBD5E1" stroke-width="1"/>
+  <text x="72" y="228.5" fill="#334155" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="11.5" font-weight="600" letter-spacing="0.06em">AIRFLOW · TIMESCALEDB · KRX + DART · DOCKER</text>
+
+  <!-- 3-Stage Airflow DAG + TimescaleDB Artwork -->
+  <g transform="translate(740, 44)">
+    <!-- Subtle grid dots -->
+    <rect x="0" y="0" width="390" height="192" rx="16" fill="#FFFFFF" fill-opacity="0.55" stroke="#CBD5E1" stroke-opacity="0.6" stroke-width="1"/>
+
+    <!-- Stage 1 -> Stage 2 Edges -->
+    <path d="M 102 62 C 135 62, 140 96, 174 96" stroke="url(#qa-dag-l)" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M 102 130 C 135 130, 140 96, 174 96" stroke="url(#qa-dag-l)" stroke-width="2.5" stroke-linecap="round"/>
+    <!-- Stage 2 -> Stage 3 Edge -->
+    <path d="M 244 96 L 284 96" stroke="#EA580C" stroke-width="2.8" stroke-linecap="round"/>
+    <path d="M 276 89 L 285 96 L 276 103" stroke="#EA580C" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Stage 1 Nodes -->
+    <rect x="26" y="42" width="76" height="40" rx="10" fill="#ECFEFF" stroke="#0891B2" stroke-width="2"/>
+    <circle cx="42" cy="62" r="5" fill="#06B6D4"/>
+    <text x="53" y="66" fill="#0F172A" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="700">KRX</text>
+
+    <rect x="26" y="110" width="76" height="40" rx="10" fill="#ECFDF5" stroke="#059669" stroke-width="2"/>
+    <circle cx="42" cy="130" r="5" fill="#10B981"/>
+    <text x="53" y="134" fill="#0F172A" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="700">DART</text>
+
+    <!-- Stage 2 Node -->
+    <rect x="174" y="72" width="70" height="48" rx="12" fill="#115E59" stroke="#0F766E" stroke-width="2"/>
+    <circle cx="209" cy="96" r="8" fill="#22D3EE" fill-opacity="0.25" stroke="#34D399" stroke-width="2"/>
+    <circle cx="209" cy="96" r="3" fill="#F8FAFC"/>
+
+    <!-- Stage 3 TimescaleDB Cylinder -->
+    <g transform="translate(292, 46)">
+      <ellipse cx="36" cy="16" rx="34" ry="12" fill="#FB923C" stroke="#EA580C" stroke-width="2"/>
+      <path d="M 2 16 V 84 C 2 90.6 17.2 96 36 96 C 54.8 96 70 90.6 70 84 V 16" fill="#FB923C" fill-opacity="0.18" stroke="#EA580C" stroke-width="2"/>
+      <path d="M 2 39 C 2 45.6 17.2 51 36 51 C 54.8 51 70 45.6 70 39" stroke="#EA580C" stroke-width="1.8"/>
+      <path d="M 2 62 C 2 68.6 17.2 74 36 74 C 54.8 74 70 68.6 70 62" stroke="#EA580C" stroke-width="1.8"/>
+    </g>
+  </g>
+</svg>
