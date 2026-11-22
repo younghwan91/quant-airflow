@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 64" height="64" fill="none">
+  <defs>
+    <linearGradient id="qa-bg-l" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#115E59"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+    <linearGradient id="qa-edge-l" x1="16" y1="20" x2="48" y2="44" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#22D3EE"/>
+      <stop offset="100%" stop-color="#34D399"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#qa-bg-l)"/>
+  <path d="M 18 22 L 32 32 L 18 42" stroke="url(#qa-edge-l)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="32" y1="32" x2="45" y2="32" stroke="#FB923C" stroke-width="2.2" stroke-linecap="round"/>
+  <rect x="13" y="17" width="10" height="10" rx="3" fill="#22D3EE"/>
+  <rect x="13" y="37" width="10" height="10" rx="3" fill="#34D399"/>
+  <circle cx="32" cy="32" r="4.5" fill="#F8FAFC" stroke="#115E59" stroke-width="1.5"/>
+  <ellipse cx="47" cy="24" rx="6" ry="2.6" fill="#FB923C"/>
+  <path d="M 41 24 V 40 C 41 41.5 43.7 42.6 47 42.6 C 50.3 42.6 53 41.5 53 40 V 24" stroke="#FB923C" stroke-width="2" fill="#FB923C" fill-opacity="0.22"/>
+  <path d="M 41 32 C 41 33.5 43.7 34.6 47 34.6 C 50.3 34.6 53 33.5 53 32" stroke="#FB923C" stroke-width="1.6"/>
+  <text x="80" y="31" fill="#0F172A" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="22" font-weight="700" letter-spacing="-0.4">quant-airflow</text>
+  <text x="80" y="49" fill="#475569" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="600" letter-spacing="0.8">SURVIVORSHIP-FREE KOREAN EQUITY PIPELINE</text>
+</svg>

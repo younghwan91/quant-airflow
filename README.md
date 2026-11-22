@@ -1,15 +1,15 @@
-# quant-airflow
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/brand/wordmark-dark.svg">
+  <img alt="quant-airflow" src="docs/images/brand/wordmark-light.svg" height="56">
+</picture>
+
+**한국어** | [English](README.en.md)
 
 **한국 주식 데이터를 TimescaleDB 에 쌓는 Airflow 파이프라인 — 상장폐지 종목까지 되살려 담아, 그 위에서 돌리는 백테스트가 생존편향에 빠지지 않는다.**
 
 [![CI](https://github.com/younghwan91/quant-airflow/actions/workflows/ci.yml/badge.svg)](https://github.com/younghwan91/quant-airflow/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-younghwan--chae-0A66C2?logo=linkedin&logoColor=white)](https://www.linkedin.com/in/younghwan-chae/)
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.png">
-  <img alt="연도별 일봉이 있는 종목 수 — 지금도 상장(파랑)과 이후 상장폐지(주황). 거래됐던 종목의 31% 가 폐지됐고 데이터에 남아 있다" src="docs/images/hero-light.png" width="100%">
-</picture>
 
 - **거래된 적 있는 종목의 31% 가 이미 상장폐지됐다.** 지금 상장된 종목만 수집하면 2008년 유니버스의 37% 가 사라진다. 여기서는 KRX 폐지 마스터 → 네이버 과거 일봉 → DART 상장주식수 순으로 되살려 넣는다. (출처: `daily_bars_adj_v2` × `stocks` / `delisted_stocks` ∪ `kind_delistings`, [`docs/images/hero-data.csv`](docs/images/hero-data.csv))
 - **16:00 에 받는 그날 값은 잠정치다.** 다음 날 새벽 `daily_finalize` 가 전 거래일 일봉·수급을 확정치로 다시 받아 덮고, 조정주가를 다시 만든다.
@@ -40,6 +40,11 @@ df = pd.read_sql("SELECT * FROM daily_bars_adjusted WHERE code = %s ORDER BY dat
 ```
 
 위 DB 줄은 **이미 데이터가 든 볼륨**을 띄우는 것이다. 새 머신에 처음 세울 때는 [설정·운영](#설정운영) 을 본다.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.png">
+  <img alt="연도별 일봉이 있는 종목 수 — 지금도 상장(파랑)과 이후 상장폐지(주황). 거래됐던 종목의 31% 가 폐지됐고 데이터에 남아 있다" src="docs/images/hero-light.png" width="100%">
+</picture>
 
 ## 무엇을 수집하나
 
