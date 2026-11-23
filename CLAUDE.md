@@ -99,7 +99,7 @@ $V/python -m pytest -q
 - 공개 레포다 — 키 모양 문자열·수집 데이터를 커밋하지 않는다. 스캐너(32자 hex·`api_key=` 16자+·DSN 비번 6자+)에 걸리는 테스트 가짜 시크릿은 그 줄에 `allowlist-secret`.
 - 테스트는 sqlite·mock 경로라 **Postgres 전용 동작**(`ON CONFLICT` 한 문장 내 중복 키, `%s`/`?`, date 타입)을 못 잡는다
   (4e2de05·0068e64) — `storage.py` 의 PG 분기를 고치면 운영 DB 에서 읽기 전용 쿼리나 트랜잭션 롤백으로 확인한다.
-- 수집기를 고치면 대응 `tests/test_*.py` 도. 커밋은 한국어 conventional(`fix(earnings): ...`), 개인 이메일 신원만.
+- 수집기를 고치면 대응 `tests/test_*.py` 도. 커밋은 영어 conventional(`fix(earnings): ...`), 개인 이메일 신원만.
 
 ## 7. 운영 체크아웃이 곧 운영 코드다
 - `~/git/quant-airflow` 작업 트리를 Airflow 가 bind-mount 한다(`dags/`·`collectors/`·`scripts/`). 크론 줄도
