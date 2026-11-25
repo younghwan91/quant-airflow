@@ -15,7 +15,7 @@ It collects prices, investor flow, earnings, shares outstanding, and LLM news ju
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-younghwan--chae-0A66C2?logo=linkedin&logoColor=white)](https://www.linkedin.com/in/younghwan-chae/)
 
-[Guide](docs/guide.en.md) · [Quick start](#quick-start) · [Schema](docs/schema.md) · [Operations](docs/operations.md) · [한국어](README.md)
+[Guide](docs/guide.en.md) · [Try it](#try-it-no-keys-no-db) · [Quick start](#quick-start) · [Schema](docs/schema.md) · [Operations](docs/operations.md) · [한국어](README.md)
 
 </div>
 
@@ -25,6 +25,22 @@ It collects prices, investor flow, earnings, shares outstanding, and LLM news ju
 </picture>
 
 <p align="center"><sub>31% of all stocks ever traded are already delisted. Both listed and delisted histories are preserved so 37% of the 2008 universe is not lost (<a href="docs/images/hero-data.csv">data</a>).</sub></p>
+
+## Try it (no keys, no DB)
+
+```bash
+git clone https://github.com/younghwan91/quant-airflow.git && cd quant-airflow
+python scripts/demo_survivorship.py
+```
+
+```text
+[synthetic data] equal-weight buy & hold from 2018-01-02
+  4 currently listed stocks only : +110.0%
+  7 stocks incl. 3 delisted      : +22.6%
+  survivorship bias              : +87.4%p overstated
+```
+
+The data is synthetic (not real tickers) and the bias is exaggerated for illustration. It runs on this pipeline's `stocks`/`delisted_stocks` schema and shows how much a universe without delisted names inflates returns. See the chart above for real-data scale.
 
 ## Quick start
 
@@ -91,6 +107,13 @@ See [Why It's Built This Way](docs/guide.en.md#why-its-built-this-way) for desig
 
 - Report bugs or suggest pipeline improvements in [GitHub Issues](https://github.com/younghwan91/quant-airflow/issues).
 - Author: **Younghwan Chae (채영환)** · [GitHub @younghwan91](https://github.com/younghwan91) · [LinkedIn](https://www.linkedin.com/in/younghwan-chae/)
+
+## Tools by the same author
+
+- [kiwoom-client](https://github.com/younghwan91/kiwoom-client): the Kiwoom REST client this pipeline pulls prices with.
+- [fin-checkup](https://github.com/younghwan91/fin-checkup): traffic-light financial checkups for listed companies from DART filings.
+- [krx-quant-core](https://github.com/younghwan91/krx-quant-core): shared core for Korean-equity quant systems: market rules, costs, order guards, validation stats.
+- [swing-it](https://github.com/younghwan91/swing-it): a statistical framework that tests alpha hypotheses against random versions of themselves.
 
 ## License
 

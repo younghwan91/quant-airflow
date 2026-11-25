@@ -15,7 +15,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-younghwan--chae-0A66C2?logo=linkedin&logoColor=white)](https://www.linkedin.com/in/younghwan-chae/)
 
-[가이드](docs/guide.md) · [Quick start](#quick-start) · [스키마](docs/schema.md) · [운영](docs/operations.md) · [English](README.en.md)
+[가이드](docs/guide.md) · [바로 해 보기](#바로-해-보기-키db-없이) · [Quick start](#quick-start) · [스키마](docs/schema.md) · [운영](docs/operations.md) · [English](README.en.md)
 
 </div>
 
@@ -25,6 +25,22 @@
 </picture>
 
 <p align="center"><sub>거래된 적 있는 종목의 31%는 이미 상장폐지됐습니다. 2008년 유니버스의 37%가 빠지지 않도록 상장·폐지 이력을 함께 보관합니다 (<a href="docs/images/hero-data.csv">데이터</a>).</sub></p>
+
+## 바로 해 보기 (키·DB 없이)
+
+```bash
+git clone https://github.com/younghwan91/quant-airflow.git && cd quant-airflow
+python scripts/demo_survivorship.py
+```
+
+```text
+[합성 데이터] 2018-01-02 동일가중 매수 후 보유
+  지금 상장된 4종목만      : +110.0%
+  폐지 3종목 포함 7종목   : +22.6%
+  생존편향              : +87.4%p 과대평가
+```
+
+실제 종목이 아닌 합성 데이터이고, 편향 크기는 설명용으로 과장했습니다. 폐지 종목이 빠진 유니버스가 수익률을 얼마나 부풀리는지를 파이프라인의 `stocks`/`delisted_stocks` 스키마 위에서 보여 줍니다. 실제 데이터 규모는 위 그림을 참고하시기 바랍니다.
 
 ## Quick start
 
@@ -91,6 +107,13 @@ Airflow(LocalExecutor) DAG 22개 가운데 20개가 스케줄로 동작합니다
 
 - 버그 제보와 파이프라인 개선 제안은 [GitHub Issues](https://github.com/younghwan91/quant-airflow/issues)에 남겨 주시기 바랍니다.
 - 만든 사람: **채영환 (Younghwan Chae)** · [GitHub @younghwan91](https://github.com/younghwan91) · [LinkedIn](https://www.linkedin.com/in/younghwan-chae/)
+
+## 같은 저자의 도구
+
+- [kiwoom-client](https://github.com/younghwan91/kiwoom-client): 이 파이프라인이 시세를 받는 키움 REST 클라이언트입니다.
+- [fin-checkup](https://github.com/younghwan91/fin-checkup): DART 공시로 상장사 재무 신호등을 계산합니다.
+- [krx-quant-core](https://github.com/younghwan91/krx-quant-core): 시장 규칙·비용·주문 가드·검증 통계를 맞추는 한국 주식 퀀트 공통 코어입니다.
+- [swing-it](https://github.com/younghwan91/swing-it): 알파 가설을 랜덤 버전과 겨루어 심사하는 통계 검증 프레임워크입니다.
 
 ## 라이선스
 
